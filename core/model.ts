@@ -2,25 +2,30 @@
  * A review's state: what the workspace shows and what a host persists. It changes only through the events of review.ts,
  * so any host (Mirador's canvas, a standalone app) can store, replay and draw it the same way.
  */
-import type { Confidence, Depth, Evidence, ProfileId, Severity, Stance } from "./schemas.ts";
+import type { Confidence, Decision, Depth, Evidence, ProfileId, Severity, Stance } from "./schemas.ts";
 
-export type { Stance };
+export type { Decision, Stance };
 
-export const REVIEW_FORMAT = 2;
+export const REVIEW_FORMAT = 4;
 
 /**
- * Where a review is: set up, reviewed independently, deliberated in rounds, synthesised into a verdict, and ended.
+ * Where a review is: set up, reviewed independently, deliberated in rounds, synthesised into a verdict, and ended. After
+ * the verdict the user rules on the findings and hands them off; once fixes come in, a verification round re-checks them
+ * and the review is complete again.
  */
-export type Phase = "setup" | "independent-review" | "deliberation" | "synthesis" | "complete" | "stopped" | "interrupted";
+export type Phase = "setup" | "independent-review" | "deliberation" | "synthesis" | "complete" | "verification" | "stopped" | "interrupted";
 
-/** "deliberating": the reviewer finished its own review and takes part in the council's rounds. */
-export type ReviewerStatus = "idle" | "waiting" | "reviewing" | "deliberating" | "completed" | "failed" | "stopped";
+/**
+ * "deliberating": the reviewer finished its own review and takes part in the council's rounds and synthesis.
+ * "verifying": it re-checks fixes in a verification round, then is "completed" again.
+ */
+export type ReviewerStatus = "idle" | "waiting" | "reviewing" | "deliberating" | "verifying" | "completed" | "failed" | "stopped";
 
 /**
  * What a reviewer was seen doing: events its runner reports, never its private reasoning. `path` is relative to the
  * review's target.
  */
-export type ActivityKind = "status" | "read" | "search" | "tool" | "note" | "finding" | "argument" | "error";
+export type ActivityKind = "status" | "read" | "search" | "tool" | "note" | "finding" | "argument" | "proposal" | "check" | "error";
 
 export interface Activity {
   seq: number;
@@ -110,6 +115,87 @@ export interface Finding {
   positions: Position[];
   /** Set by the synthesis. */
   resolution: Resolution | null;
+  /** Drafted in the synthesis for a finding that stands. */
+  proposal: FixProposal | null;
+  /** The user's decision, after the verdict. */
+  ruling: Ruling | null;
+  /** Set once an accepted finding is handed off. */
+  fix: Fix | null;
+}
+
+/** The hand-off document: the accepted findings, how the council got there and the proposed fixes, written to a file. */
+export interface Handoff {
+  /** Absolute path of the Markdown file. */
+  path: string;
+  findingIds: string[];
+  at: number;
+}
+
+/** What the user decided to do about a finding after the verdict: accepted, dismissed or deferred. */
+export interface Ruling {
+  decision: Decision;
+  /** Why, in the user's words; may be empty. For a disputed finding, which side the user took. */
+  note: string;
+  at: number;
+}
+
+/**
+ * The fix the council proposes for a finding that stands (agreed, confirmed or disputed), drafted in the synthesis by
+ * its reporter, drawing on the deliberation: what to change, where, and how to tell it worked.
+ */
+export interface FixProposal {
+  drafterId: string;
+  /** The fix in a sentence. */
+  summary: string;
+  /** What to do, in order. */
+  steps: string[];
+  /** The files the fix touches, relative to the target. */
+  files: string[];
+  /** How to tell the fix worked: a test to add, a check to run. */
+  verification: string;
+  /** What could go wrong, and anything the dissent warned about. */
+  risks?: string;
+  at: number;
+}
+
+/**
+ * Where the fix of an accepted finding is: handed off to the agent, reported fixed, and then verified or reopened by
+ * the council's re-check (a reopened one can be fixed again).
+ */
+export type FixState = "handed-off" | "fixed" | "verified" | "reopened";
+
+/** One reviewer's re-check of a fix in a verification round. */
+export interface FixCheck {
+  reviewerId: string;
+  outcome: "verified" | "reopened";
+  text: string;
+  evidence: Evidence[];
+  /** Which verification round, 1-based. */
+  pass: number;
+  at: number;
+}
+
+/**
+ * Who fixes a handed-off finding: the agent of another Mirador profile, in a conversation the plugin starts for it
+ * (null until it started). A fix without a fixer is the review's own conversation's agent.
+ */
+export interface Fixer {
+  /** The profile's name, as Mirador has it. */
+  profile: string;
+  conversationId: string | null;
+}
+
+export interface Fix {
+  state: FixState;
+  handedOffAt: number;
+  fixer: Fixer | null;
+  /** Why the fixer didn't fix it, when it said so or ended without saying; cleared by a fix report or a new hand-off. */
+  problem: string | null;
+  /** What the agent said it changed, the latest report. */
+  summary: string | null;
+  files: string[];
+  fixedAt: number | null;
+  checks: FixCheck[];
 }
 
 /** The council's verdict, once the synthesis has settled every finding. */
@@ -139,6 +225,10 @@ export interface Review {
   /** How many rounds the deliberation has; 0 until it starts. */
   rounds: number;
   verdict: Verdict | null;
+  /** The latest hand-off written, if any. */
+  handoff: Handoff | null;
+  /** How many verification rounds have run. */
+  verifications: number;
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;
@@ -152,12 +242,16 @@ export const MAX_ACTIVITY = 150;
 
 /** Reviewers still at work: reviewing on their own, or taking part in the deliberation. */
 export const isActive = (reviewer: Reviewer) =>
-  reviewer.enabled && (reviewer.status === "waiting" || reviewer.status === "reviewing" || reviewer.status === "deliberating");
+  reviewer.enabled && (reviewer.status === "waiting" || reviewer.status === "reviewing" || reviewer.status === "deliberating" || reviewer.status === "verifying");
 
 export const argumentsOn = (review: Review, findingId: string) => review.arguments.filter((argument) => argument.findingId === findingId);
 
-export const isRunning = (review: Review) => review.phase === "independent-review" || review.phase === "deliberation" || review.phase === "synthesis";
+export const isRunning = (review: Review) =>
+  review.phase === "independent-review" || review.phase === "deliberation" || review.phase === "synthesis" || review.phase === "verification";
 
 export const isFinished = (review: Review) => review.phase === "complete" || review.phase === "stopped" || review.phase === "interrupted";
 
 export const seatedReviewers = (review: Review) => review.reviewers.filter((reviewer) => reviewer.enabled);
+
+/** Findings that stand after the synthesis: the ones worth a fix proposal and a ruling. */
+export const isStanding = (finding: Finding) => finding.status === "agreed" || finding.status === "confirmed" || finding.status === "disputed";

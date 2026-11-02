@@ -2,8 +2,9 @@
 import { useState } from "react";
 import { bySeverity } from "../core/describe.ts";
 import { argumentsOn, type Argument, type Finding, type Review } from "../core/model.ts";
-import type { Evidence } from "../core/schemas.ts";
-import { ConfidenceMeter, cx, FindingStatusBadge, Positions, SeverityBadge, StanceBadge, VerdictBanner } from "./ui.tsx";
+import type { Evidence, ViewAction } from "../core/schemas.ts";
+import { ActionPlan, ProposalBlock, RulingControl } from "./Actions.tsx";
+import { ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, StanceBadge, VerdictBanner } from "./ui.tsx";
 
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
 
@@ -45,7 +46,7 @@ function ArgumentItem({ review, argument, openPath }: { review: Review; argument
   );
 }
 
-function FindingDetail({ review, finding, openPath }: { review: Review; finding: Finding; openPath?: (path: string) => void }) {
+function FindingDetail({ review, finding, openPath, act, busy }: { review: Review; finding: Finding; openPath?: (path: string) => void; act(action: ViewAction): void; busy: boolean }) {
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
   const timeline = argumentsOn(review, finding.id);
   const rounds = [...new Set(timeline.map((argument) => argument.round))].sort((a, b) => a - b);
@@ -87,26 +88,28 @@ function FindingDetail({ review, finding, openPath }: { review: Review; finding:
         })}
       </ul>
 
-      {resolution && (
-        <div className={cx("resolution", resolution.status === "disputed" && "minority")}>
-          {resolution.status === "disputed" ? (
-            <>
-              <h4>Minority report</h4>
-              <p>
-                {resolution.dissenters.map(label).join(", ") || "A reviewer"} still challenge{resolution.dissenters.length === 1 ? "s" : ""} this finding.
-              </p>
-              <p>{resolution.rationale}</p>
-            </>
-          ) : (
-            <>
-              <h4>
-                Resolution <FindingStatusBadge status={resolution.status} />
-              </h4>
-              <p>{resolution.rationale}</p>
-            </>
-          )}
+      {resolution && resolution.status !== "disputed" && (
+        <div className="resolution">
+          <h4>
+            Resolution <FindingStatusBadge status={resolution.status} />
+          </h4>
+          <p>{resolution.rationale}</p>
         </div>
       )}
+
+      <ProposalBlock review={review} finding={finding} openPath={openPath} />
+
+      {resolution && resolution.status === "disputed" && (
+        <div className="resolution minority">
+          <h4>Minority report</h4>
+          <p>
+            {resolution.dissenters.map(label).join(", ") || "A reviewer"} still challenge{resolution.dissenters.length === 1 ? "s" : ""} this finding.
+          </p>
+          <p>{resolution.rationale}</p>
+        </div>
+      )}
+
+      <RulingControl review={review} finding={finding} act={act} busy={busy} openPath={openPath} />
 
       <h3>Arguments {timeline.length > 0 && <span className="muted">{timeline.length}</span>}</h3>
       {timeline.length === 0 ? (
@@ -129,13 +132,14 @@ function FindingDetail({ review, finding, openPath }: { review: Review; finding:
   );
 }
 
-export function Deliberation({ review, focus, openPath }: { review: Review; focus: string | null; openPath?: (path: string) => void }) {
+export function Deliberation({ review, focus, openPath, act, busy }: { review: Review; focus: string | null; openPath?: (path: string) => void; act(action: ViewAction): void; busy: boolean }) {
   const [picked, setPicked] = useState<string | null>(focus);
   const sorted = [...review.findings].sort((a, b) => Number(b.status === "disputed") - Number(a.status === "disputed") || bySeverity(a, b));
   const selected = review.findings.find((finding) => finding.id === picked) ?? sorted[0];
   return (
     <div className="council">
       <VerdictBanner review={review} />
+      <ActionPlan review={review} act={act} busy={busy} {...(openPath ? { openPath } : {})} />
       {review.findings.length === 0 ? (
         <p className="empty-note">No findings to deliberate.</p>
       ) : (
@@ -148,6 +152,8 @@ export function Deliberation({ review, focus, openPath }: { review: Review; focu
                     <span className="finding-id mono">{finding.id}</span>
                     <SeverityBadge severity={finding.severity} />
                     <FindingStatusBadge status={finding.status} />
+                    <RulingMark finding={finding} />
+                    <FixBadge finding={finding} />
                   </span>
                   <span className="council-item-title">{finding.title}</span>
                   <span className="council-item-foot">
@@ -160,7 +166,7 @@ export function Deliberation({ review, focus, openPath }: { review: Review; focu
               </li>
             ))}
           </ul>
-          {selected && <FindingDetail review={review} finding={selected} {...(openPath ? { openPath } : {})} />}
+          {selected && <FindingDetail review={review} finding={selected} act={act} busy={busy} {...(openPath ? { openPath } : {})} />}
         </div>
       )}
     </div>

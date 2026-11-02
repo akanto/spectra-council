@@ -38,9 +38,23 @@ there:
    stays on the record.
 4. **Findings**: sorted by severity, filterable by reviewer, severity and status. Open one for its summary, confidence,
    evidence (click a path to open the file) and recommendation.
+5. **Rule**: once the verdict is in, each finding that stands (agreed, confirmed or disputed) has a proposed fix, drafted
+   from the deliberation. In the Council tab, mark it Accept, Dismiss or Later, with an optional note. For a disputed
+   finding the minority report sits right above the ruling.
+6. **Hand-off**: *Write hand-off* writes the accepted findings to `<target>/.spectra-council/review-<id>.md`. Each one
+   has what's wrong, the evidence, how the council got there (rationale, arguments by round, any minority report) and
+   the proposed fix with how to verify it. Dismissed and deferred findings are listed too, so they're left alone.
+7. **Fix**: *Ask agent to fix* sends the conversation's agent a message to fix the accepted findings in the hand-off,
+   most severe first. The agent reports each fix with the `council_mark_fixed` tool, and the finding shows as fixed.
+   To have another profile fix them (pi with GLM, say, or any other agent and model), pick it as the conversation's
+   **Spectra Council fixer** in the conversation header. *Ask pi glm to fix* then has the agent call
+   `council_delegate_fix`, which starts a conversation on that profile with the hand-off. That conversation ends with a
+   short JSON report of what it fixed and what it didn't, and the review shows each finding as fixed or says why not.
+8. **Re-check**: *Re-check fixes* starts a verification round in which each fixed finding's reporter and backers check
+   the fix. It ends verified or reopened, and reopened findings can be handed off again.
 
-When the deliberation ends, a verdict banner shows at the top of the review with a one-line verdict. The agent hears about the review with your next message, and `council_status` gives it
-every finding and its status. Reviews are canvas items, so Mirador keeps them across restarts. A review that was running
+When the deliberation ends, a verdict banner shows at the top of the review with a one-line verdict. The agent hears
+about the review with your next message, and `council_status` gives it every finding and its status. Reviews are canvas items, so Mirador keeps them across restarts. A review that was running
 when Mirador stopped shows as *interrupted*.
 
 In Mirador Settings, under the plugin, the **Open reviews** setting chooses where a review opens: beside the chat
@@ -50,7 +64,7 @@ In Mirador Settings, under the plugin, the **Open reviews** setting chooses wher
 
 | Folder | What | Depends on |
 | --- | --- | --- |
-| `core/` | The review engine: model, Zod schemas, events and reducer, the deliberation protocol (rounds, settlement rules, verdict), profiles, agent registry, `ReviewSession` with its runner interface, mock reviewers, descriptions for the agent | Bun only |
+| `core/` | The review engine: model, Zod schemas, events and reducer, the deliberation protocol (rounds, settlement rules, verdict), rulings and the fix loop, the hand-off document (`handoff.ts`), profiles, agent registry, `ReviewSession` with its runner interface, mock reviewers, descriptions for the agent | Bun only |
 | `view/` | The React UI, given a `CouncilBridge` | `core/` types and pure helpers |
 | `hosts/mirador/` | The canvas host (tools, actions, persistence as canvas items), the view's entry with `window.mirador`, and a copy of the Mirador API types | `core/`, `view/` |
 | `scripts/` | Build, harness, screenshots | |

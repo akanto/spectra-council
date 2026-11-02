@@ -19,13 +19,16 @@ Spectra Council does the opposite: the dissent gets argued out, not outvoted.
    every claim has to point at a file, a line, a quote.
 4. **Verdict.** Each finding ends up confirmed, disputed or withdrawn, with its evidence and any dissent kept on the
    record.
+5. **Act.** You rule on each finding: accept it, dismiss it or leave it for later. The accepted ones go to your agent as
+   a hand-off with the council's reasoning and a proposed fix. The agent fixes them, and the council checks the fixes.
 
 It's a hearing, not a vote.
 
 ## Where it stands
 
 Early days. The workbench runs today with stand-in reviewers: you set up a review, watch four seats work, browse the
-findings, and read the stand-ins argue them out to a verdict. Real agents are next, and they will need to argue too.
+findings, read the stand-ins argue them out to a verdict, then rule on the findings and see the fixes re-checked. Real
+agents are next, and they will need to argue too.
 The [roadmap](docs/architecture.md) has the details.
 
 ## Try it

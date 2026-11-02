@@ -60,6 +60,17 @@ export function settle(review: Review, finding: Finding): Settlement {
   return { status: "confirmed", rationale: `${tally}${answered}${doubt}.`, dissenters: [] };
 }
 
+/**
+ * Who re-checks a finding's fix: its reporter and the reviewers whose last stance backed it, among those who completed
+ * the review. A disputed finding's dissenters are left out: the fix is checked against the finding as the council
+ * accepted it.
+ */
+export function checkersOf(review: Review, finding: Finding): Reviewer[] {
+  const backers = new Set(finding.positions.filter((position) => position.stance === "supports").map((position) => position.reviewerId));
+  backers.add(finding.reviewerId);
+  return review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "completed" && backers.has(reviewer.id));
+}
+
 /** The verdict in a sentence or two, from the settled findings. */
 export function verdictSummary(review: Review): string {
   const { findings } = review;

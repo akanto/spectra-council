@@ -4,9 +4,9 @@
  * it read. The same agent, profile, depth and files always give the same script: `mockScript` is pure, and the runner
  * only plays it on a clock.
  */
-import type { Clock, DeliberationJob, Report, ReviewerJob, ReviewerRunner } from "./engine.ts";
+import type { Clock, DeliberationJob, ProposalJob, Report, ReviewerJob, ReviewerRunner, VerificationJob } from "./engine.ts";
 import { argumentsOn, type Argument, type Finding } from "./model.ts";
-import type { ProfileId, Depth, Evidence, FindingInput, Severity, Confidence, Stance } from "./schemas.ts";
+import type { ProfileId, Depth, Evidence, FindingInput, FixCheckInput, ProposalInput, Severity, Confidence, Stance } from "./schemas.ts";
 
 /** Lists a review target's files, relative to it, for a mock to pick from. */
 export type FileLister = (target: string) => Promise<string[]>;
@@ -337,7 +337,8 @@ export function mockDeliberation(job: DeliberationJob): MockStep[] {
     if (own) {
       const open = argumentsOn(review, finding.id).filter((each) => each.reviewerId !== reviewer.id && each.stance === "challenges" && !answered(each));
       if (open.length === 0) continue;
-      const rebut = next() < 0.65;
+      // A reporter makes up its mind about a finding once: it defends it every round, or concedes.
+      const rebut = random(hash(`${reviewer.agent}|${finding.id}|${finding.title}`))() < 0.75;
       const concedeStance: Stance = next() < 0.5 ? "uncertain" : "challenges";
       for (const challenge of open) {
         const evidence = evidenceFor(finding, rebut ? "Shows the case the guard misses." : "Where the objection holds.");
@@ -373,6 +374,122 @@ export function mockDeliberation(job: DeliberationJob): MockStep[] {
   return steps;
 }
 
+const unique = <T>(items: T[]) => [...new Set(items)];
+
+const STEP_TEMPLATES = [
+  "In {file}: {action}",
+  "Update {file} so that {action}",
+  "Apply the change in {file}: {action}",
+];
+
+const CHECKS = [
+  "Add a test in the tests directory that fails before the change and passes after it.",
+  "Re-run the existing tests and add one case that drives the path {id} describes.",
+  "Review the diff of the touched files against “{title}” and confirm the path is closed.",
+];
+
+/** The steps one mock reviewer takes to draft fixes for its findings that stand. */
+export function mockProposals(job: ProposalJob): MockStep[] {
+  const { review, reviewer } = job;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const next = random(hash(`${reviewer.agent}|${review.profile}|${review.depth}|proposals|${job.findingIds.join(",")}`));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const pickFrom: PickOne = (options) => options[Math.floor(next() * options.length)]!;
+  const nameOf = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
+  const steps: MockStep[] = [];
+  const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
+
+  for (const id of job.findingIds) {
+    const finding = review.findings.find((each) => each.id === id);
+    if (!finding) continue;
+    const template = TEMPLATES[review.profile].find((each) => each.title === finding.title);
+    const recommendation = finding.recommendation ?? template?.recommendation ?? "Fix the problem at its source.";
+    const action = recommendation.charAt(0).toLowerCase() + recommendation.slice(1).replace(/\.$/, "");
+    const cited = argumentsOn(review, id).flatMap((each) => each.evidence.map((e) => e.path));
+    const files = unique([...finding.evidence.map((each) => each.path), ...cited]).slice(0, 3);
+    if (files.length === 0) files.push("the target");
+    const steps_: string[] = [];
+    steps_.push(`Reproduce the problem first: ${finding.summary.charAt(0).toLowerCase()}${finding.summary.slice(1)}`.replace(/\.$/, "") + ".");
+    files.forEach((file, index) => steps_.push(fill(pickFrom(STEP_TEMPLATES), { file, action: index === 0 ? action : `apply the same change where ${file} is affected` }).replace(/\.$/, "") + "."));
+    if (steps_.length < 4 && next() < 0.5) steps_.push("Check the callers of the changed code still behave as before.");
+
+    let risks: string | undefined;
+    const dissenters = finding.resolution?.dissenters ?? [];
+    if (dissenters.length > 0) {
+      risks = dissenters
+        .map((dissenter) => {
+          const last = argumentsOn(review, id).filter((each) => each.reviewerId === dissenter && each.stance === "challenges").at(-1);
+          return last ? `${nameOf(dissenter)} still disputes this: “${last.text}” Confirm that before relying on the change.` : `${nameOf(dissenter)} still disputes this finding; confirm the problem is real before relying on the change.`;
+        })
+        .join(" ");
+    } else if (next() < 0.5) {
+      risks = "The change touches code other paths share; run the whole test suite, not only the new test.";
+    }
+
+    const proposal: ProposalInput = {
+      findingId: id,
+      summary: recommendation,
+      steps: steps_,
+      files: files.filter((file) => file !== "the target"),
+      verification: fill(pickFrom(CHECKS), { id, title: finding.title }),
+      ...(risks === undefined ? {} : { risks }),
+    };
+    step(pause(300), { type: "activity", kind: "status", text: `Drafting a fix for ${id}` });
+    step(pause(700), { type: "fix-proposed", proposal });
+  }
+  return steps;
+}
+
+const VERIFIED = [
+  "I re-read {files} against the fix ({fix}); the path {id} describes is closed.",
+  "{files} now does what the fix says ({fix}). Nothing I checked brings {id} back.",
+  "Checked {files}: the change matches the recommendation for “{title}”, and the edge I worried about is covered.",
+];
+
+const REOPENED = [
+  "{files} changed, but the same path is still reachable: the fix ({fix}) covers one caller and not the one at {loc}.",
+  "The fix ({fix}) doesn't add the test or guard that would show {id} is closed; {files} reads as before on the risky path.",
+  "I re-read {files}: the change moves the problem rather than removing it, so “{title}” still holds.",
+];
+
+const WITHOUT_FILES = "the files it names";
+
+/** The steps one mock reviewer takes to re-check the fixes of findings it reported or backed. */
+export function mockVerification(job: VerificationJob): MockStep[] {
+  const { review, reviewer, pass } = job;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const next = random(hash(`${reviewer.agent}|${review.profile}|${review.depth}|verification|${pass}|${job.findingIds.join(",")}`));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const pickFrom: PickOne = (options) => options[Math.floor(next() * options.length)]!;
+  const steps: MockStep[] = [];
+  const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
+
+  for (const id of job.findingIds) {
+    const finding = review.findings.find((each) => each.id === id);
+    if (!finding?.fix) continue;
+    const { fix } = finding;
+    const fixedBefore = fix.checks.some((each) => each.outcome === "reopened");
+    // Whether the fix is sound is the fix's, the same for every checker; a checker only now and then sees it otherwise.
+    const sound = random(hash(`${review.profile}|${review.depth}|${id}|${finding.title}|${pass}|fix`))() < (fixedBefore ? 0.95 : 0.8);
+    const reopen = sound ? next() >= 0.96 : next() < 0.8;
+    const file = fix.files[0];
+    const evidence: Evidence[] = file ? [{ path: file, line: 5 + Math.floor(next() * 120), note: reopen ? "Where the problem remains." : "Where the fix lands." }] : [];
+    const slots = {
+      id,
+      title: finding.title,
+      fix: (fix.summary ?? "the reported change").replace(/\.$/, ""),
+      files: fix.files.length > 0 ? fix.files.join(", ") : WITHOUT_FILES,
+      loc: evidence[0] ? `${evidence[0].path}:${evidence[0].line}` : WITHOUT_FILES,
+    };
+    step(pause(250), { type: "activity", kind: "status", text: `Re-checking the fix for ${id}` });
+    if (file) step(pause(350), { type: "activity", kind: "read", text: `Reading ${file}`, path: file });
+    const check: FixCheckInput = { findingId: id, outcome: reopen ? "reopened" : "verified", text: fill(pickFrom(reopen ? REOPENED : VERIFIED), slots), evidence };
+    step(pause(500), { type: "fix-checked", check });
+  }
+  if (steps.length === 0) step(pause(300), { type: "activity", kind: "status", text: "No fixes to re-check" });
+  return steps;
+}
+
 /** Plays mock scripts on a clock. */
 export class MockRunner implements ReviewerRunner {
   constructor(
@@ -391,6 +508,20 @@ export class MockRunner implements ReviewerRunner {
 
   async deliberate(job: DeliberationJob, report: (report: Report) => void, signal: AbortSignal) {
     for (const { delayMs, report: each } of mockDeliberation(job)) {
+      await this.clock.sleep(delayMs, signal);
+      report(each);
+    }
+  }
+
+  async propose(job: ProposalJob, report: (report: Report) => void, signal: AbortSignal) {
+    for (const { delayMs, report: each } of mockProposals(job)) {
+      await this.clock.sleep(delayMs, signal);
+      report(each);
+    }
+  }
+
+  async verify(job: VerificationJob, report: (report: Report) => void, signal: AbortSignal) {
+    for (const { delayMs, report: each } of mockVerification(job)) {
       await this.clock.sleep(delayMs, signal);
       report(each);
     }

@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
 import { ReviewSession, type ReviewerRunner } from "../core/engine.ts";
-import type { Review } from "../core/model.ts";
+import { isStanding, type Review } from "../core/model.ts";
 import { MockRunner, mockScript } from "../core/mock-runner.ts";
 import { PROFILES } from "../core/profiles.ts";
-import { newReview } from "../core/review.ts";
+import { newReview, reduce } from "../core/review.ts";
 import { findingInputSchema } from "../core/schemas.ts";
 import { FakeClock, FILES } from "./support.ts";
 
@@ -104,6 +104,8 @@ describe("ReviewSession", () => {
         report({ type: "finding-reported", finding: { title: "no evidence" } });
       },
       async deliberate() {},
+      async propose() {},
+      async verify() {},
     };
     const final = await new ReviewSession(review(), { runner, clock, onChange: () => {} }).run();
     expect(final.phase).toBe("complete");
@@ -175,6 +177,8 @@ describe("ReviewSession", () => {
         if (job.reviewer.id === "r2") throw new Error("lost the thread");
         await mock.deliberate(job, report, signal);
       },
+      propose: (job, report, signal) => mock.propose(job, report, signal),
+      verify: (job, report, signal) => mock.verify(job, report, signal),
     };
     const done = new ReviewSession(fourReviewers(), { runner, clock, onChange: () => {} }).run();
     await clock.runAll();
@@ -183,5 +187,86 @@ describe("ReviewSession", () => {
     expect(final.reviewers[1]).toMatchObject({ status: "failed", problem: "lost the thread" });
     expect(final.verdict).not.toBeNull();
     expect(final.findings.every((finding) => finding.status !== "reported")).toBe(true);
+  });
+
+  async function completeRun() {
+    const clock = new FakeClock();
+    const done = new ReviewSession(fourReviewers(), { runner: new MockRunner(async () => FILES, clock), clock, onChange: () => {} }).run();
+    await clock.runAll();
+    return done;
+  }
+
+  /** A complete review whose standing findings were accepted, handed off and reported fixed. */
+  function fixedReview(base: Review): Review {
+    let current = base;
+    const apply = (event: Parameters<typeof reduce>[1]) => void (current = reduce(current, event));
+    const ids = base.findings.filter(isStanding).map((finding) => finding.id);
+    for (const findingId of ids) apply({ type: "ruled", at: 5_000_000, findingId, decision: "accepted", note: "" });
+    apply({ type: "handoff-written", at: 5_000_001, path: "/tmp/handoff.md", findingIds: ids });
+    apply({ type: "fix-requested", at: 5_000_002, findingIds: ids });
+    for (const findingId of ids) apply({ type: "fix-reported", at: 5_000_003, findingId, summary: `Fixed ${findingId}.`, files: ["src/engine.ts"] });
+    return current;
+  }
+
+  test("every standing finding gets a proposal from its reporter, and withdrawn ones none", async () => {
+    const final = await completeRun();
+    expect(final.findings.some(isStanding)).toBe(true);
+    for (const finding of final.findings) {
+      if (isStanding(finding)) expect(finding.proposal).toMatchObject({ drafterId: finding.reviewerId });
+      else expect(finding.proposal).toBeNull();
+    }
+  });
+
+  test("a verification round checks every fixed finding, by its reporter and backers only", async () => {
+    const final = await completeRun();
+    const fixed = fixedReview(final);
+    const clock = new FakeClock();
+    const session = new ReviewSession(fixed, { runner: new MockRunner(async () => FILES, clock), clock, onChange: () => {} });
+    const done = session.verify();
+    await clock.runAll();
+    const after = await done;
+    expect(after.phase).toBe("complete");
+    expect(after.verifications).toBe(1);
+    const fixes = after.findings.flatMap((finding) => (finding.fix ? [{ finding, fix: finding.fix }] : []));
+    expect(fixes.length).toBeGreaterThan(0);
+    for (const { finding, fix } of fixes) {
+      expect(["verified", "reopened"]).toContain(fix.state);
+      expect(fix.checks.length).toBeGreaterThan(0);
+      const allowed = new Set([finding.reviewerId, ...finding.positions.filter((position) => position.stance === "supports").map((position) => position.reviewerId)]);
+      for (const check of fix.checks) expect(allowed.has(check.reviewerId)).toBe(true);
+    }
+  });
+
+  test("stopping a verification leaves the fixes fixed and the review complete", async () => {
+    const fixed = fixedReview(await completeRun());
+    const clock = new FakeClock();
+    const session = new ReviewSession(fixed, { runner: new MockRunner(async () => FILES, clock), clock, onChange: () => {} });
+    const done = session.verify();
+    await clock.step();
+    await clock.step();
+    session.stop();
+    const after = await done;
+    expect(after.phase).toBe("complete");
+    expect(after.findings.flatMap((finding) => (finding.fix ? [finding.fix.state] : [])).every((state) => state === "fixed")).toBe(true);
+  });
+
+  test("a propose that throws leaves an error activity, and the review still concludes", async () => {
+    const clock = new FakeClock();
+    const mock = new MockRunner(async () => FILES, clock);
+    const runner: ReviewerRunner = {
+      run: (job, report, signal) => mock.run(job, report, signal),
+      deliberate: (job, report, signal) => mock.deliberate(job, report, signal),
+      async propose(job, report, signal) {
+        if (job.reviewer.id === "r1") throw new Error("no ideas");
+        await mock.propose(job, report, signal);
+      },
+      verify: (job, report, signal) => mock.verify(job, report, signal),
+    };
+    const done = new ReviewSession(fourReviewers(), { runner, clock, onChange: () => {} }).run();
+    await clock.runAll();
+    const final = await done;
+    expect(final.phase).toBe("complete");
+    expect(final.verdict).not.toBeNull();
+    expect(final.reviewers[0]!.activity.some((each) => each.kind === "error" && each.text.includes("no ideas"))).toBe(true);
   });
 });

@@ -56,7 +56,13 @@ export class FakeClock implements Clock {
 export class FakeCanvas<Data> {
   items: PluginItem<Data>[] = [];
   prompts: string[] = [];
+  /** The options each prompt was sent with, parallel to `prompts`. */
+  promptOptions: unknown[] = [];
   storage = new Map<string, unknown>();
+  /** What `profileSetting` returns, by setting id. */
+  settings: Record<string, string | null> = {};
+  /** The conversations `startConversation` was asked to start. */
+  started: { profile: string; prompt: string }[] = [];
   private next = 1;
 
   context(): CanvasToolContext<Data> & CanvasActionContext<Data> {
@@ -71,15 +77,19 @@ export class FakeCanvas<Data> {
         return item;
       },
       storage: { get: (key) => this.storage.get(key), set: (key, value) => void (value === undefined ? this.storage.delete(key) : this.storage.set(key, value)) },
-      profileSetting: () => null,
+      profileSetting: (id) => this.settings[id] ?? null,
       publish: ({ type, title, data }) => {
         const item: PluginItem<Data> = { id: `item-${this.next++}`, type, title, data, createdAt: 0, dismissed: false, agentEditedAt: null };
         this.items.push(item);
         return item;
       },
-      prompt: async (text) => void this.prompts.push(text),
-      startConversation: async () => {
-        throw new Error("Not in tests.");
+      prompt: async (text, options) => {
+        this.prompts.push(text);
+        this.promptOptions.push(options);
+      },
+      startConversation: async (start) => {
+        this.started.push(start);
+        return { id: `conversation-fixer-${this.started.length}`, profile: start.profile };
       },
     };
   }

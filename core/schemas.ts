@@ -10,6 +10,7 @@ export const DEPTHS = ["quick", "standard", "deep"] as const;
 export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 export const CONFIDENCES = ["high", "medium", "low"] as const;
 export const STANCES = ["supports", "challenges", "uncertain"] as const;
+export const DECISIONS = ["accepted", "dismissed", "deferred"] as const;
 
 /** How many seats a council has: the workspace shows one panel each. */
 export const SEATS = 4;
@@ -19,12 +20,14 @@ export const depthSchema = z.enum(DEPTHS);
 export const severitySchema = z.enum(SEVERITIES);
 export const confidenceSchema = z.enum(CONFIDENCES);
 export const stanceSchema = z.enum(STANCES);
+export const decisionSchema = z.enum(DECISIONS);
 
 export type ProfileId = z.infer<typeof profileIdSchema>;
 export type Depth = z.infer<typeof depthSchema>;
 export type Severity = z.infer<typeof severitySchema>;
 export type Confidence = z.infer<typeof confidenceSchema>;
 export type Stance = z.infer<typeof stanceSchema>;
+export type Decision = z.infer<typeof decisionSchema>;
 
 export const evidenceSchema = z.object({
   path: z.string().min(1).describe("The file, relative to the review's target folder."),
@@ -64,6 +67,28 @@ export const argumentInputSchema = z.object({
 
 export type ArgumentInput = z.infer<typeof argumentInputSchema>;
 
+/** The fix a reviewer proposes for a finding that stands, in the synthesis. */
+export const proposalInputSchema = z.object({
+  findingId: z.string().min(1).describe('The finding the fix is for, e.g. "F3".'),
+  summary: z.string().min(1).describe("The fix in a sentence."),
+  steps: z.array(z.string().min(1)).min(1).describe("What to do, in order."),
+  files: z.array(z.string().min(1)).default([]).describe("The files the fix touches, relative to the target."),
+  verification: z.string().min(1).describe("How to tell the fix worked: a test to add, a check to run."),
+  risks: z.string().min(1).optional().describe("What could go wrong, including anything the dissent warned about."),
+});
+
+export type ProposalInput = z.infer<typeof proposalInputSchema>;
+
+/** A reviewer's re-check of a fix, in a verification round. */
+export const fixCheckInputSchema = z.object({
+  findingId: z.string().min(1).describe('The finding whose fix was checked, e.g. "F3".'),
+  outcome: z.enum(["verified", "reopened"]).describe("Whether the fix resolves the finding."),
+  text: z.string().min(1).describe("What the reviewer checked and what it showed, in a few sentences."),
+  evidence: z.array(evidenceSchema).default([]).describe("Where in the target the check rests."),
+});
+
+export type FixCheckInput = z.infer<typeof fixCheckInputSchema>;
+
 /** One seat at the council: the agent in it, or empty. */
 export const seatSchema = z.object({
   agent: z.string().min(1).describe("An agent id from the registry."),
@@ -100,6 +125,16 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("configure"), patch: setupPatchSchema }),
   z.object({ kind: z.literal("start") }),
   z.object({ kind: z.literal("stop") }),
+  /** The user's ruling on a finding after the verdict; a null decision clears it. */
+  z.object({ kind: z.literal("rule"), findingId: z.string().min(1), decision: decisionSchema.nullable(), note: z.string().default("") }),
+  /** Write the hand-off document of the accepted findings. */
+  z.object({ kind: z.literal("handoff") }),
+  /** Ask the conversation's agent to fix the accepted findings, by the hand-off. */
+  z.object({ kind: z.literal("fix") }),
+  /** Re-check the fixed findings in a verification round. */
+  z.object({ kind: z.literal("verify") }),
+  /** Who fixes: resolves to `{ profile }`, the fixer profile this conversation chose, or null for its own agent. */
+  z.object({ kind: z.literal("fixer") }),
 ]);
 
 export type ViewAction = z.infer<typeof viewActionSchema>;

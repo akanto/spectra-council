@@ -234,12 +234,14 @@ textarea {
 
 .pill.phase-independent-review,
 .pill.phase-deliberation,
+.pill.phase-verification,
 .pill.phase-synthesis {
   color: var(--ok);
   background: color-mix(in srgb, var(--ok) var(--soft), transparent);
 }
 
 .pill.phase-independent-review .pill-dot,
+.pill.phase-verification .pill-dot,
 .pill.phase-deliberation .pill-dot {
   animation: pulse 1.6s ease-in-out infinite;
 }
@@ -606,9 +608,12 @@ h4 {
   border-top: 1px solid var(--border);
 }
 
+/* The id and title, then each badge in a column of its own, all on one line however many badges a finding has. */
 .finding-row {
   display: grid;
-  grid-template-columns: 2.6em minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 2.6em minmax(0, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -625,7 +630,6 @@ h4 {
 }
 
 .compact .finding-row {
-  grid-template-columns: 2.6em minmax(0, 1fr) auto auto;
   padding: 6px 0;
 }
 
@@ -840,10 +844,6 @@ h4 {
     max-height: none;
   }
 
-  .finding-row {
-    grid-template-columns: 2.6em minmax(0, 1fr) auto;
-  }
-
   .finding-row .finding-by,
   .finding-row .finding-confirmed,
   .finding-row .finding-reported {
@@ -862,6 +862,7 @@ h4 {
 
 /* Deliberation */
 
+.status-verifying,
 .status-deliberating {
   color: var(--warn);
 }
@@ -1121,4 +1122,262 @@ h4 {
   .council-panes {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* Action plan, proposal, ruling, fixes */
+
+.ruling-mark {
+  font-size: 0.86em;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.ruling-mark.ruling-accepted,
+.ruling-count.ruling-accepted {
+  color: var(--ok);
+}
+
+.ruling-mark.ruling-dismissed,
+.ruling-count.ruling-dismissed {
+  color: var(--danger);
+}
+
+.ruling-mark.ruling-deferred,
+.ruling-count.ruling-deferred {
+  color: var(--warn);
+}
+
+.fix-handed-off.badge,
+.fix-handed-off {
+  color: var(--accent);
+}
+
+.fix-fixed.badge,
+.fix-fixed {
+  color: var(--warn);
+}
+
+.fix-verified.badge,
+.fix-verified {
+  color: var(--ok);
+}
+
+.fix-reopened.badge,
+.fix-reopened {
+  color: var(--danger);
+}
+
+.badge.fix-handed-off,
+.badge.fix-fixed,
+.badge.fix-verified,
+.badge.fix-reopened {
+  background: color-mix(in srgb, currentColor var(--soft), transparent);
+}
+
+.action-plan {
+  margin: 0 0 12px;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+
+.action-plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.action-plan h3 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.action-plan-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.fix-progress,
+.handoff-path {
+  margin: 6px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.handoff-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.action-plan-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.proposal,
+.ruling {
+  margin-top: 12px;
+}
+
+.proposal h3,
+.ruling h3 {
+  margin-bottom: 4px;
+}
+
+.proposal-by {
+  font-weight: 400;
+  font-size: 0.9em;
+}
+
+.proposal-summary {
+  font-weight: 600;
+}
+
+.proposal p {
+  margin: 4px 0;
+}
+
+.proposal-steps {
+  margin: 4px 0;
+  padding-left: 22px;
+}
+
+.proposal-steps li {
+  margin: 2px 0;
+}
+
+.proposal-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+
+.segmented {
+  display: inline-flex;
+}
+
+.segment {
+  border-radius: 0;
+  margin-left: -1px;
+}
+
+.segment:first-child {
+  border-radius: 7px 0 0 7px;
+  margin-left: 0;
+}
+
+.segment:last-child {
+  border-radius: 0 7px 7px 0;
+}
+
+.segment.chosen {
+  color: #fff;
+  border-color: var(--accent);
+  background: var(--accent);
+  position: relative;
+}
+
+.segment.chosen:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.segment-accepted.chosen {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.segment-dismissed.chosen {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.segment-deferred.chosen {
+  border-color: var(--warn);
+  background: var(--warn);
+}
+
+.ruling-note {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.ruling-note:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.fix-status p {
+  margin: 4px 0;
+}
+
+.fix-checks {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.fix-check {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.fix-check-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.activity-proposal .activity-icon,
+.activity-check .activity-icon {
+  color: var(--accent);
+}
+
+.fix-problem-mark,
+.fix-problem-count {
+  color: var(--warn);
+}
+
+.fix-problem-mark {
+  margin-left: 4px;
+  font-size: 0.9em;
+}
+
+.fix-who {
+  margin: 2px 0;
+}
+
+.fix-problem {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--warn);
+}
+
+.fix-problem .muted {
+  color: var(--muted, inherit);
 }

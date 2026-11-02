@@ -6,8 +6,12 @@
  *   bun run harness [target] [--port 4830]
  *
  * Open http://127.0.0.1:4830 (add ?theme=dark for Mirador's dark colours). Each page load gets a fresh review.
+ *
+ * A stand-in agent answers "Ask agent to fix": it marks each finding it was asked about fixed, a second apart, with the
+ * council's proposed fix as what it changed. Hand-offs are written to .harness/handoff/, not into the target.
  */
-import { join, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import type { Review } from "../core/model.ts";
 import type { CanvasActionContext, CanvasToolContext, PluginItem } from "../hosts/mirador/api.ts";
 import { createCouncilHost } from "../hosts/mirador/host.ts";
@@ -18,7 +22,33 @@ const portAt = args.indexOf("--port");
 const port = portAt >= 0 ? Number(args[portAt + 1]) : 4830;
 const target = resolve(args.find((arg, index) => !arg.startsWith("--") && !(portAt >= 0 && index === portAt + 1)) ?? repo);
 
-const host = createCouncilHost();
+const handoffs = join(repo, ".harness", "handoff");
+const host = createCouncilHost({
+  writeFile: async (path, text) => {
+    await mkdir(handoffs, { recursive: true });
+    await Bun.write(join(handoffs, basename(path)), text);
+    console.log(`[hand-off] ${path} → .harness/handoff/${basename(path)}`);
+  },
+});
+
+/** The stand-in agent: fixes the findings a prompt names, one a second, through council_mark_fixed. */
+async function standInAgent(canvas: Canvas, text: string) {
+  console.log(`[to the agent] ${text}`);
+  const asked = /most severe first: ([F\d, ]+)\./.exec(text)?.[1]?.split(/,\s*/) ?? [];
+  for (const finding of asked) {
+    await Bun.sleep(1000);
+    const review = canvas.items.at(-1)?.data;
+    const proposal = review?.findings.find(({ id }) => id === finding)?.proposal;
+    try {
+      await host.tools.council_mark_fixed!.run(
+        { finding, summary: proposal ? `Applied the proposed fix: ${proposal.summary}` : "Applied the recommendation.", files: proposal?.files ?? [] },
+        canvas.context(),
+      );
+    } catch (error) {
+      console.error(`[stand-in agent] ${finding}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+}
 
 /** Item ids are unique across pages, as Mirador's are across conversations: the host keys its running reviews by them. */
 let nextItem = 1;
@@ -52,7 +82,9 @@ class Canvas {
         this.push(item);
         return item;
       },
-      prompt: async (text) => console.log(`[to the agent] ${text}`),
+      prompt: async (text) => {
+        void standInAgent(this, text);
+      },
       startConversation: async () => {
         throw new Error("The harness has no conversations.");
       },

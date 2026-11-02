@@ -8,7 +8,7 @@ import { Deliberation } from "./Deliberation.tsx";
 import { Findings } from "./Findings.tsx";
 import { ReviewerDetail } from "./ReviewerDetail.tsx";
 import { Setup } from "./Setup.tsx";
-import { cx, elapsed, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
+import { cx, elapsed, FixerContext, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
 import { Workspace } from "./Workspace.tsx";
 
 type Tab = "workspace" | "council" | "findings";
@@ -43,9 +43,34 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [picked, setPicked] = useState(false);
   const { send, busy } = useSender(bridge, setProblem);
+  const [fixer, setFixer] = useState<string | null>(null);
   useEffect(() => bridge.onReview(setReview), [bridge]);
+  const act = (action: ViewAction) => void send(action).catch(() => {});
   const now = useNow(review !== null && isRunning(review));
   const phase = review?.phase;
+  // Who fixes: asked once the review is complete, again when the window regains focus (the header setting may have changed) and after each fix.
+  const complete = phase === "complete";
+  const fixRequests = review?.findings.filter((finding) => finding.fix).length ?? 0;
+  useEffect(() => {
+    if (!complete) return;
+    let live = true;
+    const ask = () => {
+      // A query, not the user's action: past the send queue, so it neither shows as busy nor clears a problem shown.
+      Promise.resolve(bridge.send({ kind: "fixer" })).then(
+        (result) => {
+          const profile = (result as { profile?: string | null } | null)?.profile;
+          if (live) setFixer(typeof profile === "string" ? profile : null);
+        },
+        () => {},
+      );
+    };
+    ask();
+    window.addEventListener("focus", ask);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", ask);
+    };
+  }, [complete, bridge, fixRequests]);
   // Move to the Council tab when the deliberation starts, unless the user has chosen a tab themselves.
   useEffect(() => {
     if (phase === "deliberation" && !picked) setTab("council");
@@ -69,6 +94,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const time = elapsed(review.startedAt, review.endedAt, now);
 
   return (
+    <FixerContext.Provider value={fixer}>
     <div className="app">
       <header className="top">
         <div className="brand">
@@ -91,6 +117,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
         {hasCouncil && (
           <span className="chip static">{review.phase === "deliberation" ? `Round ${review.round} of ${review.rounds}` : `${review.rounds} round${review.rounds === 1 ? "" : "s"}`}</span>
         )}
+        {review.verifications > 0 && <span className="chip static">Re-check {review.verifications}</span>}
         {review.runner === "mock" && (
           <span className="chip static mock" title="Deterministic mock reviewers: their findings are illustrative, not an analysis of your files.">
             Mock reviewers
@@ -127,9 +154,9 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
           <div className={cx("body", reviewerId && "with-detail")}>
             <main>
               {shownTab === "workspace" ? (
-                <Workspace review={review} now={now} openReviewer={(id) => setReviewerId(reviewerId === id ? null : id)} openFinding={openFinding} />
+                <Workspace review={review} now={now} openReviewer={(id) => setReviewerId(reviewerId === id ? null : id)} openFinding={openFinding} act={act} busy={busy} {...(openPath ? { openPath } : {})} />
               ) : shownTab === "council" ? (
-                <Deliberation review={review} focus={focus} {...(openPath ? { openPath } : {})} />
+                <Deliberation review={review} focus={focus} act={act} busy={busy} {...(openPath ? { openPath } : {})} />
               ) : (
                 <Findings review={review} focus={focus} {...(openPath ? { openPath } : {})} />
               )}
@@ -153,5 +180,6 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
         </>
       )}
     </div>
+    </FixerContext.Provider>
   );
 }

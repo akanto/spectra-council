@@ -1,6 +1,6 @@
 /** Small pieces the views share: status marks, badges, times, and the logo. */
-import { useEffect, useState } from "react";
-import type { Finding, FindingStatus, Phase, Review, ReviewerStatus } from "../core/model.ts";
+import { createContext, useEffect, useState } from "react";
+import type { Finding, FindingStatus, FixState, Phase, Review, ReviewerStatus } from "../core/model.ts";
 import { STANCE_VERBS } from "../core/review.ts";
 import type { Confidence, Severity, Stance } from "../core/schemas.ts";
 
@@ -22,6 +22,7 @@ const STATUS_WORDS: Record<ReviewerStatus, string> = {
   waiting: "Waiting",
   reviewing: "Reviewing",
   deliberating: "Deliberating",
+  verifying: "Re-checking",
   completed: "Completed",
   failed: "Failed",
   stopped: "Stopped",
@@ -33,6 +34,7 @@ export function StatusMark({ status }: { status: ReviewerStatus }) {
     switch (status) {
       case "reviewing":
       case "deliberating":
+      case "verifying":
         return (
           <>
             <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
@@ -79,6 +81,7 @@ export const PHASE_WORDS: Record<Phase, string> = {
   "independent-review": "Independent review",
   deliberation: "Deliberation",
   synthesis: "Synthesis",
+  verification: "Re-check",
   complete: "Complete",
   stopped: "Stopped",
   interrupted: "Interrupted",
@@ -90,6 +93,7 @@ export function PhasePill({ phase }: { phase: Phase }) {
     "independent-review": "Review running",
     deliberation: "Deliberating",
     synthesis: "Synthesising",
+    verification: "Re-checking fixes",
     complete: "Review complete",
     stopped: "Stopped",
     interrupted: "Interrupted",
@@ -208,3 +212,36 @@ export function VerdictBanner({ review }: { review: Review }) {
     </section>
   );
 }
+
+const RULING_WORDS = { accepted: "Accepted", dismissed: "Dismissed", deferred: "Later" } as const;
+const RULING_MARKS = { accepted: "✓", dismissed: "✕", deferred: "…" } as const;
+
+/** A small mark of the user's ruling on a finding; nothing when it has none. */
+export function RulingMark({ finding }: { finding: Finding }) {
+  const decision = finding.ruling?.decision;
+  if (!decision) return null;
+  return (
+    <span className={`ruling-mark ruling-${decision}`} title={`${RULING_WORDS[decision]}${finding.ruling?.note ? `: ${finding.ruling.note}` : ""}`}>
+      {RULING_MARKS[decision]} {decision === "deferred" ? "later" : ""}
+    </span>
+  );
+}
+
+export const FIX_WORDS: Record<FixState, string> = { "handed-off": "Handed off", fixed: "Fixed", verified: "Verified", reopened: "Reopened" };
+
+export function FixBadge({ finding }: { finding: Finding }) {
+  if (!finding.fix) return null;
+  return (
+    <>
+      <span className={`badge fix-${finding.fix.state}`}>{FIX_WORDS[finding.fix.state]}</span>
+      {finding.fix.problem && (
+        <span className="fix-problem-mark" title={`Not fixed: ${finding.fix.problem}`} aria-label="Needs attention">
+          ⚠
+        </span>
+      )}
+    </>
+  );
+}
+
+/** The fixer profile this conversation chose (null: its own agent), supplied by App for the action plan. */
+export const FixerContext = createContext<string | null>(null);

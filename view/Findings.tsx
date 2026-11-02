@@ -1,9 +1,12 @@
 /** Every finding, filterable by reviewer and severity, each opening to its summary, evidence and recommendation. */
 import { useEffect, useRef, useState } from "react";
 import { bySeverity } from "../core/describe.ts";
-import type { Finding, FindingStatus, Review } from "../core/model.ts";
+import { isStanding, type Finding, type FindingStatus, type Review } from "../core/model.ts";
 import { SEVERITIES, type Evidence, type Severity } from "../core/schemas.ts";
-import { ConfidenceMeter, cx, FindingStatusBadge, Positions, SeverityBadge } from "./ui.tsx";
+import { ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge } from "./ui.tsx";
+
+const rulingOf = (finding: Finding) => (!isStanding(finding) ? "n/a" : (finding.ruling?.decision ?? "unruled"));
+const RULING_FILTERS = [["accepted", "Accepted"], ["dismissed", "Dismissed"], ["deferred", "Later"], ["unruled", "Not ruled"]] as const;
 
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
 
@@ -20,6 +23,8 @@ function FindingCard({ review, finding, reviewer, open, toggle, openPath }: { re
         <span className="finding-by muted">{reviewer}</span>
         <SeverityBadge severity={finding.severity} />
         <FindingStatusBadge status={finding.status} />
+        <RulingMark finding={finding} />
+        <FixBadge finding={finding} />
         {finding.positions.length > 0 && <Positions review={review} finding={finding} />}
       </button>
       {open && (
@@ -75,12 +80,13 @@ export function Findings({ review, focus, openPath }: { review: Review; focus: s
   const [reviewer, setReviewer] = useState<string | null>(null);
   const [severity, setSeverity] = useState<Severity | null>(null);
   const [status, setStatus] = useState<FindingStatus | null>(null);
+  const [ruling, setRuling] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(focus);
   useEffect(() => {
     setOpen(focus);
   }, [focus]);
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
-  const shown = [...review.findings].sort(bySeverity).filter((finding) => (!reviewer || finding.reviewerId === reviewer) && (!severity || finding.severity === severity) && (!status || finding.status === status));
+  const shown = [...review.findings].sort(bySeverity).filter((finding) => (!reviewer || finding.reviewerId === reviewer) && (!severity || finding.severity === severity) && (!status || finding.status === status) && (!ruling || rulingOf(finding) === ruling));
   const reporters = review.reviewers.filter((each) => review.findings.some((finding) => finding.reviewerId === each.id));
   const count = (pick: (finding: Finding) => boolean) => review.findings.filter(pick).length;
 
@@ -111,6 +117,15 @@ export function Findings({ review, focus, openPath }: { review: Review; focus: s
             </button>
           ))}
         </div>
+        {review.findings.some((finding) => finding.ruling) && (
+          <div className="filter-group" role="group" aria-label="Ruling">
+            {RULING_FILTERS.filter(([key]) => count((finding) => rulingOf(finding) === key) > 0).map(([key, word]) => (
+              <button key={key} className={cx("chip", ruling === key && "chosen")} onClick={() => setRuling(ruling === key ? null : key)}>
+                {word} <span className="muted">{count((finding) => rulingOf(finding) === key)}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {shown.length === 0 ? (
         <p className="empty-note">{review.findings.length === 0 ? "No findings yet." : "No findings match the filters."}</p>

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
-import { MAX_ACTIVITY } from "../core/model.ts";
-import { newReview, reduce, ReviewError, setupOf } from "../core/review.ts";
+import { MAX_ACTIVITY, REVIEW_FORMAT } from "../core/model.ts";
+import { newReview, reduce, ReviewError, setupOf, upgradeReview } from "../core/review.ts";
 import type { ArgumentInput, FindingInput } from "../core/schemas.ts";
 
 const setup = { target: "/repo", profile: "code" as const, depth: "quick" as const, instructions: "", seats: defaultSeats() };
@@ -234,5 +234,319 @@ describe("deliberation", () => {
     expect(reduce(base, { type: "synthesis-started", at: 1 }).seq).toBe(base.seq + 1);
     const stopped = reduce(base, { type: "stopped", at: 1 });
     expect(reduce(stopped, { type: "stopped", at: 2 }).seq).toBe(stopped.seq);
+  });
+});
+
+const proposal = { findingId: "F1", summary: "Fix the loop.", steps: ["Change <= to <"], files: ["src/a.ts"], verification: "Add a test." };
+const check = (findingId: string, outcome: "verified" | "reopened") => ({ findingId, outcome, text: "Looked.", evidence: [] });
+
+/** In the synthesis with F1 agreed and F2 withdrawn. */
+function settling() {
+  let review = reduce(inRound(), { type: "synthesis-started", at: 49 });
+  review = reduce(review, { type: "finding-resolved", at: 50, findingId: "F1", status: "agreed", rationale: "All back it.", dissenters: [] });
+  review = reduce(review, { type: "finding-resolved", at: 51, findingId: "F2", status: "withdrawn", rationale: "Conceded.", dissenters: [] });
+  return review;
+}
+
+const concluded = () => reduce(settling(), { type: "concluded", at: 60, summary: "Done." });
+const rule = (review: ReturnType<typeof fresh>, findingId: string, decision: "accepted" | "dismissed" | "deferred" | null, at = 61) =>
+  reduce(review, { type: "ruled", at, findingId, decision, note: "ok" });
+const accepted = () => rule(concluded(), "F1", "accepted");
+const handedOffReview = () => {
+  const review = reduce(accepted(), { type: "handoff-written", at: 62, path: "/repo/h.md", findingIds: ["F1"] });
+  return reduce(review, { type: "fix-requested", at: 63, findingIds: ["F1"] });
+};
+const fixedReview = () => reduce(handedOffReview(), { type: "fix-reported", at: 64, findingId: "F1", summary: "Changed it", files: ["src/a.ts"] });
+const verifying = () => reduce(fixedReview(), { type: "verification-started", at: 70, findingIds: ["F1"], reviewerIds: ["r1", "r2"] });
+
+describe("fix proposals", () => {
+  test("a reviewer proposes a fix for a standing finding in the synthesis", () => {
+    const review = reduce(settling(), { type: "fix-proposed", reviewerId: "r2", at: 52, proposal });
+    expect(review.findings[0]!.proposal).toEqual({ drafterId: "r2", summary: "Fix the loop.", steps: ["Change <= to <"], files: ["src/a.ts"], verification: "Add a test.", at: 52 });
+    expect(review.reviewers[1]!.activity.at(-1)).toMatchObject({ kind: "proposal", path: "src/a.ts" });
+    expect(review.reviewers[1]!.current).not.toContain("Proposed");
+  });
+
+  test("it is refused outside the synthesis, for an unresolved or withdrawn finding, or an unknown one", () => {
+    expect(() => reduce(inRound(), { type: "fix-proposed", reviewerId: "r2", at: 52, proposal })).toThrow("synthesis");
+    const early = reduce(inRound(), { type: "synthesis-started", at: 49 });
+    expect(() => reduce(early, { type: "fix-proposed", reviewerId: "r2", at: 52, proposal })).toThrow("doesn't stand");
+    expect(() => reduce(settling(), { type: "fix-proposed", reviewerId: "r1", at: 52, proposal: { ...proposal, findingId: "F2" } })).toThrow("doesn't stand");
+    expect(() => reduce(settling(), { type: "fix-proposed", reviewerId: "r2", at: 52, proposal: { ...proposal, findingId: "F9" } })).toThrow("no finding F9");
+  });
+});
+
+describe("rulings", () => {
+  test("the user rules once the verdict is in, and null clears it", () => {
+    expect(() => rule(settling(), "F1", "accepted")).toThrow("verdict");
+    let review = rule(concluded(), "F1", "accepted", 61);
+    expect(review.findings[0]!.ruling).toEqual({ decision: "accepted", note: "ok", at: 61 });
+    review = rule(review, "F1", "dismissed", 62);
+    expect(review.findings[0]!.ruling?.decision).toBe("dismissed");
+    review = rule(review, "F1", null);
+    expect(review.findings[0]!.ruling).toBeNull();
+    expect(() => rule(concluded(), "F9", "accepted")).toThrow("no finding F9");
+  });
+
+  test("a stopped review can't be ruled on", () => {
+    const stopped = reduce(inRound(), { type: "stopped", at: 45 });
+    expect(() => rule(stopped, "F1", "accepted")).toThrow(ReviewError);
+  });
+
+  test("a ruling can't change once the finding is handed off", () => {
+    expect(() => rule(handedOffReview(), "F1", "dismissed")).toThrow("handed off already");
+    expect(() => rule(handedOffReview(), "F1", null)).toThrow("handed off already");
+    // another finding is still open to rulings
+    expect(rule(handedOffReview(), "F2", "deferred").findings[1]!.ruling?.decision).toBe("deferred");
+  });
+});
+
+describe("hand-off", () => {
+  const write = (review: ReturnType<typeof fresh>, findingIds: string[]) => reduce(review, { type: "handoff-written", at: 62, path: "/repo/h.md", findingIds });
+
+  test("it records the path and the accepted findings", () => {
+    expect(write(accepted(), ["F1"]).handoff).toEqual({ path: "/repo/h.md", findingIds: ["F1"], at: 62 });
+  });
+
+  test("it needs at least one finding, all accepted, and a verdict", () => {
+    expect(() => write(accepted(), [])).toThrow("at least one");
+    expect(() => write(rule(concluded(), "F1", "deferred"), ["F1"])).toThrow("F1 isn't accepted");
+    expect(() => write(accepted(), ["F1", "F2"])).toThrow("F2 isn't accepted");
+    expect(() => write(accepted(), ["F9"])).toThrow("no finding F9");
+    expect(() => write(settling(), ["F1"])).toThrow("verdict");
+  });
+
+  test("a later hand-off replaces the earlier", () => {
+    const first = write(accepted(), ["F1"]);
+    const both = write(rule(first, "F2", "accepted", 63), ["F1", "F2"]);
+    expect(both.handoff!.findingIds).toEqual(["F1", "F2"]);
+  });
+});
+
+describe("fixes", () => {
+  const request = (review: ReturnType<typeof fresh>, findingIds: string[]) => reduce(review, { type: "fix-requested", at: 63, findingIds });
+  const handed = () => reduce(accepted(), { type: "handoff-written", at: 62, path: "/repo/h.md", findingIds: ["F1"] });
+
+  test("a request needs the hand-off and only its findings", () => {
+    expect(() => request(accepted(), ["F1"])).toThrow("Write the hand-off");
+    expect(() => request(handed(), ["F2"])).toThrow("F2 isn't in the hand-off");
+    expect(() => request(settling(), ["F1"])).toThrow(ReviewError);
+  });
+
+  test("a request hands the findings off", () => {
+    expect(request(handed(), ["F1"]).findings[0]!.fix).toEqual({ state: "handed-off", handedOffAt: 63, fixer: null, problem: null, summary: null, files: [], fixedAt: null, checks: [] });
+    expect(request(handed(), ["F1"]).findings[1]!.fix).toBeNull();
+  });
+
+  test("a request with a profile marks the fixer, and hands a handed-off finding over again", () => {
+    const first = reduce(handed(), { type: "fix-requested", at: 63, findingIds: ["F1"], profile: "codex" });
+    expect(first.findings[0]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 63, fixer: { profile: "codex", conversationId: null }, problem: null });
+    const second = reduce(first, { type: "fix-requested", at: 70, findingIds: ["F1"] });
+    expect(second.findings[0]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 70, fixer: null });
+    const third = reduce(second, { type: "fix-requested", at: 71, findingIds: ["F1"], profile: "gemini" });
+    expect(third.findings[0]!.fix!.fixer).toEqual({ profile: "gemini", conversationId: null });
+  });
+
+  test("a request leaves fixed and verified findings untouched, even with a profile", () => {
+    const fixed = fixedReview();
+    expect(reduce(fixed, { type: "fix-requested", at: 80, findingIds: ["F1"], profile: "codex" }).findings[0]!.fix).toEqual(fixed.findings[0]!.fix);
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "verified") });
+    review = reduce(review, { type: "verification-ended", at: 72 });
+    expect(review.findings[0]!.fix!.state).toBe("verified");
+    expect(reduce(review, { type: "fix-requested", at: 80, findingIds: ["F1"], profile: "codex" }).findings[0]!.fix).toEqual(review.findings[0]!.fix);
+  });
+
+  test("a request clears the problem of a failed fix", () => {
+    const failed = reduce(handedOffReview(), { type: "fix-failed", at: 64, findingIds: ["F1"], reason: "no" });
+    expect(failed.findings[0]!.fix!.problem).toBe("no");
+    expect(reduce(failed, { type: "fix-requested", at: 65, findingIds: ["F1"] }).findings[0]!.fix!.problem).toBeNull();
+  });
+
+  test("delegating records the conversation on findings handed to that profile", () => {
+    const asked = reduce(handed(), { type: "fix-requested", at: 63, findingIds: ["F1"], profile: "codex" });
+    const delegated = reduce(asked, { type: "fix-delegated", at: 64, findingIds: ["F1"], profile: "codex", conversationId: "c9" });
+    expect(delegated.findings[0]!.fix).toMatchObject({ state: "handed-off", fixer: { profile: "codex", conversationId: "c9" } });
+  });
+
+  test("delegating is refused for a finding that doesn't wait, or was handed to another profile or none", () => {
+    const asked = reduce(handed(), { type: "fix-requested", at: 63, findingIds: ["F1"], profile: "codex" });
+    expect(() => reduce(asked, { type: "fix-delegated", at: 64, findingIds: ["F1"], profile: "gemini", conversationId: "c9" })).toThrow("handed to codex, not gemini");
+    expect(() => reduce(handedOffReview(), { type: "fix-delegated", at: 64, findingIds: ["F1"], profile: "codex", conversationId: "c9" })).toThrow("this conversation's agent");
+    expect(() => reduce(accepted(), { type: "fix-delegated", at: 64, findingIds: ["F1"], profile: "codex", conversationId: "c9" })).toThrow("isn't waiting for a fix");
+    expect(() => reduce(fixedReview(), { type: "fix-delegated", at: 64, findingIds: ["F1"], profile: "codex", conversationId: "c9" })).toThrow("isn't waiting for a fix");
+    expect(() => reduce(asked, { type: "fix-delegated", at: 64, findingIds: ["F9"], profile: "codex", conversationId: "c9" })).toThrow("no finding F9");
+  });
+
+  test("a failed fix sets the problem on waiting findings only", () => {
+    const failed = reduce(handedOffReview(), { type: "fix-failed", at: 64, findingIds: ["F1", "F2"], reason: "It crashed." });
+    expect(failed.findings[0]!.fix).toMatchObject({ state: "handed-off", problem: "It crashed." });
+    expect(failed.findings[1]!.fix).toBeNull();
+    const fixed = fixedReview();
+    expect(reduce(fixed, { type: "fix-failed", at: 65, findingIds: ["F1"], reason: "x" }).findings[0]!.fix).toEqual(fixed.findings[0]!.fix);
+    expect(() => reduce(handedOffReview(), { type: "fix-failed", at: 64, findingIds: ["F9"], reason: "x" })).toThrow("no finding F9");
+  });
+
+  test("a reported fix clears the problem", () => {
+    const failed = reduce(handedOffReview(), { type: "fix-failed", at: 64, findingIds: ["F1"], reason: "no" });
+    const fixed = reduce(failed, { type: "fix-reported", at: 65, findingId: "F1", summary: "Now", files: [] });
+    expect(fixed.findings[0]!.fix).toMatchObject({ state: "fixed", problem: null });
+  });
+
+  test("a request keeps fixed findings as they are", () => {
+    const fixed = fixedReview();
+    const again = request(fixed, ["F1"]);
+    expect(again.findings[0]!.fix).toEqual(fixed.findings[0]!.fix);
+    expect(again.findings[0]!.fix!.state).toBe("fixed");
+  });
+
+  test("a request hands a reopened finding off again and keeps its history", () => {
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "reopened") });
+    review = reduce(review, { type: "verification-ended", at: 72 });
+    expect(review.findings[0]!.fix!.state).toBe("reopened");
+    const again = reduce(review, { type: "fix-requested", at: 80, findingIds: ["F1"] });
+    expect(again.findings[0]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 80, summary: "Changed it", files: ["src/a.ts"], fixedAt: 64 });
+    expect(again.findings[0]!.fix!.checks).toHaveLength(1);
+  });
+
+  test("a fix is reported on a handed-off finding in the complete phase", () => {
+    expect(fixedReview().findings[0]!.fix).toMatchObject({ state: "fixed", summary: "Changed it", files: ["src/a.ts"], fixedAt: 64 });
+    expect(() => reduce(accepted(), { type: "fix-reported", at: 64, findingId: "F1", summary: "s", files: [] })).toThrow("wasn't handed off");
+    expect(() => reduce(handedOffReview(), { type: "fix-reported", at: 64, findingId: "F9", summary: "s", files: [] })).toThrow("no finding F9");
+    expect(() => reduce(settling(), { type: "fix-reported", at: 64, findingId: "F1", summary: "s", files: [] })).toThrow(ReviewError);
+    expect(() => reduce(verifying(), { type: "fix-reported", at: 64, findingId: "F1", summary: "s", files: [] })).toThrow("being re-checked");
+  });
+
+  test("a fix can be reported again until it is verified, then not", () => {
+    const again = reduce(fixedReview(), { type: "fix-reported", at: 65, findingId: "F1", summary: "Better", files: [] });
+    expect(again.findings[0]!.fix).toMatchObject({ summary: "Better", files: [], fixedAt: 65 });
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "verified") });
+    review = reduce(review, { type: "verification-ended", at: 72 });
+    expect(() => reduce(review, { type: "fix-reported", at: 73, findingId: "F1", summary: "s", files: [] })).toThrow("verified already");
+  });
+});
+
+describe("verification", () => {
+  test("it starts only from a complete review with fixed findings, and puts the checkers in verifying", () => {
+    expect(() => reduce(handedOffReview(), { type: "verification-started", at: 70, findingIds: ["F1"], reviewerIds: ["r1"] })).toThrow("no fix to re-check");
+    expect(() => reduce(fixedReview(), { type: "verification-started", at: 70, findingIds: [], reviewerIds: ["r1"] })).toThrow("No fixed finding");
+    expect(() => reduce(settling(), { type: "verification-started", at: 70, findingIds: ["F1"], reviewerIds: ["r1"] })).toThrow(ReviewError);
+    const review = reduce(fixedReview(), { type: "verification-started", at: 70, findingIds: ["F1"], reviewerIds: ["r2"] });
+    expect(review).toMatchObject({ phase: "verification", verifications: 1 });
+    expect(review.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["completed", "verifying"]);
+    expect(() => reduce(review, { type: "verification-started", at: 71, findingIds: ["F1"], reviewerIds: ["r2"] })).toThrow(ReviewError);
+  });
+
+  test("a failed or unseated reviewer is not put into verifying", () => {
+    const review = reduce(fixedReview(), { type: "verification-started", at: 70, findingIds: ["F1"], reviewerIds: ["r3", "r1"] });
+    expect(review.reviewers.map((reviewer) => reviewer.status)).toEqual(["verifying", "completed", "idle", "idle"]);
+  });
+
+  test("checks are recorded for fixed findings by verifying reviewers, one per reviewer per pass", () => {
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "reopened") });
+    review = reduce(review, { type: "fix-checked", reviewerId: "r1", at: 72, check: check("F1", "verified") });
+    review = reduce(review, { type: "fix-checked", reviewerId: "r2", at: 73, check: check("F1", "verified") });
+    expect(review.findings[0]!.fix!.checks.map((it) => [it.reviewerId, it.outcome, it.pass, it.at])).toEqual([
+      ["r1", "verified", 1, 72],
+      ["r2", "verified", 1, 73],
+    ]);
+    expect(review.reviewers[0]!.activity.at(-1)).toMatchObject({ kind: "check" });
+  });
+
+  test("a check is refused outside a verification, for a finding that is not fixed, or an unknown one", () => {
+    // outside a verification no reviewer is verifying, so a stray check is ignored like any late runner event
+    const idle = fixedReview();
+    expect(reduce(idle, { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "verified") })).toBe(idle);
+    expect(() => reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F2", "verified") })).toThrow("no fix to re-check");
+    expect(() => reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F9", "verified") })).toThrow("no finding F9");
+  });
+
+  test("a check from a reviewer not verifying changes nothing", () => {
+    const review = reduce(fixedReview(), { type: "verification-started", at: 70, findingIds: ["F1"], reviewerIds: ["r2"] });
+    expect(reduce(review, { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "verified") })).toBe(review);
+  });
+
+  test("ending verifies the findings when no check reopened them, and frees the reviewers", () => {
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "verified") });
+    review = reduce(review, { type: "fix-checked", reviewerId: "r2", at: 72, check: check("F1", "verified") });
+    review = reduce({ ...review, agentHeardAt: 5 }, { type: "verification-ended", at: 73 });
+    expect(review.phase).toBe("complete");
+    expect(review.findings[0]!.fix!.state).toBe("verified");
+    expect(review.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["completed", "completed"]);
+    expect(review.agentHeardAt).toBeNull();
+  });
+
+  test("any reopening check reopens the finding", () => {
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "verified") });
+    review = reduce(review, { type: "fix-checked", reviewerId: "r2", at: 72, check: check("F1", "reopened") });
+    expect(reduce(review, { type: "verification-ended", at: 73 }).findings[0]!.fix!.state).toBe("reopened");
+  });
+
+  test("a finding with no check stays fixed, and only this pass's checks count", () => {
+    expect(reduce(verifying(), { type: "verification-ended", at: 73 }).findings[0]!.fix!.state).toBe("fixed");
+    // pass 1 reopened; a new fix is reported; in pass 2 nobody checks: stays fixed rather than reopened again
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "reopened") });
+    review = reduce(review, { type: "verification-ended", at: 73 });
+    review = reduce(review, { type: "fix-requested", at: 74, findingIds: ["F1"] });
+    review = reduce(review, { type: "fix-reported", at: 75, findingId: "F1", summary: "again", files: [] });
+    review = reduce(review, { type: "verification-started", at: 76, findingIds: ["F1"], reviewerIds: ["r1"] });
+    expect(review.verifications).toBe(2);
+    expect(reduce(review, { type: "verification-ended", at: 77 }).findings[0]!.fix!.state).toBe("fixed");
+  });
+
+  test("it can't end when none runs", () => {
+    expect(() => reduce(fixedReview(), { type: "verification-ended", at: 1 })).toThrow("No verification");
+  });
+
+  test("a stop or interruption goes back to complete without settling", () => {
+    for (const type of ["stopped", "interrupted"] as const) {
+      let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "verified") });
+      review = { ...review, agentHeardAt: 5 };
+      const ended = reduce(review, { type, at: 80 });
+      expect(ended.phase).toBe("complete");
+      expect(ended.findings[0]!.fix!.state).toBe("fixed");
+      expect(ended.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["completed", "completed"]);
+      expect(ended.agentHeardAt).toBe(5);
+      expect(ended.endedAt).toBe(60);
+    }
+  });
+});
+
+describe("upgradeReview", () => {
+  test("a format-2 review gets empty proposals, rulings, fixes, hand-off and verifications", () => {
+    const { handoff: _h, verifications: _v, ...rest } = concluded();
+    const old = {
+      ...rest,
+      format: 2,
+      findings: concluded().findings.map(({ proposal: _p, ruling: _r, fix: _f, ...finding }) => finding),
+    } as unknown as ReturnType<typeof fresh>;
+    const upgraded = upgradeReview(old);
+    expect(upgraded.format).toBe(REVIEW_FORMAT);
+    expect(upgraded.handoff).toBeNull();
+    expect(upgraded.verifications).toBe(0);
+    expect(upgraded.verdict).toEqual(old.verdict);
+    expect(upgraded.findings.map((it) => [it.status, it.proposal, it.ruling, it.fix])).toEqual([["agreed", null, null, null], ["withdrawn", null, null, null]]);
+    expect(upgraded.findings[0]!.resolution).toEqual(old.findings[0]!.resolution);
+  });
+
+  test("a format-3 review gets no fixer and no problem on its fixes", () => {
+    const current = fixedReview();
+    const old = {
+      ...current,
+      format: 3,
+      findings: current.findings.map((it) => (it.fix ? { ...it, fix: (({ fixer: _f, problem: _p, ...rest }) => rest)(it.fix) } : it)),
+    } as unknown as ReturnType<typeof fresh>;
+    const upgraded = upgradeReview(old);
+    expect(upgraded.format).toBe(REVIEW_FORMAT);
+    expect(upgraded.findings[0]!.fix).toEqual({ ...current.findings[0]!.fix!, fixer: null, problem: null });
+    expect(upgraded.findings[1]!.fix).toBeNull();
+  });
+
+  test("the review format is 4", () => {
+    expect(REVIEW_FORMAT).toBe(4);
+  });
+
+  test("a current review is returned as it is", () => {
+    const review = concluded();
+    expect(upgradeReview(review)).toBe(review);
   });
 });

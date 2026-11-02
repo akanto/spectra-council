@@ -18,6 +18,8 @@ async function play(profile: ProfileId, inspect: (steps: ReturnType<typeof mockD
   const mock = new MockRunner(async () => FILES, clock);
   const runner = {
     run: mock.run.bind(mock),
+    propose: mock.propose.bind(mock),
+    verify: mock.verify.bind(mock),
     async deliberate(job: Parameters<typeof mock.deliberate>[0], report: Parameters<typeof mock.deliberate>[1], signal: AbortSignal) {
       inspect(mockDeliberation(job), job.review);
       await mock.deliberate(job, report, signal);
@@ -60,14 +62,17 @@ describe("mockDeliberation", () => {
 });
 
 describe("a full mock deliberation", () => {
-  for (const profile of ["architecture", "code"] as const) {
-    test(`${profile}: leaves agreed, confirmed, disputed and withdrawn findings`, async () => {
+  test("across the profiles every status shows up, and no profile's findings are mostly withdrawn", async () => {
+    const statuses = new Set<string>();
+    for (const profile of ["general", "code", "architecture", "security", "scientific"] as const) {
       const final = await play(profile);
-      const statuses = new Set(final.findings.map((finding) => finding.status));
-      for (const status of ["agreed", "confirmed", "disputed", "withdrawn"] as const) expect(statuses.has(status)).toBe(true);
       expect(final.phase).toBe("complete");
-    });
-  }
+      const withdrawn = final.findings.filter((finding) => finding.status === "withdrawn").length;
+      expect(withdrawn).toBeLessThanOrEqual(final.findings.length / 2);
+      for (const finding of final.findings) statuses.add(finding.status);
+    }
+    for (const status of ["agreed", "confirmed", "disputed", "withdrawn"]) expect(statuses.has(status)).toBe(true);
+  });
 
   test("the same run twice gives the same arguments", async () => {
     const strip = (review: Review) => review.arguments.map(({ at, ...rest }) => rest);

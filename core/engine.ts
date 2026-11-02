@@ -4,11 +4,11 @@
  * the user stops it. Knows nothing of hosts or views: the host hands in a runner, a clock and a listener, and draws or
  * stores each new review the listener gets.
  */
-import { ROUNDS, settle, verdictSummary } from "./deliberation.ts";
-import { isRunning, seatedReviewers, type Review, type Reviewer } from "./model.ts";
+import { checkersOf, ROUNDS, settle, verdictSummary } from "./deliberation.ts";
+import { isRunning, isStanding, seatedReviewers, type Review, type Reviewer } from "./model.ts";
 import { PROFILES, type ReviewProfile } from "./profiles.ts";
 import { reduce, type ReviewEvent, type ReviewerEvent } from "./review.ts";
-import { argumentInputSchema, findingInputSchema, problemsOf } from "./schemas.ts";
+import { argumentInputSchema, findingInputSchema, fixCheckInputSchema, problemsOf, proposalInputSchema } from "./schemas.ts";
 
 /** How long the synthesis takes over each finding, so the user sees the verdicts come in. */
 export const SYNTHESIS_PAUSE_MS = 400;
@@ -59,7 +59,27 @@ export interface DeliberationJob extends ReviewerJob {
 export type Report =
   | { type: "activity"; kind: Extract<ReviewerEvent, { type: "activity" }>["kind"]; text: string; path?: string }
   | { type: "finding-reported"; finding: unknown }
-  | { type: "argued"; argument: unknown };
+  | { type: "argued"; argument: unknown }
+  | { type: "fix-proposed"; proposal: unknown }
+  | { type: "fix-checked"; check: unknown };
+
+/**
+ * What a runner gets to propose fixes, in the synthesis: the findings this reviewer reported that stand, settled, with
+ * the whole deliberation in `review`.
+ */
+export interface ProposalJob extends ReviewerJob {
+  findingIds: string[];
+}
+
+/**
+ * What a runner gets to re-check fixes in a verification round: the fixed findings this reviewer reported or backed;
+ * each finding's `fix` says what the agent changed and where.
+ */
+export interface VerificationJob extends ReviewerJob {
+  findingIds: string[];
+  /** The verification round, 1-based. */
+  pass: number;
+}
 
 /**
  * Runs reviewers. Each call resolves when the reviewer is done with its part and rejects when it failed; it stops soon
@@ -70,6 +90,10 @@ export interface ReviewerRunner {
   run(job: ReviewerJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
   /** The reviewer's turn in one deliberation round: it argues about any of the findings, its own included. */
   deliberate(job: DeliberationJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /** Drafts a fix for each of the given findings, reporting one "fix-proposed" each. */
+  propose(job: ProposalJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /** Re-checks the fixes of the given findings, reporting one "fix-checked" each. */
+  verify(job: VerificationJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
 }
 
 export interface SessionOptions {
@@ -144,7 +168,52 @@ export class ReviewSession {
       const finding = this.#review.findings.find((each) => each.id === id)!;
       this.#dispatch({ type: "finding-resolved", at: this.#clock.now(), findingId: id, ...settle(this.#review, finding) });
     }
-    return true;
+    // Each reporter drafts the fixes for its findings that stand, all at once.
+    const settled = this.#review;
+    const drafters = seatedReviewers(settled).filter((reviewer) => reviewer.status === "deliberating");
+    await Promise.all(
+      drafters.map((reviewer) => {
+        const findingIds = settled.findings.filter((finding) => finding.reviewerId === reviewer.id && isStanding(finding)).map(({ id }) => id);
+        if (findingIds.length === 0) return;
+        return this.#aside(reviewer.id, "proposing fixes", () => this.#runner.propose({ review: settled, reviewer, profile, findingIds }, this.#reporter(reviewer.id), signal));
+      }),
+    );
+    return !signal.aborted;
+  }
+
+  /**
+   * Re-checks every fixed finding: each is checked by its reporter and the reviewers who backed it, all at once. Run on a
+   * complete review; resolves with it complete again (or stopped short).
+   */
+  async verify(): Promise<Review> {
+    const review = this.#review;
+    const profile = PROFILES[review.profile];
+    const fixed = review.findings.filter((finding) => finding.fix?.state === "fixed");
+    const assignments = new Map<string, string[]>();
+    for (const finding of fixed) for (const reviewer of checkersOf(review, finding)) assignments.set(reviewer.id, [...(assignments.get(reviewer.id) ?? []), finding.id]);
+    this.#dispatch({ type: "verification-started", at: this.#clock.now(), findingIds: fixed.map(({ id }) => id), reviewerIds: [...assignments.keys()] });
+    const started = this.#review;
+    const pass = started.verifications;
+    await Promise.all(
+      [...assignments].map(([reviewerId, findingIds]) => {
+        const reviewer = started.reviewers.find(({ id }) => id === reviewerId)!;
+        return this.#aside(reviewerId, "re-checking fixes", () => this.#runner.verify({ review: started, reviewer, profile, findingIds, pass }, this.#reporter(reviewerId), this.#abort.signal));
+      }),
+    );
+    if (this.#abort.signal.aborted) return this.#review;
+    this.#dispatch({ type: "verification-ended", at: this.#clock.now() });
+    return this.#review;
+  }
+
+  /** Runs work that shouldn't end the reviewer when it fails: the failure shows in its activity instead. */
+  async #aside(reviewerId: string, what: string, work: () => Promise<void>) {
+    try {
+      await work();
+    } catch (error) {
+      if (this.#abort.signal.aborted) return;
+      const problem = error instanceof Error ? error.message : String(error);
+      this.#dispatch({ type: "activity", reviewerId, at: this.#clock.now(), kind: "error", text: `Failed ${what}: ${problem}` });
+    }
   }
 
   /** What a reviewer reports, checked and applied; a malformed report shows as an error in its activity. */
@@ -171,6 +240,22 @@ export class ReviewSession {
           if (!this.#review.findings.some(({ id }) => id === findingId)) return rejected("argument", `there is no finding ${findingId}`);
           if (replyTo !== undefined && !this.#review.arguments.some(({ id }) => id === replyTo)) return rejected("argument", `there is no argument ${replyTo}`);
           this.#dispatch({ type: "argued", reviewerId, at: at(), argument: parsed.data });
+          return;
+        }
+        case "fix-proposed": {
+          const parsed = proposalInputSchema.safeParse(report.proposal);
+          if (!parsed.success) return rejected("fix proposal", problemsOf(parsed.error));
+          const finding = this.#review.findings.find(({ id }) => id === parsed.data.findingId);
+          if (!finding || !isStanding(finding)) return rejected("fix proposal", `${parsed.data.findingId} isn't a finding that stands`);
+          this.#dispatch({ type: "fix-proposed", reviewerId, at: at(), proposal: parsed.data });
+          return;
+        }
+        case "fix-checked": {
+          const parsed = fixCheckInputSchema.safeParse(report.check);
+          if (!parsed.success) return rejected("fix check", problemsOf(parsed.error));
+          const finding = this.#review.findings.find(({ id }) => id === parsed.data.findingId);
+          if (finding?.fix?.state !== "fixed") return rejected("fix check", `${parsed.data.findingId} has no fix to re-check`);
+          this.#dispatch({ type: "fix-checked", reviewerId, at: at(), check: parsed.data });
           return;
         }
       }
