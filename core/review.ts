@@ -10,7 +10,7 @@
  * (handoff-written), the agent is asked to fix them (fix-requested) and reports each fix (fix-reported), and a
  * verification round has reviewers re-check the fixes (verification-started → fix-checked → verification-ended).
  */
-import { agentLabel } from "./agents.ts";
+import { agentLabel, runnerKindOf } from "./agents.ts";
 import {
   MAX_ACTIVITY,
   REVIEW_FORMAT,
@@ -225,7 +225,7 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (review.phase !== "setup") throw new ReviewError("The review has started; its setup can't change any more.");
       const { seats, ...rest } = event.patch;
       const reviewers = seats ? seats.map((seat, index) => ({ ...reviewerOf(seat, index), id: review.reviewers[index]?.id ?? `r${index + 1}` })) : review.reviewers;
-      return { ...review, ...rest, reviewers };
+      return { ...review, ...rest, reviewers, runner: runnerKindOf(reviewers) };
     }
     case "started": {
       if (review.phase !== "setup") throw new ReviewError(`The review can't start: it is ${review.phase}.`);

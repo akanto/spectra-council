@@ -204,8 +204,11 @@ export interface Verdict {
   at: number;
 }
 
-/** Who runs the reviewers: deterministic mocks, or agents in Mirador's conversations (milestone 2). */
-export type RunnerKind = "mock" | "mirador";
+/**
+ * Who runs the reviewers: deterministic mocks, agents in conversations on the user's Mirador profiles, or some of each.
+ * It follows the seats while the review is set up.
+ */
+export type RunnerKind = "mock" | "mirador" | "mixed";
 
 export interface Review {
   format: typeof REVIEW_FORMAT;

@@ -96,6 +96,38 @@ export interface ReviewerRunner {
   verify(job: VerificationJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
 }
 
+/** How an agent's turn in a conversation ended: its last message, if it said anything in words. */
+export interface AgentReply {
+  conversationId: string;
+  /** The profile's name as the host has it. */
+  profile: string;
+  text: string | null;
+  ended: "finished" | "stopped" | "failed";
+}
+
+/**
+ * Conversations with real agents, as a host gives them: each `ask` starts a fresh conversation on a profile with the
+ * prompt as its first message and resolves once that turn ends. It rejects when the conversation can't start (no
+ * profile of that name, or no way to start one now) and as soon as the signal aborts; a host that can't stop the
+ * conversation lets it run on and ignores its reply.
+ */
+export interface Conversations {
+  ask(request: { profile: string; prompt: string; signal: AbortSignal; onStart?: (conversationId: string) => void }): Promise<AgentReply>;
+}
+
+/** How long a real reviewer's turn may take before its seat gives up on it. */
+export const TURN_LIMIT_MS = 15 * 60_000;
+
+/** A runner that sends each reviewer to `byAgent(reviewer.agent)`, so mocks and real agents can sit at one council. */
+export function routeByAgent(byAgent: (agent: string) => ReviewerRunner): ReviewerRunner {
+  return {
+    run: (job, report, signal) => byAgent(job.reviewer.agent).run(job, report, signal),
+    deliberate: (job, report, signal) => byAgent(job.reviewer.agent).deliberate(job, report, signal),
+    propose: (job, report, signal) => byAgent(job.reviewer.agent).propose(job, report, signal),
+    verify: (job, report, signal) => byAgent(job.reviewer.agent).verify(job, report, signal),
+  };
+}
+
 export interface SessionOptions {
   runner: ReviewerRunner;
   clock?: Clock;

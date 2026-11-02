@@ -123,6 +123,11 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
             Mock reviewers
           </span>
         )}
+        {review.runner === "mixed" && (
+          <span className="chip static mock" title="The mock seats' findings are illustrative, not an analysis of your files.">
+            Some mock reviewers
+          </span>
+        )}
       </div>
 
       {problem && (
@@ -135,7 +140,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
       )}
 
       {review.phase === "setup" ? (
-        <Setup review={review} busy={busy} configure={(patch: SetupPatch) => void send({ kind: "configure", patch }).catch(() => {})} start={() => void send({ kind: "start" }).catch(() => {})} />
+        <Setup review={review} bridge={bridge} busy={busy} configure={(patch: SetupPatch) => void send({ kind: "configure", patch }).catch(() => {})} start={() => void send({ kind: "start" }).catch(() => {})} />
       ) : (
         <>
           <nav className="tabs" role="tablist">

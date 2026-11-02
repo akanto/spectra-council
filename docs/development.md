@@ -60,6 +60,19 @@ when Mirador stopped shows as *interrupted*.
 In Mirador Settings, under the plugin, the **Open reviews** setting chooses where a review opens: beside the chat
 (the default) or full screen.
 
+## Real reviewers
+
+A seat can be a real agent on one of your Mirador profiles, not a mock:
+
+- In Setup, pick a seat's **Profile** option and type the profile's name as Mirador names it, such as "Home" or "pi home".
+- A wrong name fails that seat at Start, and the error lists Mirador's profiles.
+- Each turn of the review (the independent review, each deliberation round, fix proposals and re-checks) opens a
+  conversation under the review's conversation in the sidebar. Open one to read what the reviewer did.
+- The reviewers are told to only read the target. They run with the chat's permission mode, which is bypassing
+  permissions if the chat does.
+- Model and effort are the profile's. See [mirador-api.md](mirador-api.md) for what it would take to choose them per seat.
+- The harness has no profiles, so profile seats fail there. Use mock seats in the harness.
+
 ## Layout
 
 | Folder | What | Depends on |

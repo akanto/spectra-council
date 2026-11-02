@@ -91,7 +91,7 @@ export type FixCheckInput = z.infer<typeof fixCheckInputSchema>;
 
 /** One seat at the council: the agent in it, or empty. */
 export const seatSchema = z.object({
-  agent: z.string().min(1).describe("An agent id from the registry."),
+  agent: z.string().min(1).describe('A mock persona\'s id (mock-claude, …), or "profile:" and a Mirador profile\'s name, e.g. "profile:pi home".'),
   enabled: z.boolean(),
 });
 
@@ -135,9 +135,20 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("verify") }),
   /** Who fixes: resolves to `{ profile }`, the fixer profile this conversation chose, or null for its own agent. */
   z.object({ kind: z.literal("fixer") }),
+  /** The Mirador profiles the council has seated before: resolves to `{ profiles: string[] }`, names most recent first. */
+  z.object({ kind: z.literal("profiles") }),
 ]);
 
 export type ViewAction = z.infer<typeof viewActionSchema>;
+
+/**
+ * What a real reviewer ends each turn's final message with, as a ```json block: the items of its turn, each checked
+ * later on its own against the schema above (a malformed one shows as an error, the rest still count).
+ */
+export const reviewReplySchema = z.object({ findings: z.array(z.unknown()) });
+export const deliberationReplySchema = z.object({ arguments: z.array(z.unknown()) });
+export const proposalReplySchema = z.object({ proposals: z.array(z.unknown()) });
+export const verificationReplySchema = z.object({ checks: z.array(z.unknown()) });
 
 /** A Zod error in one line per problem, for whoever sent the bad input. */
 export const problemsOf = (error: z.ZodError) =>

@@ -47,7 +47,11 @@ export function describeReview(review: Review): string {
   const reviewers = seatedReviewers(review);
   const lines = [
     `Spectra Council review ${review.id} of ${review.target}: ${PROFILES[review.profile].title} profile, ${review.depth} depth, ${PHASE_WORDS[review.phase]}.`,
-    review.runner === "mock" ? "Its reviewers are deterministic mocks: their findings are illustrative, not an analysis of the files." : "",
+    review.runner === "mock"
+      ? "Its reviewers are deterministic mocks: their findings are illustrative, not an analysis of the files."
+      : review.runner === "mixed"
+        ? "Some of its reviewers are deterministic mocks: their findings are illustrative, not an analysis of the files."
+        : "",
     review.rounds > 0 ? `Deliberation: round ${review.round} of ${review.rounds}, ${review.arguments.length} arguments.` : "",
     review.verdict ? `Verdict: ${review.verdict.summary}` : "",
     review.handoff ? `Hand-off: ${review.handoff.path} (${review.handoff.findingIds.join(", ")}).` : "",

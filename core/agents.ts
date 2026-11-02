@@ -1,7 +1,9 @@
 /**
- * The agents that can take a seat at the council. Milestone 1 has deterministic mock personas only; milestone 2 adds the
- * user's Mirador profiles (Claude, pi, opencode, …) as agents of kind "mirador-profile".
+ * The agents that can take a seat at the council: deterministic mock personas, and the user's Mirador profiles (Claude,
+ * pi, opencode, …), whose agent id is "profile:" and the profile's name. A seat runs on its profile's defaults: the
+ * agent's default model and the profile's effort (docs/mirador-api.md has what Mirador would need for more).
  */
+import type { RunnerKind } from "./model.ts";
 import { SEATS, type Seat } from "./schemas.ts";
 
 export interface AgentInfo {
@@ -25,11 +27,29 @@ export const MOCK_AGENTS: AgentInfo[] = [
 
 export const agentById = (id: string, agents: AgentInfo[] = MOCK_AGENTS) => agents.find((agent) => agent.id === id);
 
+export const PROFILE_PREFIX = "profile:";
+
+/** Whether an agent id names a Mirador profile rather than a mock persona. */
+export const isProfileAgent = (id: string) => id.startsWith(PROFILE_PREFIX) && id.length > PROFILE_PREFIX.length;
+
+/** The agent id of the Mirador profile of that name. */
+export const profileAgent = (name: string) => `${PROFILE_PREFIX}${name.trim()}`;
+
+/** The profile's name of a profile agent id. */
+export const profileName = (id: string) => id.slice(PROFILE_PREFIX.length);
+
+/** Who runs a council with these seats: mocks only, Mirador profiles only, or both. */
+export function runnerKindOf(seats: { agent: string; enabled: boolean }[]): RunnerKind {
+  const seated = seats.filter((seat) => seat.enabled);
+  const profiles = seated.filter((seat) => isProfileAgent(seat.agent)).length;
+  return profiles === 0 ? "mock" : profiles === seated.length ? "mirador" : "mixed";
+}
+
 /** An agent's name to show: a mock persona's, or a Mirador profile's ("profile:Home" shows as "Home"). */
 export function agentLabel(id: string): string {
   const known = agentById(id);
   if (known) return known.label;
-  return id.startsWith("profile:") ? id.slice("profile:".length) : id;
+  return isProfileAgent(id) ? profileName(id) : id;
 }
 
 /** The seats a new review starts with: all four agents seated, the first two taking part, as milestone 1 asks. */

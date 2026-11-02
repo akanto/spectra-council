@@ -55,37 +55,40 @@ reply with a JSON report (`core/fixer.ts`), which `replied` turns into `fix-repo
 the phase, where `ReviewerRunner.verify` has each reporter and backer check a fix (`fix-checked`), and
 `verification-ended` closes it with each fix verified or reopened.
 
-## Milestone 2 plan: real reviewers through Mirador
+## Milestone 2: real reviewers through Mirador
 
-- **Seats from profiles.** The plugin declares profile settings (or a setting per seat whose choices are `"profiles"`),
-  so the user picks which Mirador profiles (Claude/Home, Claude/Cloudera, pi, opencode with a GPT or Gemini model…)
-  sit at the council. Agent ids become `profile:<name>`; `agentLabel` already shows them.
-- **Starting reviewers.** `startConversation` is only available inside a tool call. So *Start review* in the view
-  sends the agent a message (`prompt`) asking it to call `council_begin`, and that tool starts one conversation per
-  seat with the reviewer brief (profile brief, target, depth, the user's instructions, and how to report).
-- **Reporting.** Reviewers report through a canvas tool, `council_report_finding` (input = `findingInputSchema`),
-  and progress through `council_report_progress`. Their tool context's `conversationId` maps them to their seat. The
-  plugin keeps the starting conversation's context to update the review item.
-- **Ending.** `replied(started, reply)` fires when a reviewer's turn ends: `finished` completes the seat, `failed` or
-  `stopped` fails it. A runner for this is event-driven rather than a promise per reviewer; the reducer already takes
-  its events.
-- **Deliberation turns.** Real reviewers also need a deliberation turn: a `council_argue` tool alongside
-  `council_report_finding`, which takes a finding's stance (backs, challenges, unsure) with evidence, or a rebuttal.
-  Each round starts one fresh conversation per reviewer, so the mock's round loop and `argued` events carry over.
-- **Propose and verify turns.** After the verdict, real reviewers need two more turns: `council_propose_fix` for a
-  finding's proposed fix (summary, steps, files, how to verify, risks), and `council_check_fix` for a re-check that
-  ends verified or reopened, with evidence. Each turn starts a fresh conversation per reviewer, as the deliberation
-  rounds do.
-- Constraint: conversations a plugin started can't start more (one level). Each deliberation round therefore starts
-  fresh reviewer conversations from the chairing agent, which suits anonymous cross-review.
+- **Seats.** A seat is a mock persona or a Mirador profile. A profile seat's agent id is `profile:<name>`, and
+  `agentLabel` shows the name. The setup picks profile seats by name, and offers the names seated before. Mocks and
+  profiles can sit at one council: `routeByAgent` (core/engine.ts) sends each reviewer to the mock runner or the agent
+  runner. `review.runner` is `"mock"`, `"mirador"` or `"mixed"`.
+- **Turns.** Each turn starts one fresh conversation per seat: the independent review, each deliberation round, the fix
+  proposals and each re-check. Fresh conversations per round suit anonymous cross-review. Each prompt is self-contained
+  (core/agent-turns.ts): the target, a read-only rule, the profile's brief and focus, the depth, the user's
+  instructions, the turn's task, and the JSON reply shape with its schema and an example.
+- **Reporting.** The agent ends its final message with a JSON code block. The schemas are `reviewReplySchema`,
+  `deliberationReplySchema`, `proposalReplySchema` and `verificationReplySchema` (core/schemas.ts), and `lastJson`
+  (core/replies.ts) reads the block. `AgentRunner` (core/agent-runner.ts) reports each item, and the session validates
+  each one. A malformed item shows as an error, and the rest of the turn still counts. A reply without the block, or a
+  conversation that was stopped or failed, fails the seat's turn. Each turn has a 15 minute limit (`TURN_LIMIT_MS`).
+  This is the fixer's approach (core/fixer.ts). It asks the least of models that call tools unreliably, and Mirador
+  keeps a reply across a restart.
+- **Starting.** Only a tool may start a conversation. The host keeps the tool context of the latest tool call in each
+  conversation (`council_open`, `council_status`, and so on) and starts the reviewers' conversations through it.
+  `Conversations` (core/engine.ts) is the host-neutral interface: `ask` starts one conversation and resolves when its
+  turn ends, and the host resolves each ask in `replied`. When there is no kept context, after a Mirador restart, Start
+  asks the agent to call `council_begin`, and that tool starts the review.
+- **Limits.** Seats run in parallel. Stop aborts the review. Started conversations run on, and their replies are
+  ignored. A Mirador restart interrupts a running review, as before.
+- **Model and effort.** A seat runs on its profile's defaults. [mirador-api.md](mirador-api.md) lists the API
+  extensions that would allow more.
 
 ## Later milestones
 
 3. **Independent reviews in earnest**: reviewer briefs per profile and depth, evidence with line ranges and quotes,
    evidence checked against the files (a cited line must exist), a report exported to the target as Markdown.
 4. **Deliberation and follow-up**: done with mocks (the protocol, the settlement rules, the verdict, the view's Council
-   tab, rulings, the hand-off file, fix requests and the re-check). Still to do: real agents in the rounds, real fixes
-   and re-checks, and normalising duplicate findings (the mocks deliberately report overlapping ones).
+   tab, rulings, the hand-off file, fix requests and the re-check). Real agents in the rounds, proposals and re-checks
+   are done in milestone 2. Still to do: normalising duplicate findings (the mocks deliberately report overlapping ones).
 5. **Advanced UI**: findings explorer, evidence viewer, report export. The deliberation timeline per finding is done.
 
 Then, if wanted, a standalone Electrobun app: `hosts/desktop/` with its own `CouncilBridge`, a direct-ACP runner, and

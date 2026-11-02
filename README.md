@@ -26,9 +26,8 @@ It's a hearing, not a vote.
 
 ## Where it stands
 
-Early days. The workbench runs today with stand-in reviewers: you set up a review, watch four seats work, browse the
-findings, read the stand-ins argue them out to a verdict, then rule on the findings and see the fixes re-checked. Real
-agents are next, and they will need to argue too.
+Early days. Seats can now be real agents on your Mirador profiles, or mocks for demos. You set up a review, watch four seats
+work, browse the findings, read them argued out to a verdict, then rule on the findings and see the fixes re-checked.
 The [roadmap](docs/architecture.md) has the details.
 
 ## Try it

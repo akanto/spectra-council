@@ -1,6 +1,7 @@
 /** The live workspace: one panel per seat, what each reviewer is doing, and the findings as they come in. */
 import type { Activity, Finding, Review, Reviewer } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
+import { isProfileAgent } from "../core/agents.ts";
 import { bySeverity } from "../core/describe.ts";
 import { ActionPlan } from "./Actions.tsx";
 import { cx, elapsed, FindingStatusBadge, FixBadge, RulingMark, SeverityBadge, StatusMark, statusWord, VerdictBanner } from "./ui.tsx";
@@ -108,7 +109,7 @@ export function Workspace({ review, now, openReviewer, openFinding, act, busy, o
       <ActionPlan review={review} act={act} busy={busy} compact {...(openPath ? { openPath } : {})} />
       <div className="seat-grid">
         {review.reviewers.map((reviewer) => (
-          <SeatPanel key={reviewer.id} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} mock={review.runner === "mock"} open={() => openReviewer(reviewer.id)} />
+          <SeatPanel key={reviewer.id} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} mock={!isProfileAgent(reviewer.agent)} open={() => openReviewer(reviewer.id)} />
         ))}
       </div>
       <section className="findings-summary">

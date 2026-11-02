@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import type { Review } from "./model.ts";
+import { lastJson } from "./replies.ts";
 
 /** What the fixer ends its final message with, inside a ```json fence. */
 export const fixerReportSchema = z.object({
@@ -40,16 +41,4 @@ export function fixerPrompt(review: Review, findingIds: string[], handoffPath: s
 }
 
 /** The fixer's report from its final message: the last ```json block that parses, or null when there is none. */
-export function parseFixerReport(text: string | null): FixerReport | null {
-  if (!text) return null;
-  const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((match) => match[1]!).reverse();
-  for (const block of blocks) {
-    try {
-      const parsed = fixerReportSchema.safeParse(JSON.parse(block));
-      if (parsed.success) return parsed.data;
-    } catch {
-      // Not JSON: try the block before it.
-    }
-  }
-  return null;
-}
+export const parseFixerReport = (text: string | null): FixerReport | null => lastJson(text, fixerReportSchema);

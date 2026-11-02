@@ -53,6 +53,9 @@ async function standInAgent(canvas: Canvas, text: string) {
 /** Item ids are unique across pages, as Mirador's are across conversations: the host keys its running reviews by them. */
 let nextItem = 1;
 
+/** The plugin's storage, shared by the pages: profiles "seated before", so the setup offers them. */
+const storage = new Map<string, unknown>([["seatedProfiles", ["Home", "pi home"]]]);
+
 /** One page's canvas: its items, and the socket to tell about each change. */
 class Canvas {
   items: PluginItem<Review>[] = [];
@@ -74,7 +77,7 @@ class Canvas {
         this.push(item);
         return item;
       },
-      storage: { get: () => undefined, set: () => {} },
+      storage: { get: (key) => storage.get(key), set: (key, value) => void storage.set(key, value) },
       profileSetting: () => null,
       publish: ({ type, title, data }) => {
         const item: PluginItem<Review> = { id: `item-${nextItem++}`, type, title, data, createdAt: Date.now(), dismissed: false, agentEditedAt: null };
@@ -86,7 +89,7 @@ class Canvas {
         void standInAgent(this, text);
       },
       startConversation: async () => {
-        throw new Error("The harness has no conversations.");
+        throw new Error("The harness has no Mirador profiles; seat mocks here.");
       },
     };
   }

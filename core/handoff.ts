@@ -42,6 +42,7 @@ export function handoffMarkdown(review: Review): string {
   out.push(`- Council: ${plural(seated.length, "reviewer")} (${seated.map((reviewer) => reviewer.label).join(", ")}), ${plural(review.rounds, "deliberation round")}`);
   if (review.verdict) out.push(`- Date: ${isoDate(review.verdict.at)}`);
   if (review.runner === "mock") out.push("- Note: the reviewers in this review are deterministic mocks, not real agents; the findings are illustrative.");
+  if (review.runner === "mixed") out.push("- Note: some reviewers in this review are deterministic mocks; their findings are illustrative.");
   out.push("");
   out.push("## Verdict", "", review.verdict ? oneLine(review.verdict.summary) : "The council has not given a verdict.", "");
   out.push("## How to use this", "");

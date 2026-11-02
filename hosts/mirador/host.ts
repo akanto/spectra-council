@@ -6,9 +6,10 @@
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { defaultSeats } from "../../core/agents.ts";
+import { AgentRunner } from "../../core/agent-runner.ts";
+import { agentLabel, defaultSeats, isProfileAgent, profileName, runnerKindOf } from "../../core/agents.ts";
 import { describeReview, outcomeOf } from "../../core/describe.ts";
-import { ReviewSession, systemClock, type Clock } from "../../core/engine.ts";
+import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
 import { acceptedFindings, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
 import { isFinished, isRunning, seatedReviewers, type Review } from "../../core/model.ts";
@@ -18,9 +19,13 @@ import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from 
 import { bySeverity } from "../../core/describe.ts";
 import { depthSchema, problemsOf, profileIdSchema, SEATS, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, targetKind } from "../../core/target-files.ts";
-import type { CanvasActionContext, CanvasHost, CanvasPluginContext, PluginItem } from "./api.ts";
+import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
 
 export const ITEM_TYPE = "council";
+
+/** Where the plugin's storage keeps the Mirador profiles seated before, most recent first. */
+export const PROFILES_KEY = "seatedProfiles";
+const REMEMBERED_PROFILES = 12;
 
 /** The profile setting that names who fixes a review's accepted findings; none means this conversation's agent. */
 export const FIXER_SETTING = "fixer";
@@ -36,7 +41,7 @@ const openInput = z.object({
     .array(z.string().min(1))
     .max(SEATS)
     .optional()
-    .describe("Agent ids to seat, in order (mock-claude, mock-codex, mock-gemini, mock-qwen); default: the first two of four."),
+    .describe('Agents to seat, in order: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen); default: the first two mocks of four.'),
   instructions: z.string().optional().describe("What the user asked the reviewers to pay attention to, in their words."),
   title: z.string().min(1).optional().describe('The review\'s title, e.g. "Architecture review of the payment service".'),
 });
@@ -49,6 +54,10 @@ const markFixedInput = z.object({
 });
 
 const delegateInput = z.object({
+  review: z.string().min(1).optional().describe("The review's id; default: this conversation's newest review."),
+});
+
+const beginInput = z.object({
   review: z.string().min(1).optional().describe("The review's id; default: this conversation's newest review."),
 });
 
@@ -82,6 +91,55 @@ export function createCouncilHost({
 }: HostOptions = {}): CanvasHost<Review> {
   /** The reviews running in this process, by item id; one missing for a running review was cut short by a restart. */
   const sessions = new Map<string, ReviewSession>();
+  /**
+   * The latest tool call's context, by conversation: only a tool may start a conversation, and Mirador's tool context
+   * stays usable after the tool returned, so reviewers' conversations start through it (docs/mirador-api.md). Lost on a
+   * restart, when council_begin brings one back.
+   */
+  const toolContexts = new Map<string, CanvasToolContext<Review>>();
+  /** Reviewer conversations waiting for their turn to end, by conversation id; `replied` settles them. */
+  const pending = new Map<string, (reply: ConversationReply) => void>();
+
+  /** Notes a profile the council seated, most recent first, for the setup to offer. */
+  function rememberProfile(storage: CanvasPluginContext<Review>["storage"], name: string) {
+    const known = storage.get(PROFILES_KEY);
+    const before = Array.isArray(known) ? known.filter((each): each is string => typeof each === "string") : [];
+    storage.set(PROFILES_KEY, [name, ...before.filter((each) => each.toLowerCase() !== name.toLowerCase())].slice(0, REMEMBERED_PROFILES));
+  }
+
+  /** Conversations on Mirador profiles, started for the reviews of the conversation `chairId`. */
+  function conversationsOf(chairId: string, storage: CanvasPluginContext<Review>["storage"]): Conversations {
+    return {
+      ask: ({ profile, prompt, signal, onStart }) =>
+        new Promise<AgentReply>((resolve, reject) => {
+          const tool = toolContexts.get(chairId);
+          if (!tool) return reject(new Error("Mirador was restarted since this review started; ask the agent to call council_begin."));
+          if (signal.aborted) return reject(signal.reason);
+          let id: string | null = null;
+          const onAbort = () => {
+            if (id) pending.delete(id);
+            reject(signal.reason);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          tool.startConversation({ profile, prompt }).then(
+            (started) => {
+              if (signal.aborted) return;
+              id = started.id;
+              rememberProfile(storage, started.profile);
+              pending.set(started.id, ({ text, ended }) => {
+                signal.removeEventListener("abort", onAbort);
+                resolve({ conversationId: started.id, profile: started.profile, text, ended });
+              });
+              onStart?.(started.id);
+            },
+            (error: unknown) => {
+              signal.removeEventListener("abort", onAbort);
+              reject(error);
+            },
+          );
+        }),
+    };
+  }
 
   /** The conversation's reviews, each brought up to this version's format. */
   const councilItems = (context: CanvasPluginContext<Review>) =>
@@ -153,7 +211,10 @@ export function createCouncilHost({
   function launch(item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review, work: (session: ReviewSession) => Promise<Review>) {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const out = writer(context, item.id);
-    const session = new ReviewSession(review, { runner: new MockRunner(listFiles, clock), clock, onChange: (next) => out.write(next) });
+    const mock = new MockRunner(listFiles, clock);
+    const agents = new AgentRunner(conversationsOf(context.conversationId, context.storage), clock);
+    const runner = routeByAgent((agent) => (isProfileAgent(agent) ? agents : mock));
+    const session = new ReviewSession(review, { runner, clock, onChange: (next) => out.write(next) });
     sessions.set(item.id, session);
     // The engine ends each reviewer itself, failed or not; the work rejects only on a bug, which is logged.
     work(session)
@@ -164,13 +225,26 @@ export function createCouncilHost({
       });
   }
 
-  async function start(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
+  /** The review of an item, if it can start now; otherwise says why not. */
+  async function startable(item: PluginItem<Review>): Promise<Review> {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const review = settled(item);
     if (review.phase !== "setup") throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before starting the review.");
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
       throw new Error(`There is no file or folder at ${review.target}; give the absolute path of what to review.`);
+    }
+    return review;
+  }
+
+  /** The user's Start: runs the review, or, with profile seats and no tool context to start them from, asks the agent to. */
+  async function start(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
+    const review = await startable(item);
+    const profiles = seatedReviewers(review).filter((reviewer) => isProfileAgent(reviewer.agent));
+    if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
+      const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
+      await context.prompt(`The user started Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
+      return null;
     }
     launch(item, context, review, (session) => session.run());
     return null;
@@ -237,6 +311,21 @@ export function createCouncilHost({
     return null;
   }
 
+  /** Keeps each tool call's context, so reviewers' conversations can start from it later. */
+  const keepingContext = (tools: Record<string, CanvasTool<Review>>): Record<string, CanvasTool<Review>> =>
+    Object.fromEntries(
+      Object.entries(tools).map(([name, tool]) => [
+        name,
+        {
+          ...tool,
+          run(input: unknown, context: CanvasToolContext<Review>) {
+            toolContexts.set(context.conversationId, context);
+            return tool.run(input, context);
+          },
+        },
+      ]),
+    );
+
   return {
     items: {
       [ITEM_TYPE]: {
@@ -247,10 +336,10 @@ export function createCouncilHost({
         listed: settled,
       },
     },
-    tools: {
+    tools: keepingContext({
       council_open: {
         description:
-          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Reviewers are deterministic mocks for now, so their findings are illustrative. Read a review's progress and findings with council_status.",
+          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile) or deterministic mock personas for demos. Read a review's progress and findings with council_status.",
         input: jsonSchema(openInput),
         async run(input, context) {
           const parsed = openInput.safeParse(input);
@@ -262,9 +351,24 @@ export function createCouncilHost({
           agents?.forEach((agent, index) => (seats[index] = { agent, enabled: true }));
           if (agents) for (let index = agents.length; index < SEATS; index++) seats[index] = { ...seats[index]!, enabled: false };
           const setup: Setup = { target, profile, depth, seats, instructions };
-          const review = newReview(newId(), setup, "mock", clock.now());
+          const review = newReview(newId(), setup, runnerKindOf(seats), clock.now());
           const item = context.publish({ type: ITEM_TYPE, title: title ?? `${PROFILES[profile].title} review · ${basename(target)}`, data: review });
-          return `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings. The reviewers are deterministic mocks for now.`;
+          const seated = seatedReviewers(review).map((reviewer) => `${agentLabel(reviewer.agent)}${isProfileAgent(reviewer.agent) ? "" : " (mock)"}`);
+          return `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup, seating ${seated.join(", ")}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
+        },
+      },
+      council_begin: {
+        description:
+          "Start a Spectra Council review the user pressed Start on, when it asks you to: starts a conversation for each seat on its Mirador profile. Only call it when the canvas asks; the review then runs on its own and you hear when it ends.",
+        input: jsonSchema(beginInput),
+        async run(input, context) {
+          const parsed = beginInput.safeParse(input);
+          if (!parsed.success) throw new Error(problemsOf(parsed.error));
+          const item = itemFor(context, parsed.data.review);
+          const review = await startable(item);
+          launch(item, context, review, (session) => session.run());
+          const seated = seatedReviewers(review).map((reviewer) => agentLabel(reviewer.agent));
+          return `Started review ${review.id} with ${seated.join(", ")}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
         },
       },
       council_status: {
@@ -309,10 +413,10 @@ export function createCouncilHost({
           return `Marked ${finding} fixed in review ${next.id}.${open.length > 0 ? ` Still to fix: ${open.join(", ")}.` : " Every handed-off finding is fixed; the user can have the council re-check them."}`;
         },
       },
-    },
+    }),
     guidance: {
       instructions:
-        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. council_status reads its progress and findings; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile.",
+        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. When the canvas asks you to call council_begin, do. council_status reads its progress and findings; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile.",
     },
     async action(item, action, context) {
       const parsed = viewActionSchema.safeParse(action);
@@ -335,6 +439,10 @@ export function createCouncilHost({
           return verify(item, context);
         case "fixer":
           return { profile: context.profileSetting(FIXER_SETTING) || null };
+        case "profiles": {
+          const known = context.storage.get(PROFILES_KEY);
+          return { profiles: Array.isArray(known) ? known.filter((each) => typeof each === "string") : [] };
+        }
         case "stop": {
           const session = sessions.get(item.id);
           if (session) session.stop();
@@ -343,8 +451,17 @@ export function createCouncilHost({
         }
       }
     },
-    /** A fixer conversation ended its work: what it says it fixed shows as fixed, and the rest says why not. */
+    /**
+     * A conversation the plugin started ended its turn: a reviewer's goes back to its runner; a fixer's shows what it
+     * says it fixed as fixed, and the rest says why not.
+     */
     replied(started, reply, context) {
+      const reviewer = pending.get(started.id);
+      if (reviewer) {
+        pending.delete(started.id);
+        reviewer(reply);
+        return;
+      }
       for (const item of councilItems(context)) {
         const review = item.data;
         const mine = review.findings.filter((finding) => finding.fix?.fixer?.conversationId === started.id);
