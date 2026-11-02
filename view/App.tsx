@@ -1,0 +1,134 @@
+/** The Spectra Council view: setup, then the live workspace and the findings, around one review the host hands in. */
+import { useCallback, useEffect, useRef, useState } from "react";
+import { isFinished, isRunning, seatedReviewers, type Review } from "../core/model.ts";
+import { DEPTH_LABELS, PROFILES } from "../core/profiles.ts";
+import type { SetupPatch, ViewAction } from "../core/schemas.ts";
+import type { CouncilBridge } from "./bridge.ts";
+import { Findings } from "./Findings.tsx";
+import { ReviewerDetail } from "./ReviewerDetail.tsx";
+import { Setup } from "./Setup.tsx";
+import { cx, elapsed, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
+import { Workspace } from "./Workspace.tsx";
+
+type Tab = "workspace" | "findings";
+
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** Sends actions one after another, so a setup change always lands before the start that follows it. */
+function useSender(bridge: CouncilBridge, onError: (message: string | null) => void) {
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const [busy, setBusy] = useState(0);
+  const send = useCallback(
+    (action: ViewAction) => {
+      setBusy((count) => count + 1);
+      const sent = queue.current.then(() => bridge.send(action));
+      queue.current = sent.catch(() => {});
+      sent.then(
+        () => onError(null),
+        (error) => onError(messageOf(error)),
+      ).finally(() => setBusy((count) => count - 1));
+      return sent;
+    },
+    [bridge, onError],
+  );
+  return { send, busy: busy > 0 };
+}
+
+export function App({ bridge }: { bridge: CouncilBridge }) {
+  const [review, setReview] = useState<Review | null>(null);
+  const [tab, setTab] = useState<Tab>("workspace");
+  const [reviewerId, setReviewerId] = useState<string | null>(null);
+  const [focus, setFocus] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const { send, busy } = useSender(bridge, setProblem);
+  useEffect(() => bridge.onReview(setReview), [bridge]);
+  const now = useNow(review !== null && isRunning(review));
+
+  if (!review) return <div className="loading">Loading the review…</div>;
+
+  const openFinding = (id: string) => {
+    setFocus(id);
+    setTab("findings");
+  };
+  const target = review.target;
+  const openPath = bridge.openFile ? (path: string) => bridge.openFile!(path === target || path.startsWith("/") ? path : `${target.replace(/\/$/, "")}/${path}`) : undefined;
+  const seated = seatedReviewers(review).length;
+  const time = elapsed(review.startedAt, review.endedAt, now);
+
+  return (
+    <div className="app">
+      <header className="top">
+        <div className="brand">
+          <Logo />
+          <span className="brand-name">Spectra Council</span>
+          {review.phase !== "setup" && (
+            <span className="target mono" title={target}>
+              <bdi>{target}</bdi>
+            </span>
+          )}
+        </div>
+        <PhasePill phase={review.phase} />
+      </header>
+      <div className="chips">
+        <span className="chip static">{PROFILES[review.profile].title} review</span>
+        <span className="chip static">
+          {seated} agent{seated === 1 ? "" : "s"}
+        </span>
+        <span className="chip static">{DEPTH_LABELS[review.depth].title} depth</span>
+        {review.runner === "mock" && (
+          <span className="chip static mock" title="Deterministic mock reviewers: their findings are illustrative, not an analysis of your files.">
+            Mock reviewers
+          </span>
+        )}
+      </div>
+
+      {problem && (
+        <div className="problem" role="alert">
+          {problem}
+          <button className="icon-button" onClick={() => setProblem(null)} aria-label="Dismiss">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {review.phase === "setup" ? (
+        <Setup review={review} busy={busy} configure={(patch: SetupPatch) => void send({ kind: "configure", patch }).catch(() => {})} start={() => void send({ kind: "start" }).catch(() => {})} />
+      ) : (
+        <>
+          <nav className="tabs" role="tablist">
+            <button role="tab" aria-selected={tab === "workspace"} className={cx(tab === "workspace" && "chosen")} onClick={() => setTab("workspace")}>
+              Workspace
+            </button>
+            <button role="tab" aria-selected={tab === "findings"} className={cx(tab === "findings" && "chosen")} onClick={() => setTab("findings")}>
+              Findings <span className="muted">{review.findings.length}</span>
+            </button>
+          </nav>
+          <div className={cx("body", reviewerId && "with-detail")}>
+            <main>
+              {tab === "workspace" ? (
+                <Workspace review={review} now={now} openReviewer={(id) => setReviewerId(reviewerId === id ? null : id)} openFinding={openFinding} />
+              ) : (
+                <Findings review={review} focus={focus} {...(openPath ? { openPath } : {})} />
+              )}
+            </main>
+            {reviewerId && (
+              <ReviewerDetail review={review} reviewerId={reviewerId} now={now} close={() => setReviewerId(null)} openFinding={openFinding} {...(openPath ? { openPath } : {})} />
+            )}
+          </div>
+          <footer className="bar">
+            <span>
+              Phase: <strong>{PHASE_WORDS[review.phase]}</strong>
+              {time && <span className="muted"> · {time}</span>}
+              {isFinished(review) && <span className="muted"> · {review.findings.length} findings</span>}
+            </span>
+            {isRunning(review) && (
+              <button disabled={busy} onClick={() => void send({ kind: "stop" }).catch(() => {})}>
+                Stop
+              </button>
+            )}
+          </footer>
+        </>
+      )}
+    </div>
+  );
+}

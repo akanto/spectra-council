@@ -1,0 +1,11 @@
+{
+  "name": "spectra-council",
+  "title": "Spectra Council",
+  "version": "0.1.0",
+  "api": 5,
+  "canvas": {
+    "host": "hosts/mirador/host.ts",
+    "view": "dist/view.js"
+  },
+  "build": "bun install --frozen-lockfile && bun run build"
+}
