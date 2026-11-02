@@ -38,6 +38,13 @@ sequenceDiagram
   A->>H: council_status
 ```
 
+After the independent reviews, the reviewers that finished deliberate (`core/deliberation.ts`). The round counts are
+quick 2, standard 3 and deep 4. Each round emits `round-started`, then one `argued` per reviewer (backs, challenges or
+is unsure about a finding, with evidence). Reporters answer challenges with `argued` too. Then `synthesis-started`
+and one `finding-resolved` per finding (`agreed`, `confirmed`, `disputed` or `withdrawn`), and `concluded` with the
+verdict line. `deliberation-started` opens the phase. The settlement rules live in `settle`, and `verdictSummary`
+writes the verdict. Stored reviews from the earlier format are upgraded on read (`upgradeReview`).
+
 ## Milestone 2 plan: real reviewers through Mirador
 
 - **Seats from profiles.** The plugin declares profile settings (or a setting per seat whose choices are `"profiles"`),
@@ -52,6 +59,9 @@ sequenceDiagram
 - **Ending.** `replied(started, reply)` fires when a reviewer's turn ends: `finished` completes the seat, `failed` or
   `stopped` fails it. A runner for this is event-driven rather than a promise per reviewer; the reducer already takes
   its events.
+- **Deliberation turns.** Real reviewers also need a deliberation turn: a `council_argue` tool alongside
+  `council_report_finding`, which takes a finding's stance (backs, challenges, unsure) with evidence, or a rebuttal.
+  Each round starts one fresh conversation per reviewer, so the mock's round loop and `argued` events carry over.
 - Constraint: conversations a plugin started can't start more (one level). Each deliberation round therefore starts
   fresh reviewer conversations from the chairing agent, which suits anonymous cross-review.
 
@@ -59,10 +69,10 @@ sequenceDiagram
 
 3. **Independent reviews in earnest**: reviewer briefs per profile and depth, evidence with line ranges and quotes,
    evidence checked against the files (a cited line must exist), a report exported to the target as Markdown.
-4. **Deliberation**: normalise duplicate findings (the mocks deliberately report overlapping ones), anonymous
-   cross-review rounds where each reviewer supports, challenges or is uncertain about others' findings with confidence
-   and evidence, rebuttals, then synthesis into a verdict per finding (`confirmed`, `disputed`, `agreed`, `withdrawn`).
-5. **Advanced UI**: deliberation timeline per finding, findings explorer, evidence viewer, report export.
+4. **Deliberation**: done with mocks (the protocol, the settlement rules, the verdict and the view's Council tab).
+   Still to do: real agents in the rounds, and normalising duplicate findings (the mocks deliberately report
+   overlapping ones).
+5. **Advanced UI**: findings explorer, evidence viewer, report export. The deliberation timeline per finding is done.
 
 Then, if wanted, a standalone Electrobun app: `hosts/desktop/` with its own `CouncilBridge`, a direct-ACP runner, and
 its own persistence, as neo-manuscript does.

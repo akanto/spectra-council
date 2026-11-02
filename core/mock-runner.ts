@@ -4,8 +4,9 @@
  * it read. The same agent, profile, depth and files always give the same script: `mockScript` is pure, and the runner
  * only plays it on a clock.
  */
-import type { Clock, Report, ReviewerJob, ReviewerRunner } from "./engine.ts";
-import type { ProfileId, Depth, FindingInput, Severity, Confidence } from "./schemas.ts";
+import type { Clock, DeliberationJob, Report, ReviewerJob, ReviewerRunner } from "./engine.ts";
+import { argumentsOn, type Argument, type Finding } from "./model.ts";
+import type { ProfileId, Depth, Evidence, FindingInput, Severity, Confidence, Stance } from "./schemas.ts";
 
 /** Lists a review target's files, relative to it, for a mock to pick from. */
 export type FileLister = (target: string) => Promise<string[]>;
@@ -176,6 +177,202 @@ export function mockScript(job: Pick<ReviewerJob, "review" | "reviewer" | "profi
   return steps;
 }
 
+/** How likely each persona is to back, challenge or be unsure of a finding it didn't report. */
+const ODDS: Record<string, [supports: number, challenges: number]> = {
+  "mock-claude": [0.6, 0.22],
+  "mock-codex": [0.32, 0.5],
+  "mock-gemini": [0.4, 0.25],
+  "mock-qwen": [0.4, 0.46],
+};
+const DEFAULT_ODDS: [number, number] = [0.45, 0.35];
+
+type PickOne = <T>(options: T[]) => T;
+
+/** Fills `{name}` slots of a template. */
+const fill = (template: string, slots: Record<string, string>) => template.replace(/\{(\w+)\}/g, (_, key: string) => slots[key] ?? "");
+
+const SUPPORTS: Record<string, string[]> = {
+  "mock-claude": [
+    "The tests around {loc} bear this out: {id}, “{title}”, holds.",
+    "I cross-checked {loc} against the tests and nothing covers it, so {id} stands.",
+  ],
+  "mock-codex": [
+    "Tracing the call path through {loc} reaches the problem {id} describes. “{title}” is real.",
+    "I followed the code to {loc} and it behaves as {id} says.",
+  ],
+  "mock-gemini": [
+    "The docs promise otherwise and {loc} confirms the gap in {id}, “{title}”.",
+    "What the docs say and what {loc} does differ, as {id} reports.",
+  ],
+  "mock-qwen": [
+    "I tried the edge cases at {loc} and {id}, “{title}”, shows up on them.",
+    "The unusual inputs at {loc} make {id} fail the way it describes.",
+  ],
+};
+
+const CHALLENGES: Record<string, string[]> = {
+  "mock-claude": [
+    "The tests around {loc} cover this, so “{title}” ({id}) does not follow.",
+    "{loc} is exercised by a test that would fail if {id} were right.",
+  ],
+  "mock-codex": [
+    "Tracing the call path, {loc} already handles this, so the problem in {id} never arises.",
+    "The call at {loc} is guarded two lines later, so the failure {id} describes is handled.",
+  ],
+  "mock-gemini": [
+    "The docs and {loc} disagree with {id}: the behaviour it calls a gap is documented and intended.",
+    "{loc} does what the design says it should, so I don't see “{title}” as a problem.",
+  ],
+  "mock-qwen": [
+    "At the edge case in {loc} the value is validated before use, so {id} does not hold.",
+    "I tried the empty and oversized inputs at {loc}; both are rejected, which contradicts {id}.",
+  ],
+};
+
+const UNSURE = [
+  "I can't tell from {loc} whether {id}, “{title}”, holds; it depends on how callers use it.",
+  "{loc} is ambiguous about {id}. I'd need to see the caller before taking a side.",
+  "Something is off at {loc}, but I can't say it is the problem {id} names.",
+];
+
+const REBUTTALS = [
+  "{who}'s objection to {id} misses {loc}: the problem is reached on a path that skips the guard.",
+  "The guard {who} points to doesn't cover everything. {loc} shows the case {id} is about.",
+  "That answers only part of {id}. At {loc} the failure still happens when the guard is bypassed.",
+];
+
+const CONCESSIONS = [
+  "Fair point — I withdraw {id}.",
+  "{who} is right, and {loc} shows it. I withdraw {id}, “{title}”.",
+  "On reflection {id} doesn't hold up against {loc}. I'm dropping it.",
+];
+
+const COMES_ROUND = [
+  "That answers my objection: {loc} does show the problem. I now back {id}.",
+  "I missed the path through {loc}. With it, {id} stands and I withdraw my challenge.",
+];
+
+const HOLDS = [
+  "The answer on {id} doesn't deal with {loc}: the unchecked path is still reachable. My challenge stands.",
+  "Still not convinced by the reply on {id}. {loc} is read without the check, as before.",
+];
+
+const RECONSIDERS = [
+  "Seeing the evidence others gave on {id}, I take another look at {loc} and now back it.",
+  "Having read what the others found on {id}, I withdraw my challenge: {loc} doesn't hold up against them.",
+];
+
+const CHECKING = ["Checking {id}'s evidence in {path}", "Weighing {id}: “{title}”", "Re-reading {path} for {id}"];
+
+/** The steps one mock reviewer takes in one deliberation round, from the review as the round starts. */
+export function mockDeliberation(job: DeliberationJob): MockStep[] {
+  const { review, reviewer, round } = job;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const odds = ODDS[reviewer.agent] ?? DEFAULT_ODDS;
+  const seed = `${reviewer.agent}|${review.profile}|${review.depth}|${round}|${review.findings.length}`;
+  const next = random(hash(seed));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const steps: MockStep[] = [];
+  const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
+  const pickFrom: PickOne = (options) => options[Math.floor(next() * options.length)]!;
+  const nameOf = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
+
+  const reads = [...new Set(reviewer.activity.flatMap((each) => (each.kind === "read" && each.path ? [each.path] : [])))];
+  const evidenceFor = (finding: Finding, note: string): Evidence => {
+    const path = pickFrom([...finding.evidence.map((each) => each.path), ...reads]);
+    return { path, line: 8 + Math.floor(next() * 140), note };
+  };
+  const stances = (): Stance => {
+    const roll = next();
+    return roll < odds[0] ? "supports" : roll < odds[0] + odds[1] ? "challenges" : "uncertain";
+  };
+
+  /** Shows the checking, then the argument. */
+  const argue = (finding: Finding, evidence: Evidence[], stance: Stance, confidence: Confidence, text: string, replyTo?: string) => {
+    const path = evidence[0]?.path ?? finding.evidence[0]?.path ?? "the target";
+    step(pause(250), { type: "activity", kind: "status", text: fill(pickFrom(CHECKING), { id: finding.id, title: finding.title, path }) });
+    if (evidence[0] && next() < 0.4) step(pause(350), { type: "activity", kind: "read", text: `Reading ${evidence[0].path}`, path: evidence[0].path });
+    step(pause(400), { type: "argued", argument: { findingId: finding.id, stance, confidence, text, evidence, ...(replyTo === undefined ? {} : { replyTo }) } });
+  };
+
+  const slots = (finding: Finding, evidence: Evidence | undefined, who = ""): Record<string, string> => ({
+    id: finding.id,
+    title: finding.title,
+    loc: evidence ? `${evidence.path}:${evidence.line ?? 1}` : "the code",
+    who,
+  });
+  const textFor = (templates: string[], finding: Finding, evidence: Evidence | undefined, who = "") => fill(pickFrom(templates), slots(finding, evidence, who));
+  const forPersona = (table: Record<string, string[]>) => table[reviewer.agent] ?? table["mock-claude"]!;
+
+  for (const finding of review.findings) {
+    const own = finding.reviewerId === reviewer.id;
+    const mine = argumentsOn(review, finding.id).filter((each) => each.reviewerId === reviewer.id);
+    const reporterStance = finding.positions.find((each) => each.reviewerId === finding.reviewerId)?.stance;
+    // A finding its reporter conceded is settled; nobody argues about it any more.
+    if (reporterStance !== undefined && reporterStance !== "supports") continue;
+    const position = finding.positions.find((each) => each.reviewerId === reviewer.id);
+    const answered = (argument: Argument) => mine.some((each) => each.replyTo === argument.id);
+
+    if (round === 1) {
+      if (own || position) continue;
+      const twin = review.findings.find((each) => each.reviewerId === reviewer.id && each.title === finding.title);
+      if (twin) {
+        argue(finding, twin.evidence, "supports", "high", `I found the same independently in ${twin.id}: “${finding.title}”. ${textFor(forPersona(SUPPORTS), finding, twin.evidence[0])}`);
+        continue;
+      }
+      const stance = stances();
+      if (stance === "supports") {
+        const evidence = evidenceFor(finding, "Where the problem shows.");
+        argue(finding, [evidence], "supports", pickFrom(["medium", "high"] as Confidence[]), textFor(forPersona(SUPPORTS), finding, evidence));
+      } else if (stance === "challenges") {
+        const evidence = evidenceFor(finding, "Where the claim fails.");
+        argue(finding, [evidence], "challenges", pickFrom(["medium", "high"] as Confidence[]), textFor(forPersona(CHALLENGES), finding, evidence));
+      } else {
+        const evidence = evidenceFor(finding, "What I couldn't settle.");
+        argue(finding, [evidence], "uncertain", "low", textFor(UNSURE, finding, evidence));
+      }
+      continue;
+    }
+
+    if (own) {
+      const open = argumentsOn(review, finding.id).filter((each) => each.reviewerId !== reviewer.id && each.stance === "challenges" && !answered(each));
+      if (open.length === 0) continue;
+      const rebut = next() < 0.65;
+      const concedeStance: Stance = next() < 0.5 ? "uncertain" : "challenges";
+      for (const challenge of open) {
+        const evidence = evidenceFor(finding, rebut ? "Shows the case the guard misses." : "Where the objection holds.");
+        const who = nameOf(challenge.reviewerId);
+        if (rebut) argue(finding, [evidence], "supports", "high", textFor(REBUTTALS, finding, evidence, who), challenge.id);
+        else argue(finding, [], concedeStance, "medium", textFor(CONCESSIONS, finding, evidence, who), challenge.id);
+      }
+      continue;
+    }
+
+    if (position?.stance === "challenges") {
+      const rebuttal = argumentsOn(review, finding.id).find((each) => each.reviewerId === finding.reviewerId && each.stance === "supports" && each.replyTo !== undefined && mine.some((m) => m.id === each.replyTo) && !answered(each));
+      if (rebuttal) {
+        const evidence = evidenceFor(finding, "Where I looked again.");
+        if (next() < 0.4) argue(finding, [evidence], "supports", "medium", textFor(COMES_ROUND, finding, evidence), rebuttal.id);
+        else argue(finding, [evidence], "challenges", "medium", textFor(HOLDS, finding, evidence), rebuttal.id);
+      } else {
+        const backing = argumentsOn(review, finding.id).find((each) => each.reviewerId !== reviewer.id && each.stance === "supports" && each.evidence.length > 0);
+        const alreadyBacked = mine.at(-1)?.round === round;
+        if (backing && !alreadyBacked && !mine.some((each) => each.round >= 2) && next() < 0.2) {
+          const evidence = evidenceFor(finding, "Where I looked again.");
+          argue(finding, [evidence], "supports", "medium", textFor(RECONSIDERS, finding, evidence));
+        }
+      }
+    } else if (position?.stance === "uncertain") {
+      const evidence = evidenceFor(finding, "What settled it.");
+      if (next() < 0.55) argue(finding, [evidence], "supports", "medium", textFor(forPersona(SUPPORTS), finding, evidence));
+      else argue(finding, [evidence], "challenges", "medium", textFor(forPersona(CHALLENGES), finding, evidence));
+    }
+  }
+
+  if (steps.length === 0) step(pause(300), { type: "activity", kind: "status", text: `Nothing new to answer in round ${round}` });
+  return steps;
+}
+
 /** Plays mock scripts on a clock. */
 export class MockRunner implements ReviewerRunner {
   constructor(
@@ -187,6 +384,13 @@ export class MockRunner implements ReviewerRunner {
     const files = await this.listFiles(job.review.target);
     if (files.length === 0) throw new Error(`There are no files to review in ${job.review.target}.`);
     for (const { delayMs, report: each } of mockScript(job, files)) {
+      await this.clock.sleep(delayMs, signal);
+      report(each);
+    }
+  }
+
+  async deliberate(job: DeliberationJob, report: (report: Report) => void, signal: AbortSignal) {
+    for (const { delayMs, report: each } of mockDeliberation(job)) {
       await this.clock.sleep(delayMs, signal);
       report(each);
     }

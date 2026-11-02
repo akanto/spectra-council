@@ -1,7 +1,7 @@
 /** The live workspace: one panel per seat, what each reviewer is doing, and the findings as they come in. */
 import type { Activity, Finding, Review, Reviewer } from "../core/model.ts";
 import { bySeverity } from "../core/describe.ts";
-import { cx, elapsed, FindingStatusBadge, SeverityBadge, StatusMark, statusWord } from "./ui.tsx";
+import { cx, elapsed, FindingStatusBadge, SeverityBadge, StatusMark, statusWord, VerdictBanner } from "./ui.tsx";
 
 const ACTIVITY_ICONS: Record<Activity["kind"], string> = {
   status: "•",
@@ -10,6 +10,7 @@ const ACTIVITY_ICONS: Record<Activity["kind"], string> = {
   tool: "⚙",
   note: "✎",
   finding: "◆",
+  argument: "⇄",
   error: "!",
 };
 
@@ -34,7 +35,7 @@ export function ActivityLine({ activity, openPath, time }: { activity: Activity;
   );
 }
 
-function SeatPanel({ reviewer, findings, now, mock, open }: { reviewer: Reviewer; findings: number; now: number; mock: boolean; open(): void }) {
+function SeatPanel({ reviewer, findings, argued, now, mock, open }: { reviewer: Reviewer; findings: number; argued: number; now: number; mock: boolean; open(): void }) {
   if (!reviewer.enabled) {
     return (
       <div className="seat-panel empty">
@@ -62,6 +63,11 @@ function SeatPanel({ reviewer, findings, now, mock, open }: { reviewer: Reviewer
       <span className="seat-panel-foot">
         <span>
           Findings <strong>{findings}</strong>
+          {argued > 0 && (
+            <>
+              {" · "}Arguments <strong>{argued}</strong>
+            </>
+          )}
         </span>
         <span className="muted">{elapsed(reviewer.startedAt, reviewer.endedAt, now) ?? ""}</span>
       </span>
@@ -86,13 +92,16 @@ export function FindingRow({ finding, reviewer, onOpen }: { finding: Finding; re
 export function Workspace({ review, now, openReviewer, openFinding }: { review: Review; now: number; openReviewer(id: string): void; openFinding(id: string): void }) {
   const counts = new Map<string, number>();
   for (const finding of review.findings) counts.set(finding.reviewerId, (counts.get(finding.reviewerId) ?? 0) + 1);
+  const argued = new Map<string, number>();
+  for (const argument of review.arguments) argued.set(argument.reviewerId, (argued.get(argument.reviewerId) ?? 0) + 1);
   const label = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id)?.label ?? id;
   const top = [...review.findings].sort(bySeverity).slice(0, 6);
   return (
     <div className="workspace">
+      <VerdictBanner review={review} />
       <div className="seat-grid">
         {review.reviewers.map((reviewer) => (
-          <SeatPanel key={reviewer.id} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} now={now} mock={review.runner === "mock"} open={() => openReviewer(reviewer.id)} />
+          <SeatPanel key={reviewer.id} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} mock={review.runner === "mock"} open={() => openReviewer(reviewer.id)} />
         ))}
       </div>
       <section className="findings-summary">

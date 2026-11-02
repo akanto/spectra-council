@@ -11,7 +11,7 @@ import { ReviewSession, systemClock, type Clock } from "../../core/engine.ts";
 import { isFinished, isRunning, seatedReviewers, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
-import { newReview, reduce, ReviewError, type ReviewEvent } from "../../core/review.ts";
+import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { depthSchema, problemsOf, profileIdSchema, SEATS, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, targetKind } from "../../core/target-files.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, PluginItem } from "./api.ts";
@@ -57,7 +57,12 @@ export function createCouncilHost({
   /** The reviews running in this process, by item id; one missing for a running review was cut short by a restart. */
   const sessions = new Map<string, ReviewSession>();
 
-  const councilItems = (context: CanvasPluginContext<Review>) => context.items().filter((item) => item.type === ITEM_TYPE);
+  /** The conversation's reviews, each brought up to this version's format. */
+  const councilItems = (context: CanvasPluginContext<Review>) =>
+    context
+      .items()
+      .filter((item) => item.type === ITEM_TYPE)
+      .map((item) => ({ ...item, data: upgradeReview(item.data) }));
 
   /** Writes a running review's item at most every throttleMs; the end of a review is written at once. */
   function writer(context: CanvasPluginContext<Review>, itemId: string) {
@@ -87,9 +92,14 @@ export function createCouncilHost({
     };
   }
 
-  /** A review that says it runs, with no session here, was cut short: it is marked so before anything else touches it. */
-  const settled = (item: PluginItem<Review>): Review =>
-    isRunning(item.data) && !sessions.has(item.id) ? reduce(item.data, { type: "interrupted", at: clock.now() }) : item.data;
+  /**
+   * A stored review as it stands: upgraded to this version's format, and, if it says it runs with no session here, marked
+   * as cut short by a restart. Everything reads stored reviews through this.
+   */
+  const settled = (item: PluginItem<Review>): Review => {
+    const review = upgradeReview(item.data);
+    return isRunning(review) && !sessions.has(item.id) ? reduce(review, { type: "interrupted", at: clock.now() }) : review;
+  };
 
   function applyTo(item: PluginItem<Review>, context: CanvasPluginContext<Review>, event: ReviewEvent) {
     try {
@@ -128,15 +138,15 @@ export function createCouncilHost({
       [ITEM_TYPE]: {
         icon: "◎",
         placement: "page",
-        opensWithRoom: true,
-        outcome: outcomeOf,
+        opensWithRoom: { setting: "open" },
+        outcome: (data: Review) => outcomeOf(upgradeReview(data)),
         listed: settled,
       },
     },
     tools: {
       council_open: {
         description:
-          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, which the user watches live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Reviewers are deterministic mocks for now, so their findings are illustrative. Read a review's progress and findings with council_status.",
+          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Reviewers are deterministic mocks for now, so their findings are illustrative. Read a review's progress and findings with council_status.",
         input: jsonSchema(openInput),
         async run(input, context) {
           const parsed = openInput.safeParse(input);
@@ -197,7 +207,7 @@ export function createCouncilHost({
         heard: () => {
           for (const { id } of ended) {
             const latest = context.items().find((item) => item.id === id);
-            if (latest) context.change(id, { data: reduce(latest.data, { type: "agent-heard", at: clock.now() }) });
+            if (latest) context.change(id, { data: reduce(upgradeReview(latest.data), { type: "agent-heard", at: clock.now() }) });
           }
         },
       };

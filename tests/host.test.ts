@@ -63,6 +63,12 @@ describe("the Mirador host", () => {
     const review = canvas.item(id).data;
     expect(review.phase).toBe("complete");
     expect(review.findings.length).toBeGreaterThan(0);
+    expect(review.rounds).toBeGreaterThan(0);
+    expect(review.round).toBe(review.rounds);
+    expect(review.arguments.length).toBeGreaterThan(0);
+    expect(review.verdict?.summary).toBeTruthy();
+    expect(review.findings.every((finding) => finding.status !== "reported" && finding.resolution !== null)).toBe(true);
+    expect(review.reviewers.filter((reviewer) => reviewer.enabled).every((reviewer) => reviewer.status === "completed")).toBe(true);
     expect(await host.tools.council_status!.run({}, context)).toContain(`${review.findings.length}`);
 
     const note = host.note!(context)!;
@@ -105,5 +111,23 @@ describe("the Mirador host", () => {
     await expect(host.action!(canvas.item(id), { kind: "dance" }, context)).rejects.toThrow("Unknown action");
     await host.action!(canvas.item(id), { kind: "configure", patch: { seats: Array.from({ length: 4 }, () => ({ agent: "mock-qwen", enabled: false })) } }, context);
     await expect(host.action!(canvas.item(id), { kind: "start" }, context)).rejects.toThrow("Seat at least one reviewer");
+  });
+
+  test("a review stored in format 1 is read fine and upgraded", async () => {
+    const { host, canvas, context } = setup();
+    await host.tools.council_open!.run({ target }, context);
+    const { arguments: _a, round: _r, rounds: _rs, verdict: _v, ...rest } = canvas.items[0]!.data;
+    const stored = {
+      ...rest,
+      format: 1,
+      phase: "complete",
+      findings: [{ id: "F1", reviewerId: "r1", title: "Old", summary: "s", severity: "low", confidence: "low", category: "c", evidence: [], status: "reported", reportedAt: 1 }],
+    } as unknown as Review;
+    canvas.items[0] = { ...canvas.items[0]!, data: stored };
+
+    const listed = host.items.council!.listed!(canvas.items[0]!);
+    expect(listed).toMatchObject({ format: 2, arguments: [], round: 0, rounds: 0, verdict: null });
+    expect(listed.findings[0]).toMatchObject({ positions: [], resolution: null });
+    expect(await host.tools.council_status!.run({}, context)).toContain("Old");
   });
 });

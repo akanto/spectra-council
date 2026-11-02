@@ -859,3 +859,266 @@ h4 {
   flex-wrap: wrap;
   font-size: 1.1em;
 }
+
+/* Deliberation */
+
+.status-deliberating {
+  color: var(--warn);
+}
+
+.activity-argument .activity-icon {
+  color: var(--warn);
+}
+
+.stance-supports.badge {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) var(--soft), transparent);
+}
+
+.stance-challenges.badge {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) var(--soft), transparent);
+}
+
+.stance-uncertain.badge {
+  color: var(--muted);
+  background: var(--bg-2);
+}
+
+.positions {
+  display: inline-flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.position {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px 0 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.position-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.position.stance-supports .position-dot {
+  background: var(--ok);
+}
+
+.position.stance-challenges {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  color: var(--danger);
+}
+
+.position.stance-challenges .position-dot {
+  background: var(--danger);
+}
+
+.position.none {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.finding-row .positions {
+  grid-column: 2 / -1;
+}
+
+.verdict {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  padding: 4px 14px 12px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.verdict h3 {
+  margin-top: 10px;
+}
+
+.verdict p {
+  margin: 0 0 8px;
+}
+
+.verdict-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.verdict.settling {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 14px;
+  border-left-color: var(--warn);
+}
+
+.council {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.council-panes {
+  display: grid;
+  grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.council-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.council-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 9px;
+  font-weight: normal;
+}
+
+.council-item.chosen {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.council-item.disputed {
+  border-left: 3px solid var(--warn);
+}
+
+.council-item-top,
+.council-item-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+.council-item-top .finding-id {
+  margin-right: auto;
+}
+
+.council-item-title {
+  font-weight: 600;
+}
+
+.council-detail {
+  min-width: 0;
+}
+
+.council-detail h2 {
+  display: inline;
+}
+
+.council-detail-title {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.council-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.position-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.position-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.position-card.none {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+.resolution {
+  margin-top: 12px;
+  padding: 2px 12px 8px;
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+
+.resolution p {
+  margin: 4px 0;
+}
+
+.resolution.minority {
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+}
+
+.resolution.minority h4 {
+  color: var(--warn);
+}
+
+.arguments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.argument {
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.argument-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.argument-id {
+  margin-left: auto;
+}
+
+.argument-reply {
+  font-size: 0.9em;
+}
+
+.argument p {
+  margin: 3px 0;
+}
+
+@media (max-width: 720px) {
+  .council-panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

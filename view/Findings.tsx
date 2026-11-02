@@ -1,13 +1,13 @@
 /** Every finding, filterable by reviewer and severity, each opening to its summary, evidence and recommendation. */
 import { useEffect, useRef, useState } from "react";
 import { bySeverity } from "../core/describe.ts";
-import type { Finding, Review } from "../core/model.ts";
+import type { Finding, FindingStatus, Review } from "../core/model.ts";
 import { SEVERITIES, type Evidence, type Severity } from "../core/schemas.ts";
-import { ConfidenceMeter, cx, FindingStatusBadge, SeverityBadge } from "./ui.tsx";
+import { ConfidenceMeter, cx, FindingStatusBadge, Positions, SeverityBadge } from "./ui.tsx";
 
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
 
-function FindingCard({ finding, reviewer, open, toggle, openPath }: { finding: Finding; reviewer: string; open: boolean; toggle(): void; openPath?: (path: string) => void }) {
+function FindingCard({ review, finding, reviewer, open, toggle, openPath }: { review: Review; finding: Finding; reviewer: string; open: boolean; toggle(): void; openPath?: (path: string) => void }) {
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
     if (open) ref.current?.scrollIntoView({ block: "nearest" });
@@ -20,6 +20,7 @@ function FindingCard({ finding, reviewer, open, toggle, openPath }: { finding: F
         <span className="finding-by muted">{reviewer}</span>
         <SeverityBadge severity={finding.severity} />
         <FindingStatusBadge status={finding.status} />
+        {finding.positions.length > 0 && <Positions review={review} finding={finding} />}
       </button>
       {open && (
         <div className="finding-body">
@@ -56,7 +57,14 @@ function FindingCard({ finding, reviewer, open, toggle, openPath }: { finding: F
               <p>{finding.recommendation}</p>
             </>
           )}
-          <p className="hint">Deliberation (support, challenges, verdict) comes with the council's rounds.</p>
+          {finding.resolution && (
+            <>
+              <h4>Resolution</h4>
+              <p>
+                <FindingStatusBadge status={finding.resolution.status} /> {finding.resolution.rationale}
+              </p>
+            </>
+          )}
         </div>
       )}
     </li>
@@ -66,12 +74,13 @@ function FindingCard({ finding, reviewer, open, toggle, openPath }: { finding: F
 export function Findings({ review, focus, openPath }: { review: Review; focus: string | null; openPath?: (path: string) => void }) {
   const [reviewer, setReviewer] = useState<string | null>(null);
   const [severity, setSeverity] = useState<Severity | null>(null);
+  const [status, setStatus] = useState<FindingStatus | null>(null);
   const [open, setOpen] = useState<string | null>(focus);
   useEffect(() => {
     setOpen(focus);
   }, [focus]);
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
-  const shown = [...review.findings].sort(bySeverity).filter((finding) => (!reviewer || finding.reviewerId === reviewer) && (!severity || finding.severity === severity));
+  const shown = [...review.findings].sort(bySeverity).filter((finding) => (!reviewer || finding.reviewerId === reviewer) && (!severity || finding.severity === severity) && (!status || finding.status === status));
   const reporters = review.reviewers.filter((each) => review.findings.some((finding) => finding.reviewerId === each.id));
   const count = (pick: (finding: Finding) => boolean) => review.findings.filter(pick).length;
 
@@ -95,6 +104,13 @@ export function Findings({ review, focus, openPath }: { review: Review; focus: s
             </button>
           ))}
         </div>
+        <div className="filter-group" role="group" aria-label="Status">
+          {(["agreed", "confirmed", "disputed", "withdrawn"] as const).filter((each) => count((finding) => finding.status === each) > 0).map((each) => (
+            <button key={each} className={cx("chip", status === each && "chosen")} onClick={() => setStatus(status === each ? null : each)}>
+              {each[0]!.toUpperCase() + each.slice(1)} <span className="muted">{count((finding) => finding.status === each)}</span>
+            </button>
+          ))}
+        </div>
       </div>
       {shown.length === 0 ? (
         <p className="empty-note">{review.findings.length === 0 ? "No findings yet." : "No findings match the filters."}</p>
@@ -102,6 +118,7 @@ export function Findings({ review, focus, openPath }: { review: Review; focus: s
         <ul className="finding-cards">
           {shown.map((finding) => (
             <FindingCard
+              review={review}
               key={finding.id}
               finding={finding}
               reviewer={label(finding.reviewerId)}

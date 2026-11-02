@@ -9,6 +9,7 @@ export const PROFILE_IDS = ["general", "code", "architecture", "security", "scie
 export const DEPTHS = ["quick", "standard", "deep"] as const;
 export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 export const CONFIDENCES = ["high", "medium", "low"] as const;
+export const STANCES = ["supports", "challenges", "uncertain"] as const;
 
 /** How many seats a council has: the workspace shows one panel each. */
 export const SEATS = 4;
@@ -17,11 +18,13 @@ export const profileIdSchema = z.enum(PROFILE_IDS);
 export const depthSchema = z.enum(DEPTHS);
 export const severitySchema = z.enum(SEVERITIES);
 export const confidenceSchema = z.enum(CONFIDENCES);
+export const stanceSchema = z.enum(STANCES);
 
 export type ProfileId = z.infer<typeof profileIdSchema>;
 export type Depth = z.infer<typeof depthSchema>;
 export type Severity = z.infer<typeof severitySchema>;
 export type Confidence = z.infer<typeof confidenceSchema>;
+export type Stance = z.infer<typeof stanceSchema>;
 
 export const evidenceSchema = z.object({
   path: z.string().min(1).describe("The file, relative to the review's target folder."),
@@ -45,6 +48,21 @@ export const findingInputSchema = z.object({
 });
 
 export type FindingInput = z.infer<typeof findingInputSchema>;
+
+/**
+ * What a reviewer argues about a finding in a deliberation round: its stance, why, and the evidence. A reporter that
+ * no longer supports its own finding concedes it.
+ */
+export const argumentInputSchema = z.object({
+  findingId: z.string().min(1).describe('The finding argued about, e.g. "F3".'),
+  stance: stanceSchema.describe("Whether the reviewer backs the finding, challenges it, or can't tell yet."),
+  confidence: confidenceSchema.describe("How sure the reviewer is of its stance."),
+  text: z.string().min(1).describe("The argument in a few sentences: what the reviewer checked and what it showed."),
+  evidence: z.array(evidenceSchema).default([]).describe("Where in the target the argument rests; a challenge should point at something."),
+  replyTo: z.string().min(1).optional().describe('The argument this one answers, e.g. "A4".'),
+});
+
+export type ArgumentInput = z.infer<typeof argumentInputSchema>;
 
 /** One seat at the council: the agent in it, or empty. */
 export const seatSchema = z.object({

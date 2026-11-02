@@ -64,6 +64,8 @@ describe("ReviewSession", () => {
     expect(final.phase).toBe("complete");
     expect(final.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["completed", "completed"]);
     expect(final.reviewers.slice(2).map((reviewer) => reviewer.status)).toEqual(["idle", "idle"]);
+    expect(final.verdict).not.toBeNull();
+    expect(final.findings.every((finding) => finding.status !== "reported")).toBe(true);
     expect(final.findings.length).toBeGreaterThanOrEqual(4);
     expect(new Set(final.findings.map((finding) => finding.reviewerId))).toEqual(new Set(["r1", "r2"]));
     expect(changes.at(-1)).toBe(final);
@@ -101,6 +103,7 @@ describe("ReviewSession", () => {
         if (job.reviewer.id === "r1") throw new Error("agent crashed");
         report({ type: "finding-reported", finding: { title: "no evidence" } });
       },
+      async deliberate() {},
     };
     const final = await new ReviewSession(review(), { runner, clock, onChange: () => {} }).run();
     expect(final.phase).toBe("complete");
@@ -108,5 +111,77 @@ describe("ReviewSession", () => {
     expect(final.reviewers[1]!.status).toBe("completed");
     expect(final.findings).toHaveLength(0);
     expect(final.reviewers[1]!.activity.at(-1)).toMatchObject({ kind: "error" });
+  });
+
+  const fourSeats = () => ["mock-claude", "mock-codex", "mock-gemini", "mock-qwen"].map((agent) => ({ agent, enabled: true }));
+  const fourReviewers = () => newReview("rev4", { target: "/repo", profile: "architecture", depth: "standard", instructions: "", seats: fourSeats() }, "mock", 0);
+
+  test("a full four-reviewer standard run goes through deliberation to a verdict with every finding resolved", async () => {
+    const clock = new FakeClock();
+    const phases: string[] = [];
+    const session = new ReviewSession(fourReviewers(), {
+      runner: new MockRunner(async () => FILES, clock),
+      clock,
+      onChange: (next) => {
+        if (phases.at(-1) !== next.phase) phases.push(next.phase);
+      },
+    });
+    const done = session.run();
+    await clock.runAll();
+    const final = await done;
+    expect(phases).toEqual(["independent-review", "deliberation", "synthesis", "complete"]);
+    expect(final.rounds).toBe(3);
+    expect(final.arguments.length).toBeGreaterThan(0);
+    expect(final.findings.length).toBeGreaterThan(0);
+    expect(final.findings.every((finding) => finding.status !== "reported" && finding.resolution !== null)).toBe(true);
+    expect(final.verdict?.summary).toContain("finding");
+  });
+
+  test("stopping during the deliberation ends the review as stopped", async () => {
+    const clock = new FakeClock();
+    const session = new ReviewSession(fourReviewers(), { runner: new MockRunner(async () => FILES, clock), clock, onChange: () => {} });
+    const done = session.run();
+    for (let i = 0; i < 2000 && session.review.phase !== "deliberation"; i++) await clock.step();
+    expect(session.review.phase).toBe("deliberation");
+    for (let i = 0; i < 3; i++) await clock.step();
+    session.stop();
+    const final = await done;
+    expect(final.phase).toBe("stopped");
+    expect(final.verdict).toBeNull();
+  });
+
+  test("with one seated reviewer there is no deliberation", async () => {
+    const clock = new FakeClock();
+    const seats = [{ agent: "mock-claude", enabled: true }, ...["mock-codex", "mock-gemini", "mock-qwen"].map((agent) => ({ agent, enabled: false }))];
+    const solo = newReview("rev1", { target: "/repo", profile: "code", depth: "standard", instructions: "", seats }, "mock", 0);
+    const session = new ReviewSession(solo, { runner: new MockRunner(async () => FILES, clock), clock, onChange: () => {} });
+    const done = session.run();
+    await clock.runAll();
+    const final = await done;
+    expect(final.phase).toBe("complete");
+    expect(final.rounds).toBe(0);
+    expect(final.arguments).toHaveLength(0);
+    expect(final.findings.length).toBeGreaterThan(0);
+    expect(final.findings.every((finding) => finding.status === "reported")).toBe(true);
+    expect(final.verdict?.summary).toContain("not deliberated");
+  });
+
+  test("a runner whose deliberate throws fails that reviewer, but the review still concludes", async () => {
+    const clock = new FakeClock();
+    const mock = new MockRunner(async () => FILES, clock);
+    const runner: ReviewerRunner = {
+      run: (job, report, signal) => mock.run(job, report, signal),
+      async deliberate(job, report, signal) {
+        if (job.reviewer.id === "r2") throw new Error("lost the thread");
+        await mock.deliberate(job, report, signal);
+      },
+    };
+    const done = new ReviewSession(fourReviewers(), { runner, clock, onChange: () => {} }).run();
+    await clock.runAll();
+    const final = await done;
+    expect(final.phase).toBe("complete");
+    expect(final.reviewers[1]).toMatchObject({ status: "failed", problem: "lost the thread" });
+    expect(final.verdict).not.toBeNull();
+    expect(final.findings.every((finding) => finding.status !== "reported")).toBe(true);
   });
 });

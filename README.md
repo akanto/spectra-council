@@ -24,8 +24,9 @@ It's a hearing, not a vote.
 
 ## Where it stands
 
-Early days. The workbench runs today with stand-in reviewers: you set up a review, watch four seats work, and browse
-the findings. Real agents are next, then the debate. The [roadmap](docs/architecture.md) has the details.
+Early days. The workbench runs today with stand-in reviewers: you set up a review, watch four seats work, browse the
+findings, and read the stand-ins argue them out to a verdict. Real agents are next, and they will need to argue too.
+The [roadmap](docs/architecture.md) has the details.
 
 ## Try it
 

@@ -28,22 +28,29 @@ bun scripts/screenshots.ts            # with the harness running: a review in Ch
 Ask the agent for a council review. It opens one in the canvas with `council_open`, and you set it up and start it
 there:
 
-1. **Setup**: what to review (absolute path), the profile (General, Code, Architecture, Security, Scientific), the depth
-   (Quick, Standard, Deep), who sits in the four seats, and optional instructions.
+1. **Setup**: the profile (General, Code, Architecture, Security, Scientific), the depth (Quick, Standard, Deep), who sits
+   in the four seats, and optional instructions. The target is the project the conversation works in. To review
+   something narrower, like one document, ask the agent for that when it opens the review.
 2. **Workspace**: one panel per seat with the reviewer's status, current step and latest steps. Click a panel for its
    full activity timeline. **Stop** ends the review.
-3. **Findings**: sorted by severity, filterable by reviewer and severity. Open one for its summary, confidence,
+3. **Council**: the findings on the left, each with every reviewer's stance on it. Select one to see the positions, how
+   it was resolved, and the argument round by round. A disputed finding shows its *Minority report*, so the dissent
+   stays on the record.
+4. **Findings**: sorted by severity, filterable by reviewer, severity and status. Open one for its summary, confidence,
    evidence (click a path to open the file) and recommendation.
 
-When a review ends, the agent hears about it with your next message, and `council_status` gives it every finding.
-Reviews are canvas items, so Mirador keeps them across restarts. A review that was running when Mirador stopped shows
-as *interrupted*.
+When the deliberation ends, a verdict banner shows at the top of the review with a one-line verdict. The agent hears about the review with your next message, and `council_status` gives it
+every finding and its status. Reviews are canvas items, so Mirador keeps them across restarts. A review that was running
+when Mirador stopped shows as *interrupted*.
+
+In Mirador Settings, under the plugin, the **Open reviews** setting chooses where a review opens: beside the chat
+(the default) or full screen.
 
 ## Layout
 
 | Folder | What | Depends on |
 | --- | --- | --- |
-| `core/` | The review engine: model, Zod schemas, events and reducer, profiles, agent registry, `ReviewSession` with its runner interface, mock reviewers, descriptions for the agent | Bun only |
+| `core/` | The review engine: model, Zod schemas, events and reducer, the deliberation protocol (rounds, settlement rules, verdict), profiles, agent registry, `ReviewSession` with its runner interface, mock reviewers, descriptions for the agent | Bun only |
 | `view/` | The React UI, given a `CouncilBridge` | `core/` types and pure helpers |
 | `hosts/mirador/` | The canvas host (tools, actions, persistence as canvas items), the view's entry with `window.mirador`, and a copy of the Mirador API types | `core/`, `view/` |
 | `scripts/` | Build, harness, screenshots | |

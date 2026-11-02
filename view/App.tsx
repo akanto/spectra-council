@@ -4,13 +4,14 @@ import { isFinished, isRunning, seatedReviewers, type Review } from "../core/mod
 import { DEPTH_LABELS, PROFILES } from "../core/profiles.ts";
 import type { SetupPatch, ViewAction } from "../core/schemas.ts";
 import type { CouncilBridge } from "./bridge.ts";
+import { Deliberation } from "./Deliberation.tsx";
 import { Findings } from "./Findings.tsx";
 import { ReviewerDetail } from "./ReviewerDetail.tsx";
 import { Setup } from "./Setup.tsx";
 import { cx, elapsed, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
 import { Workspace } from "./Workspace.tsx";
 
-type Tab = "workspace" | "findings";
+type Tab = "workspace" | "council" | "findings";
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -40,16 +41,28 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const [reviewerId, setReviewerId] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [picked, setPicked] = useState(false);
   const { send, busy } = useSender(bridge, setProblem);
   useEffect(() => bridge.onReview(setReview), [bridge]);
   const now = useNow(review !== null && isRunning(review));
+  const phase = review?.phase;
+  // Move to the Council tab when the deliberation starts, unless the user has chosen a tab themselves.
+  useEffect(() => {
+    if (phase === "deliberation" && !picked) setTab("council");
+  }, [phase, picked]);
 
   if (!review) return <div className="loading">Loading the review…</div>;
 
+  const choose = (next: Tab) => {
+    setPicked(true);
+    setTab(next);
+  };
   const openFinding = (id: string) => {
     setFocus(id);
-    setTab("findings");
+    choose("findings");
   };
+  const hasCouncil = review.rounds > 0;
+  const shownTab: Tab = tab === "council" && !hasCouncil ? "workspace" : tab;
   const target = review.target;
   const openPath = bridge.openFile ? (path: string) => bridge.openFile!(path === target || path.startsWith("/") ? path : `${target.replace(/\/$/, "")}/${path}`) : undefined;
   const seated = seatedReviewers(review).length;
@@ -75,6 +88,9 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
           {seated} agent{seated === 1 ? "" : "s"}
         </span>
         <span className="chip static">{DEPTH_LABELS[review.depth].title} depth</span>
+        {hasCouncil && (
+          <span className="chip static">{review.phase === "deliberation" ? `Round ${review.round} of ${review.rounds}` : `${review.rounds} round${review.rounds === 1 ? "" : "s"}`}</span>
+        )}
         {review.runner === "mock" && (
           <span className="chip static mock" title="Deterministic mock reviewers: their findings are illustrative, not an analysis of your files.">
             Mock reviewers
@@ -96,17 +112,24 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
       ) : (
         <>
           <nav className="tabs" role="tablist">
-            <button role="tab" aria-selected={tab === "workspace"} className={cx(tab === "workspace" && "chosen")} onClick={() => setTab("workspace")}>
+            <button role="tab" aria-selected={shownTab === "workspace"} className={cx(shownTab === "workspace" && "chosen")} onClick={() => choose("workspace")}>
               Workspace
             </button>
-            <button role="tab" aria-selected={tab === "findings"} className={cx(tab === "findings" && "chosen")} onClick={() => setTab("findings")}>
+            {hasCouncil && (
+              <button role="tab" aria-selected={shownTab === "council"} className={cx(shownTab === "council" && "chosen")} onClick={() => choose("council")}>
+                Council
+              </button>
+            )}
+            <button role="tab" aria-selected={tab === "findings"} className={cx(tab === "findings" && "chosen")} onClick={() => choose("findings")}>
               Findings <span className="muted">{review.findings.length}</span>
             </button>
           </nav>
           <div className={cx("body", reviewerId && "with-detail")}>
             <main>
-              {tab === "workspace" ? (
+              {shownTab === "workspace" ? (
                 <Workspace review={review} now={now} openReviewer={(id) => setReviewerId(reviewerId === id ? null : id)} openFinding={openFinding} />
+              ) : shownTab === "council" ? (
+                <Deliberation review={review} focus={focus} {...(openPath ? { openPath } : {})} />
               ) : (
                 <Findings review={review} focus={focus} {...(openPath ? { openPath } : {})} />
               )}

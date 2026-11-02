@@ -3,9 +3,18 @@
   "title": "Spectra Council",
   "version": "0.1.0",
   "api": 5,
-  "canvas": {
-    "host": "hosts/mirador/host.ts",
-    "view": "dist/view.js"
-  },
+  "canvas": { "host": "hosts/mirador/host.ts", "view": "dist/view.js" },
+  "settings": [
+    {
+      "id": "open",
+      "label": "Open reviews",
+      "hint": "Where a new review opens: beside the chat, or over it in full screen.",
+      "choices": [
+        { "value": "beside", "label": "Beside the chat" },
+        { "value": "fullscreen", "label": "Full screen" }
+      ],
+      "default": "beside"
+    }
+  ],
   "build": "bun install --frozen-lockfile && bun run build"
 }

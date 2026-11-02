@@ -1,12 +1,17 @@
 /**
- * Runs a review: starts every seated reviewer at once through a runner, applies what they report, and ends the review
- * when they are all done or the user stops it. Knows nothing of hosts or views: the host hands in a runner, a clock and
- * a listener, and draws or stores each new review the listener gets.
+ * Runs a review: starts every seated reviewer at once through a runner, applies what they report, then has the ones that
+ * finished deliberate over the findings in rounds, settles each finding and concludes with a verdict. Ends early when
+ * the user stops it. Knows nothing of hosts or views: the host hands in a runner, a clock and a listener, and draws or
+ * stores each new review the listener gets.
  */
+import { ROUNDS, settle, verdictSummary } from "./deliberation.ts";
 import { isRunning, seatedReviewers, type Review, type Reviewer } from "./model.ts";
 import { PROFILES, type ReviewProfile } from "./profiles.ts";
 import { reduce, type ReviewEvent, type ReviewerEvent } from "./review.ts";
-import { findingInputSchema, problemsOf } from "./schemas.ts";
+import { argumentInputSchema, findingInputSchema, problemsOf } from "./schemas.ts";
+
+/** How long the synthesis takes over each finding, so the user sees the verdicts come in. */
+export const SYNTHESIS_PAUSE_MS = 400;
 
 export interface Clock {
   now(): number;
@@ -38,17 +43,33 @@ export interface ReviewerJob {
   profile: ReviewProfile;
 }
 
-/** What a reviewer's runner reports; the session fills in the reviewer and the time. */
-export type Report =
-  | { type: "activity"; kind: Extract<ReviewerEvent, { type: "activity" }>["kind"]; text: string; path?: string }
-  | { type: "finding-reported"; finding: unknown };
+/**
+ * What a runner gets for one reviewer's turn in a deliberation round. `review` is the review as the round starts: every
+ * finding with its positions, and every argument so far (`argumentsOn(review, id)` gives one finding's timeline).
+ */
+export interface DeliberationJob extends ReviewerJob {
+  round: number;
+  rounds: number;
+}
 
 /**
- * Runs one reviewer to the end: resolves when it finished its review, rejects when it failed. It stops soon after the
- * signal aborts. A runner never ends the reviewer itself: the session does, from how `run` settles.
+ * What a reviewer's runner reports; the session fills in the reviewer and the time. A finding is reported in the
+ * independent review, an argument in a deliberation round; both are validated, and a malformed one shows as an error.
+ */
+export type Report =
+  | { type: "activity"; kind: Extract<ReviewerEvent, { type: "activity" }>["kind"]; text: string; path?: string }
+  | { type: "finding-reported"; finding: unknown }
+  | { type: "argued"; argument: unknown };
+
+/**
+ * Runs reviewers. Each call resolves when the reviewer is done with its part and rejects when it failed; it stops soon
+ * after the signal aborts. A runner never ends the reviewer itself: the session does, from how the call settles.
  */
 export interface ReviewerRunner {
+  /** The reviewer's own review, without seeing anyone else's findings. */
   run(job: ReviewerJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /** The reviewer's turn in one deliberation round: it argues about any of the findings, its own included. */
+  deliberate(job: DeliberationJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
 }
 
 export interface SessionOptions {
@@ -83,38 +104,102 @@ export class ReviewSession {
     this.#onChange(next);
   }
 
-  /** Starts the review; resolves with the review once every reviewer is done or the review was stopped. */
+  /** Runs the review to its verdict; resolves with the review once it concluded or was stopped. */
   async run(): Promise<Review> {
     this.#dispatch({ type: "started", at: this.#clock.now() });
     const profile = PROFILES[this.#review.profile];
     const started = this.#review;
     await Promise.all(seatedReviewers(started).map((reviewer) => this.#runReviewer({ review: started, reviewer, profile })));
+    if (!isRunning(this.#review)) return this.#review;
+
+    const finished = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "completed");
+    if (finished.length >= 2 && this.#review.findings.length > 0) {
+      if (!(await this.#deliberate(profile))) return this.#review;
+    }
+    this.#dispatch({ type: "concluded", at: this.#clock.now(), summary: verdictSummary(this.#review) });
     return this.#review;
   }
 
-  async #runReviewer(job: ReviewerJob) {
-    const reviewerId = job.reviewer.id;
-    const at = () => this.#clock.now();
+  /** The rounds and the synthesis; false when the review was stopped on the way. */
+  async #deliberate(profile: ReviewProfile): Promise<boolean> {
     const signal = this.#abort.signal;
-    this.#dispatch({ type: "reviewer-started", reviewerId, at: at() });
-    const report = (report: Report) => {
-      if (signal.aborted) return;
-      if (report.type === "activity") {
-        this.#dispatch({ type: "activity", reviewerId, at: at(), kind: report.kind, text: report.text, ...(report.path === undefined ? {} : { path: report.path }) });
-        return;
+    const rounds = ROUNDS[this.#review.depth];
+    this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds });
+    for (let round = 1; round <= rounds; round++) {
+      if (signal.aborted) return false;
+      this.#dispatch({ type: "round-started", at: this.#clock.now(), round });
+      const table = this.#review;
+      const sitting = seatedReviewers(table).filter((reviewer) => reviewer.status === "deliberating");
+      if (sitting.length === 0) break;
+      await Promise.all(sitting.map((reviewer) => this.#deliberateOne({ review: table, reviewer, profile, round, rounds })));
+    }
+    if (signal.aborted) return false;
+    this.#dispatch({ type: "synthesis-started", at: this.#clock.now() });
+    for (const { id } of this.#review.findings) {
+      try {
+        await this.#clock.sleep(SYNTHESIS_PAUSE_MS, signal);
+      } catch {
+        return false;
       }
-      const parsed = findingInputSchema.safeParse(report.finding);
-      if (parsed.success) this.#dispatch({ type: "finding-reported", reviewerId, at: at(), finding: parsed.data });
-      else this.#dispatch({ type: "activity", reviewerId, at: at(), kind: "error", text: `Rejected a malformed finding: ${problemsOf(parsed.error)}` });
+      const finding = this.#review.findings.find((each) => each.id === id)!;
+      this.#dispatch({ type: "finding-resolved", at: this.#clock.now(), findingId: id, ...settle(this.#review, finding) });
+    }
+    return true;
+  }
+
+  /** What a reviewer reports, checked and applied; a malformed report shows as an error in its activity. */
+  #reporter(reviewerId: string) {
+    const signal = this.#abort.signal;
+    const at = () => this.#clock.now();
+    const rejected = (what: string, problem: string) => this.#dispatch({ type: "activity", reviewerId, at: at(), kind: "error", text: `Rejected a malformed ${what}: ${problem}` });
+    return (report: Report) => {
+      if (signal.aborted) return;
+      switch (report.type) {
+        case "activity":
+          this.#dispatch({ type: "activity", reviewerId, at: at(), kind: report.kind, text: report.text, ...(report.path === undefined ? {} : { path: report.path }) });
+          return;
+        case "finding-reported": {
+          const parsed = findingInputSchema.safeParse(report.finding);
+          if (parsed.success) this.#dispatch({ type: "finding-reported", reviewerId, at: at(), finding: parsed.data });
+          else rejected("finding", problemsOf(parsed.error));
+          return;
+        }
+        case "argued": {
+          const parsed = argumentInputSchema.safeParse(report.argument);
+          if (!parsed.success) return rejected("argument", problemsOf(parsed.error));
+          const { findingId, replyTo } = parsed.data;
+          if (!this.#review.findings.some(({ id }) => id === findingId)) return rejected("argument", `there is no finding ${findingId}`);
+          if (replyTo !== undefined && !this.#review.arguments.some(({ id }) => id === replyTo)) return rejected("argument", `there is no argument ${replyTo}`);
+          this.#dispatch({ type: "argued", reviewerId, at: at(), argument: parsed.data });
+          return;
+        }
+      }
     };
+  }
+
+  /** Runs one part of a reviewer's work; a failure ends the reviewer as failed, a stop leaves it to the stop. */
+  async #attempt(reviewerId: string, work: () => Promise<void>, finishOnSuccess: boolean) {
+    const signal = this.#abort.signal;
+    const at = () => this.#clock.now();
     try {
-      await this.#runner.run(job, report, signal);
-      this.#dispatch({ type: "reviewer-finished", reviewerId, at: at(), outcome: signal.aborted ? "stopped" : "completed" });
+      await work();
+      if (finishOnSuccess || signal.aborted) this.#dispatch({ type: "reviewer-finished", reviewerId, at: at(), outcome: signal.aborted ? "stopped" : "completed" });
     } catch (error) {
       const outcome = signal.aborted ? "stopped" : "failed";
       const problem = outcome === "failed" ? (error instanceof Error ? error.message : String(error)) : undefined;
       this.#dispatch({ type: "reviewer-finished", reviewerId, at: at(), outcome, ...(problem === undefined ? {} : { problem }) });
     }
+  }
+
+  async #runReviewer(job: ReviewerJob) {
+    const reviewerId = job.reviewer.id;
+    this.#dispatch({ type: "reviewer-started", reviewerId, at: this.#clock.now() });
+    await this.#attempt(reviewerId, () => this.#runner.run(job, this.#reporter(reviewerId), this.#abort.signal), true);
+  }
+
+  async #deliberateOne(job: DeliberationJob) {
+    const reviewerId = job.reviewer.id;
+    await this.#attempt(reviewerId, () => this.#runner.deliberate(job, this.#reporter(reviewerId), this.#abort.signal), false);
   }
 
   /** Stops every reviewer; the review ends as stopped. */

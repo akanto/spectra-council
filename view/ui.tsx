@@ -1,7 +1,8 @@
 /** Small pieces the views share: status marks, badges, times, and the logo. */
 import { useEffect, useState } from "react";
-import type { FindingStatus, Phase, ReviewerStatus } from "../core/model.ts";
-import type { Confidence, Severity } from "../core/schemas.ts";
+import type { Finding, FindingStatus, Phase, Review, ReviewerStatus } from "../core/model.ts";
+import { STANCE_VERBS } from "../core/review.ts";
+import type { Confidence, Severity, Stance } from "../core/schemas.ts";
 
 export const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
 
@@ -20,6 +21,7 @@ const STATUS_WORDS: Record<ReviewerStatus, string> = {
   idle: "Not seated",
   waiting: "Waiting",
   reviewing: "Reviewing",
+  deliberating: "Deliberating",
   completed: "Completed",
   failed: "Failed",
   stopped: "Stopped",
@@ -30,6 +32,7 @@ export function StatusMark({ status }: { status: ReviewerStatus }) {
   const body = (() => {
     switch (status) {
       case "reviewing":
+      case "deliberating":
         return (
           <>
             <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
@@ -150,3 +153,58 @@ export function useNow(ticking: boolean) {
 
 /** A span of time from start to end, or to now while it runs. */
 export const elapsed = (start: number | null, end: number | null, now: number) => (start === null ? null : duration((end ?? now) - start));
+
+const STANCE_WORDS: Record<Stance, string> = { supports: "Supports", challenges: "Challenges", uncertain: "Uncertain" };
+
+export function StanceBadge({ stance }: { stance: Stance }) {
+  return <span className={`badge stance-${stance}`}>{STANCE_WORDS[stance]}</span>;
+}
+
+/** One chip per seated reviewer, showing its latest stance on a finding; faint when it has taken none. */
+export function Positions({ review, finding }: { review: Review; finding: Finding }) {
+  return (
+    <span className="positions" aria-label="Positions">
+      {review.reviewers
+        .filter((reviewer) => reviewer.enabled)
+        .map((reviewer) => {
+          const position = finding.positions.find((each) => each.reviewerId === reviewer.id);
+          const title = position ? `${reviewer.label}: ${STANCE_VERBS[position.stance]} (${position.confidence}, round ${position.round})` : `${reviewer.label}: no position yet`;
+          return (
+            <span key={reviewer.id} className={cx("position", position ? `stance-${position.stance}` : "none")} title={title}>
+              <span className="position-dot" />
+              {reviewer.label.slice(0, 2)}
+            </span>
+          );
+        })}
+    </span>
+  );
+}
+
+/** The verdict once set; while the synthesis runs, its progress. */
+export function VerdictBanner({ review }: { review: Review }) {
+  if (review.phase === "synthesis" && !review.verdict) {
+    const resolved = review.findings.filter((finding) => finding.resolution !== null).length;
+    return (
+      <div className="verdict settling" role="status">
+        <strong>Settling the findings…</strong>
+        <span className="muted">
+          {resolved} of {review.findings.length} resolved
+        </span>
+      </div>
+    );
+  }
+  if (!review.verdict) return null;
+  const statuses: FindingStatus[] = ["confirmed", "agreed", "disputed", "withdrawn"];
+  return (
+    <section className="verdict">
+      <h3>Verdict</h3>
+      <p>{review.verdict.summary}</p>
+      <div className="verdict-counts">
+        {statuses.map((status) => {
+          const n = review.findings.filter((finding) => finding.status === status).length;
+          return n > 0 && <span key={status}>{n} <FindingStatusBadge status={status} /></span>;
+        })}
+      </div>
+    </section>
+  );
+}
