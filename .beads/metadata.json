@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "spectra_council",
+  "project_id": "facda4d9-1412-49a6-982b-2822b940b421"
+}
