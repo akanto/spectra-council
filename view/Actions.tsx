@@ -91,7 +91,34 @@ const DECISIONS: { value: Decision; label: string }[] = [
 ];
 
 /** Where an accepted finding's fix is: what the agent changed, its files, and each reviewer's re-check. */
-function FixStatus({ review, finding, openPath }: { review: Review; finding: Finding; openPath: OpenPath }) {
+function TakeOut({ finding, act, busy }: { finding: Finding; act: Act; busy: boolean }) {
+  const [asking, setAsking] = useState(false);
+  if (!asking)
+    return (
+      <p>
+        <button className="take-out" disabled={busy} onClick={() => setAsking(true)}>
+          Take out of the fixes
+        </button>
+      </p>
+    );
+  const rule = (decision: "dismissed" | "deferred") => act({ kind: "rule", findingId: finding.id, decision, note: "" });
+  return (
+    <div className="take-out-confirm" role="group" aria-label="Take out of the fixes">
+      <span>Take {finding.id} out of the fixes and mark it as</span>
+      <button className="segment-dismissed" disabled={busy} onClick={() => rule("dismissed")}>
+        Dismiss
+      </button>
+      <button className="segment-deferred" disabled={busy} onClick={() => rule("deferred")}>
+        Later
+      </button>
+      <button className="link" onClick={() => setAsking(false)}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function FixStatus({ review, finding, openPath, act, busy }: { review: Review; finding: Finding; openPath: OpenPath; act: Act; busy: boolean }) {
   const fix = finding.fix;
   if (!fix) return null;
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
@@ -134,6 +161,7 @@ function FixStatus({ review, finding, openPath }: { review: Review; finding: Fin
           ))}
         </ul>
       )}
+      {(fix.state === "handed-off" || fix.state === "reopened") && <TakeOut finding={finding} act={act} busy={busy} />}
     </section>
   );
 }
@@ -152,7 +180,7 @@ export function RulingControl({ review, finding, act, busy, openPath, next }: { 
     if (ruling) act({ kind: "rule", findingId: finding.id, decision: ruling.decision, note: text });
   });
   if (!isStanding(finding)) return null;
-  if (finding.fix) return <FixStatus review={review} finding={finding} openPath={openPath} />;
+  if (finding.fix) return <FixStatus review={review} finding={finding} openPath={openPath} act={act} busy={busy} />;
   const editable = review.phase === "complete";
   const rule = (decision: Decision | null) => {
     setSaving(decision);

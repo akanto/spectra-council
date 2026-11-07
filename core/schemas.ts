@@ -129,6 +129,10 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("rule"), findingId: z.string().min(1), decision: decisionSchema.nullable(), note: z.string().default("") }),
   /** Write the hand-off document of the accepted findings. */
   z.object({ kind: z.literal("handoff") }),
+  /** Run a reviewer that failed in the independent review again, while the review runs. */
+  z.object({ kind: z.literal("retry"), reviewerId: z.string().min(1) }),
+  /** Go on with a review a restart of the host cut short, from the phase it was in. */
+  z.object({ kind: z.literal("resume") }),
   /** Ask the conversation's agent to open a new review with this one's setup, for a review that ended. */
   z.object({ kind: z.literal("rerun") }),
   /** Ask the conversation's agent to fix the accepted findings, by the hand-off. */

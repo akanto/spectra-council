@@ -302,11 +302,20 @@ describe("rulings", () => {
     expect(() => rule(stopped, "F1", "accepted")).toThrow(ReviewError);
   });
 
-  test("a ruling can't change once the finding is handed off", () => {
-    expect(() => rule(handedOffReview(), "F1", "dismissed")).toThrow("handed off already");
-    expect(() => rule(handedOffReview(), "F1", null)).toThrow("handed off already");
+  test("a handed-off finding not fixed yet can be taken out of the fixes, or keep its acceptance with a new note", () => {
+    const dismissed = rule(handedOffReview(), "F1", "dismissed");
+    expect(dismissed.findings[0]!.ruling?.decision).toBe("dismissed");
+    expect(dismissed.findings[0]!.fix).toBeNull();
+    expect(rule(handedOffReview(), "F1", null).findings[0]!.fix).toBeNull();
+    const kept = rule(handedOffReview(), "F1", "accepted");
+    expect(kept.findings[0]!.fix?.state).toBe("handed-off");
     // another finding is still open to rulings
     expect(rule(handedOffReview(), "F2", "deferred").findings[1]!.ruling?.decision).toBe("deferred");
+  });
+
+  test("a fixed finding's ruling can't change", () => {
+    const fixed = reduce(handedOffReview(), { type: "fix-reported", at: 70, findingId: "F1", summary: "Done.", files: [] });
+    expect(() => rule(fixed, "F1", "dismissed")).toThrow("is fixed already");
   });
 });
 
@@ -550,8 +559,8 @@ describe("upgradeReview", () => {
     expect(upgraded.findings[1]!.fix).toBeNull();
   });
 
-  test("the review format is 5", () => {
-    expect(REVIEW_FORMAT).toBe(5);
+  test("the review format is 6", () => {
+    expect(REVIEW_FORMAT).toBe(6);
   });
 
   test("a current review is returned as it is", () => {

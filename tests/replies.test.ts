@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { lastJson } from "../core/replies.ts";
+import { jsonProblem, lastJson } from "../core/replies.ts";
 import { reviewReplySchema } from "../core/schemas.ts";
 
 const shape = z.object({ findings: z.array(z.unknown()) });
@@ -44,5 +44,17 @@ describe("lastJson", () => {
     const read = (name: string) => Bun.file(new URL(`./fixtures/${name}`, import.meta.url)).text();
     expect(lastJson(await read("home-reply.md"), reviewReplySchema)?.findings).toHaveLength(1);
     expect(lastJson(await read("home-reply-2.md"), reviewReplySchema)?.findings).toHaveLength(3);
+  });
+});
+
+describe("jsonProblem", () => {
+  test("says why no block was accepted", () => {
+    expect(jsonProblem(null, shape)).toBe("the reply had no text");
+    expect(jsonProblem("  ", shape)).toBe("the reply had no text");
+    expect(jsonProblem("Just prose.\n```ts\nx\n```", shape)).toBe("no fenced ```json block");
+    expect(jsonProblem('```json\n{"findings": [\n```', shape)).toMatch(/^the last JSON block doesn't parse: .+/);
+    const misfit = jsonProblem('```json\n{"findings": 3}\n```', shape);
+    expect(misfit).toStartWith("the last JSON block doesn't fit the shape: findings:");
+    expect(misfit).not.toContain("\n");
   });
 });

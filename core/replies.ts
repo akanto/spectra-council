@@ -1,5 +1,6 @@
 /** Reading what an agent in another conversation reports in its final message: the last ```json block that fits. */
 import type { z } from "zod";
+import { problemsOf } from "./schemas.ts";
 
 interface Block {
   tag: string;
@@ -51,4 +52,22 @@ export function lastJson<T extends z.ZodType>(text: string | null, schema: T): z
     }
   }
   return null;
+}
+
+/** One line on why `lastJson` found nothing in `text`: judged by the last fenced JSON block, the one it tries first. */
+export function jsonProblem(text: string | null, schema: z.ZodType): string {
+  if (!text || !text.trim()) return "the reply had no text";
+  const last = fencedBlocks(text)
+    .filter((block) => block.tag === "json" || block.tag === "")
+    .at(-1);
+  if (!last) return "no fenced ```json block";
+  let value: unknown;
+  try {
+    value = JSON.parse(last.body);
+  } catch (error) {
+    return `the last JSON block doesn't parse: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return "the last JSON block fits, but no block was accepted";
+  return `the last JSON block doesn't fit the shape: ${problemsOf(parsed.error)}`;
 }

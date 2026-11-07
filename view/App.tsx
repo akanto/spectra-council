@@ -213,6 +213,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
                   openAll={() => choose("findings")}
                   openCouncil={() => choose("council")}
                   rerun={() => send({ kind: "rerun" })}
+                  resume={() => send({ kind: "resume" })}
                   act={act}
                   busy={busy}
                   {...(openPath ? { openPath } : {})}
@@ -224,7 +225,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
               )}
             </main>
             {reviewerId && shownTab === "workspace" && (
-              <ReviewerDetail review={review} reviewerId={reviewerId} now={now} close={closeReviewer} openFinding={openFinding} {...(openPath ? { openPath } : {})} />
+              <ReviewerDetail review={review} reviewerId={reviewerId} now={now} close={closeReviewer} act={act} busy={busy} openFinding={openFinding} {...(openPath ? { openPath } : {})} />
             )}
           </div>
           <footer className="bar">

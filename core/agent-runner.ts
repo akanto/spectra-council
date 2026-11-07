@@ -5,15 +5,16 @@
  * proposal and verification turns).
  */
 import type { z } from "zod";
-import { deliberationPrompt, proposalPrompt, reviewPrompt, verificationPrompt } from "./agent-turns.ts";
+import { deliberationPrompt, proposalPrompt, repairPrompt, reviewPrompt, verificationPrompt } from "./agent-turns.ts";
 import { profileName } from "./agents.ts";
 import { TURN_LIMIT_MS, type AgentReply, type Clock, type Conversations, type DeliberationJob, type ProposalJob, type Report, type ReviewerJob, type ReviewerRunner, type VerificationJob } from "./engine.ts";
-import { lastJson } from "./replies.ts";
+import { jsonProblem, lastJson } from "./replies.ts";
 import { deliberationReplySchema, proposalReplySchema, reviewReplySchema, verificationReplySchema } from "./schemas.ts";
 
 type Reporter = (report: Report) => void;
 
 const NOTE_LENGTH = 240;
+const PROBLEM_LENGTH = 160;
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 /** The prose before the last ```json block, trimmed and shortened; null when there is none. */
@@ -81,10 +82,20 @@ export class AgentRunner implements ReviewerRunner {
   async #turn<S extends z.ZodType>(job: ReviewerJob, report: Reporter, signal: AbortSignal, what: string, prompt: string, schema: S, apply: (reply: z.infer<S>) => string) {
     const profile = profileName(job.reviewer.agent);
     report({ type: "activity", kind: "status", text: `Asking the ${profile} profile ${what}` });
-    const reply = await this.#ask(profile, prompt, report, signal);
+    let reply = await this.#ask(profile, prompt, report, signal);
     if (reply.ended !== "finished") throw new Error(reply.ended === "failed" ? "Its conversation failed" : "Its conversation was stopped");
-    const parsed = lastJson(reply.text, schema);
-    if (parsed === null) throw new Error("Its reply ended without the JSON block");
+    let parsed = lastJson(reply.text, schema);
+    if (parsed === null) {
+      // One more conversation with the reply and the problem, before the seat fails.
+      const problem = jsonProblem(reply.text, schema);
+      const short = problem.length > PROBLEM_LENGTH ? `${problem.slice(0, PROBLEM_LENGTH - 1).trimEnd()}…` : problem;
+      report({ type: "activity", kind: "error", text: `Its reply had no valid JSON block (${short}); asking again` });
+      const again = await this.#ask(profile, repairPrompt(prompt, reply.text ?? "", problem), report, signal);
+      if (again.ended !== "finished") throw new Error(`Its reply had no valid JSON block (${short}), and the follow-up conversation ${again.ended === "failed" ? "failed" : "was stopped"}`);
+      parsed = lastJson(again.text, schema);
+      if (parsed === null) throw new Error(`Its reply had no valid JSON block, twice: ${jsonProblem(again.text, schema)}`);
+      reply = again;
+    }
     const prose = proseBefore(reply.text ?? "");
     if (prose) report({ type: "activity", kind: "note", text: prose });
     const summary = apply(parsed);

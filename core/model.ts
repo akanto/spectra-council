@@ -6,7 +6,7 @@ import type { Confidence, Decision, Depth, Evidence, ProfileId, Severity, Stance
 
 export type { Decision, Stance };
 
-export const REVIEW_FORMAT = 5;
+export const REVIEW_FORMAT = 6;
 
 /**
  * Where a review is: set up, reviewed independently, deliberated in rounds, synthesised into a verdict, and ended. After
@@ -116,6 +116,19 @@ export interface Resolution {
   at: number;
 }
 
+/**
+ * Another reviewer's report of the same problem, merged into this finding after the independent review: its own id,
+ * title and evidence, kept for the record.
+ */
+export interface CoReport {
+  reviewerId: string;
+  /** The id it was reported under, which no longer names a finding of its own. */
+  findingId: string;
+  title: string;
+  severity: Severity;
+  evidence: Evidence[];
+}
+
 export interface Finding {
   /** "F1", "F2", … in the order they came in. */
   id: string;
@@ -137,6 +150,8 @@ export interface Finding {
   proposal: FixProposal | null;
   /** The user's decision, after the verdict. */
   ruling: Ruling | null;
+  /** Reports of the same problem by others (or the same reviewer), merged into this one; they back it from the start. */
+  alsoReported: CoReport[];
   /** Set once an accepted finding is handed off. */
   fix: Fix | null;
 }
@@ -257,7 +272,19 @@ export interface Review {
   seq: number;
   /** When the host's agent last heard how the review ended; null until it has. */
   agentHeardAt: number | null;
+  /** How many finding ids were given out, F1 to F<n>: ids aren't reused after findings are dropped or merged. */
+  findingsIssued: number;
+  /** The phase a review was in when a restart cut it short, for resuming it there; null otherwise. */
+  interruptedPhase: ResumablePhase | null;
 }
+
+/** The phases a review cut short by a restart can resume in. (A cut-short re-check just ends; it can be run again.) */
+export type ResumablePhase = "independent-review" | "deliberation" | "synthesis";
+
+/** Who reported a finding: its reporter first, then whoever's report of it was merged in. */
+export const reportersOf = (finding: Finding): string[] => [...new Set([finding.reviewerId, ...finding.alsoReported.map((report) => report.reviewerId)])];
+
+export const isResumable = (review: Review) => review.phase === "interrupted" && review.interruptedPhase !== null;
 
 export const MAX_ACTIVITY = 150;
 

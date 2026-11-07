@@ -2,7 +2,7 @@
  * The council's deliberation protocol: how many rounds a review gets, and how the synthesis settles each finding from
  * where the reviewers ended up standing. Pure: the engine runs the rounds and dispatches what this decides.
  */
-import { argumentsOn, type Finding, type FindingStatus, type Review, type Reviewer } from "./model.ts";
+import { argumentsOn, type Finding, type FindingStatus, type Review, type Reviewer, reportersOf } from "./model.ts";
 import type { Depth } from "./schemas.ts";
 
 /** Rounds per depth: a challenge needs one round to be made, one to be answered and one to be reconsidered. */
@@ -32,8 +32,10 @@ export function settle(review: Review, finding: Finding): Settlement {
   const stanceOf = (id: string) => finding.positions.find((position) => position.reviewerId === id)?.stance;
   const reporterName = reporter?.label ?? finding.reviewerId;
 
-  if (stanceOf(finding.reviewerId) !== undefined && stanceOf(finding.reviewerId) !== "supports") {
-    const challengers = finding.positions.filter((position) => position.reviewerId !== finding.reviewerId && position.stance === "challenges").map((position) => byId(position.reviewerId)).filter((it) => it !== undefined);
+  // Withdrawn once no one who reported it backs it any more (the reporter and any whose report merged into it).
+  const reporters = reportersOf(finding);
+  if (reporters.every((id) => stanceOf(id) !== undefined && stanceOf(id) !== "supports")) {
+    const challengers = finding.positions.filter((position) => !reporters.includes(position.reviewerId) && position.stance === "challenges").map((position) => byId(position.reviewerId)).filter((it) => it !== undefined);
     return {
       status: "withdrawn",
       rationale: challengers.length > 0 ? `${reporterName} withdrew it after ${names(challengers)}'s challenge.` : `${reporterName} withdrew it.`,

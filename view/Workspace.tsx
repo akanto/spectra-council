@@ -1,11 +1,11 @@
 /** The live workspace: one panel per seat, what each reviewer is doing, and the findings as they come in. */
-import { useState } from "react";
-import { isFinished, isStanding, type Activity, type Finding, type Review, type Reviewer } from "../core/model.ts";
+import { useEffect, useState } from "react";
+import { isFinished, isResumable, isStanding, reportersOf, type Activity, type Finding, type Review, type Reviewer } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
 import { seatDetail } from "../core/agents.ts";
 import { bySeverity } from "../core/describe.ts";
 import { ActionPlan } from "./Actions.tsx";
-import { cx, elapsed, FindingStatusBadge, FixBadge, RulingMark, SeverityBadge, StatusMark, statusWord, VerdictBanner } from "./ui.tsx";
+import { cx, elapsed, FindingStatusBadge, AlsoMark, FixBadge, RulingMark, SeverityBadge, StatusMark, statusWord, VerdictBanner } from "./ui.tsx";
 
 const ACTIVITY_ICONS: Record<Activity["kind"], string> = {
   status: "•",
@@ -41,9 +41,10 @@ export function ActivityLine({ activity, openPath, time }: { activity: Activity;
   );
 }
 
-function SeatPanel({ reviewer, findings, argued, now, open, expanded }: { reviewer: Reviewer; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean }) {
+function SeatPanel({ reviewer, findings, argued, now, open, expanded, retry, busy }: { reviewer: Reviewer; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean; retry: (() => void) | null; busy: boolean }) {
   const recent = reviewer.activity.filter((activity) => activity.kind !== "status").slice(-3);
   return (
+    <div className="seat-cell">
     <button
       className={cx("seat-panel", `is-${reviewer.status}`)}
       onClick={(event) => open(event.currentTarget)}
@@ -76,15 +77,22 @@ function SeatPanel({ reviewer, findings, argued, now, open, expanded }: { review
         <span className="muted">{elapsed(reviewer.startedAt, reviewer.endedAt, now) ?? ""}</span>
       </span>
     </button>
+    {retry && (
+      <button className="seat-retry" onClick={retry} disabled={busy}>
+        Retry {reviewer.label}
+      </button>
+    )}
+    </div>
   );
 }
 
-export function FindingRow({ finding, reviewer, onOpen }: { finding: Finding; reviewer: string; onOpen(): void }) {
+export function FindingRow({ review, finding, reviewer, onOpen }: { review: Review; finding: Finding; reviewer: string; onOpen(): void }) {
   return (
     <li>
       <button className="finding-row" onClick={onOpen}>
         <span className="finding-id mono">{finding.id}</span>
         <span className="finding-title">{finding.title}</span>
+        <AlsoMark review={review} finding={finding} />
         <span className="finding-by muted">{reviewer}</span>
         <SeverityBadge severity={finding.severity} />
         <FindingStatusBadge status={finding.status} />
@@ -96,23 +104,34 @@ export function FindingRow({ finding, reviewer, onOpen }: { finding: Finding; re
 }
 
 /** Why a review that ended early is a dead end otherwise: say what happened and offer a new review with the same setup. */
-function RerunPanel({ review, rerun, quiet }: { review: Review; rerun(): Promise<unknown>; quiet?: boolean }) {
-  const [state, setState] = useState<"idle" | "sending" | "sent" | { error: string }>("idle");
+function RerunPanel({ review, rerun, resume, quiet }: { review: Review; rerun(): Promise<unknown>; resume(): Promise<unknown>; quiet?: boolean }) {
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "resumed" | { error: string }>("idle");
+  // What was asked belongs to the phase it was asked in: a new stop or interruption starts afresh.
+  useEffect(() => {
+    setState("idle");
+  }, [review.phase, review.startedAt]);
   const ended = review.phase === "stopped" || review.phase === "interrupted";
   if (!isFinished(review) || ended === !!quiet) return null;
-  const go = () => {
+  const resumable = isResumable(review);
+  const go = (run: () => Promise<unknown>, done: "sent" | "resumed") => {
     setState("sending");
-    rerun().then(
-      () => setState("sent"),
+    run().then(
+      () => setState(done),
       (error) => setState({ error: error instanceof Error ? error.message : String(error) }),
     );
   };
+  const locked = state === "sending" || state === "sent" || state === "resumed";
   const button = (
-    <button className={ended ? "primary" : "rerun-quiet"} disabled={state === "sending" || state === "sent"} onClick={go}>
+    <button className={ended && !resumable ? "primary" : "rerun-quiet"} disabled={locked} onClick={() => go(rerun, "sent")}>
       Run again with the same setup
     </button>
   );
-  const result = state === "sent" ? <span className="rerun-result">Asked the agent to open a new review</span> : typeof state === "object" ? <span className="rerun-result rerun-error" role="alert">{state.error}</span> : null;
+  const resumeButton = resumable ? (
+    <button className="primary" disabled={locked} onClick={() => go(resume, "resumed")}>
+      Resume where it stopped
+    </button>
+  ) : null;
+  const result = state === "sent" ? <span className="rerun-result">Asked the agent to open a new review</span> : state === "resumed" ? <span className="rerun-result">Asked the agent to resume the review</span> : typeof state === "object" ? <span className="rerun-result rerun-error" role="alert">{state.error}</span> : null;
   if (!ended)
     return (
       <div className="rerun rerun-quiet-row">
@@ -123,7 +142,9 @@ function RerunPanel({ review, rerun, quiet }: { review: Review; rerun(): Promise
   return (
     <section className="rerun-panel" role="status">
       <strong>{review.phase === "stopped" ? "This review was stopped." : "Mirador restarted while this review ran."}</strong>
+      {resumable && <p className="rerun-why">Resuming redoes only the work that was in flight.</p>}
       <div className="rerun">
+        {resumeButton}
         {button}
         {result}
       </div>
@@ -135,9 +156,11 @@ function RerunPanel({ review, rerun, quiet }: { review: Review; rerun(): Promise
 const attention = (finding: Finding) => (finding.fix?.state === "reopened" ? 0 : isStanding(finding) && !finding.ruling ? 1 : isStanding(finding) ? 2 : finding.status === "withdrawn" ? 4 : 3);
 const byAttention = (a: Finding, b: Finding) => attention(a) - attention(b) || bySeverity(a, b);
 
-export function Workspace({ review, now, openReviewer, openedReviewer, openFinding, openAll, openCouncil, rerun, act, busy, openPath }: { review: Review; now: number; openReviewer(id: string, from: HTMLElement): void; openedReviewer: string | null; openFinding(id: string): void; openAll(): void; openCouncil(): void; rerun(): Promise<unknown>; act(action: ViewAction): void; busy: boolean; openPath?: (path: string) => void }) {
+export function Workspace({ review, now, openReviewer, openedReviewer, openFinding, openAll, openCouncil, rerun, resume, act, busy, openPath }: { review: Review; now: number; openReviewer(id: string, from: HTMLElement): void; openedReviewer: string | null; openFinding(id: string): void; openAll(): void; openCouncil(): void; rerun(): Promise<unknown>; resume(): Promise<unknown>; act(action: ViewAction): void; busy: boolean; openPath?: (path: string) => void }) {
   const counts = new Map<string, number>();
-  for (const finding of review.findings) counts.set(finding.reviewerId, (counts.get(finding.reviewerId) ?? 0) + 1);
+  for (const finding of review.findings) {
+    for (const reviewerId of reportersOf(finding)) counts.set(reviewerId, (counts.get(reviewerId) ?? 0) + 1);
+  }
   const argued = new Map<string, number>();
   for (const argument of review.arguments) argued.set(argument.reviewerId, (argued.get(argument.reviewerId) ?? 0) + 1);
   const label = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id)?.label ?? id;
@@ -145,12 +168,12 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
   const top = [...review.findings].sort(byAttention).slice(0, 6);
   return (
     <div className="workspace">
-      <RerunPanel review={review} rerun={rerun} />
+      <RerunPanel review={review} rerun={rerun} resume={resume} />
       <VerdictBanner review={review} />
       <ActionPlan review={review} act={act} busy={busy} openCouncil={openCouncil} compact {...(openPath ? { openPath } : {})} />
       <div className={cx("seat-grid", `seats-${seated.length}`)}>
         {seated.map((reviewer) => (
-          <SeatPanel key={reviewer.id} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} />
+          <SeatPanel key={reviewer.id} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} retry={review.phase === "independent-review" && reviewer.status === "failed" ? () => act({ kind: "retry", reviewerId: reviewer.id }) : null} busy={busy} />
         ))}
       </div>
       <section className="findings-summary">
@@ -163,7 +186,7 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
         ) : (
           <ul className="finding-rows">
             {top.map((finding) => (
-              <FindingRow key={finding.id} finding={finding} reviewer={label(finding.reviewerId)} onOpen={() => openFinding(finding.id)} />
+              <FindingRow key={finding.id} review={review} finding={finding} reviewer={label(finding.reviewerId)} onOpen={() => openFinding(finding.id)} />
             ))}
           </ul>
         )}
@@ -173,7 +196,7 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
           </button>
         )}
       </section>
-      <RerunPanel review={review} rerun={rerun} quiet />
+      <RerunPanel review={review} rerun={rerun} resume={resume} quiet />
     </div>
   );
 }

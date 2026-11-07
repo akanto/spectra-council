@@ -11,7 +11,7 @@ const PHASE_WORDS: Record<Review["phase"], string> = {
   verification: "re-checking fixes: reviewers verify the fixes reported",
   complete: "complete",
   stopped: "stopped by the user",
-  interrupted: "interrupted (Mirador restarted while it ran)",
+  interrupted: "interrupted (Mirador restarted while it ran; the user can resume it in the canvas)",
 };
 
 export const bySeverity = (a: Finding, b: Finding) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity);
@@ -64,6 +64,7 @@ export function describeReview(review: Review): string {
     lines.push(
       `- ${finding.id} [${finding.severity}, ${finding.confidence} confidence, ${finding.status}] ${finding.title} — by ${label(finding.reviewerId)}; ${finding.category}; at ${evidenceText(finding)}. ${finding.summary}${finding.recommendation ? ` Fix: ${finding.recommendation}` : ""}`,
     );
+    if (finding.alsoReported.length > 0) lines.push(`  Also reported by: ${finding.alsoReported.map((report) => `${label(report.reviewerId)} as ${report.findingId} ("${report.title}")`).join(", ")}`);
     if (finding.resolution) lines.push(`  Council: ${finding.resolution.rationale}`);
     if (finding.proposal) lines.push(`  Proposed fix (by ${label(finding.proposal.drafterId)}): ${finding.proposal.summary} Steps: ${finding.proposal.steps.join(" / ")}. Verify: ${finding.proposal.verification}`);
     if (finding.ruling) lines.push(`  User ruling: ${finding.ruling.decision}${finding.ruling.note ? ` (${finding.ruling.note})` : ""}`);
@@ -98,24 +99,5 @@ export function recheckLine(review: Review): string | null {
   return `After re-check ${review.verifications}: ${parts.join(", ") || "nothing settled"}.`;
 }
 
-const titleKey = (title: string) => title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-
-/** Whether an argument says its finding is the same as another: "the same as F6", "a duplicate of F6", "F6 again". */
-const SAYS_SAME = /\b(same|duplicates?|identical|again)\b/i;
-
-/**
- * Other findings that are probably the same problem, until the council merges duplicates: the same title, or one that an
- * argument about either finding names as the same ("I found the same independently in F6"). Symmetric: if F2 is a
- * possible duplicate of F6, F6 is one of F2.
- */
-export function possibleDuplicates(review: Review, finding: Finding): Finding[] {
-  const key = titleKey(finding.title);
-  const linked = new Set<string>();
-  for (const argument of review.arguments) {
-    if (!SAYS_SAME.test(argument.text)) continue;
-    const named = [...argument.text.matchAll(/\bF\d+\b/g)].map((match) => match[0]);
-    if (argument.findingId === finding.id) named.forEach((id) => linked.add(id));
-    else if (named.includes(finding.id)) linked.add(argument.findingId);
-  }
-  return review.findings.filter((other) => other.id !== finding.id && (titleKey(other.title) === key || linked.has(other.id)));
-}
+/** Kept here for the view, which reads findings in words from this module. */
+export { possibleDuplicates } from "./duplicates.ts";

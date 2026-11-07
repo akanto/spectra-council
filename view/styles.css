@@ -969,24 +969,9 @@ h4 {
   color: var(--muted);
 }
 
-.position-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--faint);
-}
-
-.position.stance-supports .position-dot {
-  background: var(--ok);
-}
-
 .position.stance-challenges {
   border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
   color: var(--danger);
-}
-
-.position.stance-challenges .position-dot {
-  background: var(--danger);
 }
 
 .position.none {
@@ -1685,4 +1670,62 @@ main[role="tabpanel"] {
   .finding-card-positions {
     padding-left: 2px;
   }
+}
+
+.seat-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.seat-cell .seat-panel {
+  flex: 1;
+}
+
+.seat-retry {
+  align-self: flex-start;
+}
+
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.problem {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.rerun-why {
+  margin: 0;
+  color: var(--muted);
+}
+
+.also-mark {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.8em;
+  font-weight: 600;
+  cursor: help;
+}
+
+.also-reported {
+  margin: 4px 0;
+}
+
+.take-out {
+  font-size: 0.9em;
+}
+
+.take-out-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }

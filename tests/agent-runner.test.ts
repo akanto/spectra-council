@@ -124,12 +124,33 @@ describe("AgentRunner in a whole review", () => {
 describe("AgentRunner failures", () => {
   const failing = (profile: string, reply: Awaited<ReturnType<Handler>>): Handler => (who, prompt, call, signal) => (who === profile && !isDeliberation(prompt) ? reply : council(who, prompt, call, signal));
 
-  test("a reply without JSON fails that seat; the other goes on", async () => {
-    const { review } = await play(new FakeConversations(failing("beta", { text: "I looked and found nothing." })));
+  test("a reply without JSON twice fails that seat; the other goes on", async () => {
+    const conversations = new FakeConversations(failing("beta", { text: "I looked and found nothing." }));
+    const { review } = await play(conversations);
     expect(review.reviewers[1]!.status).toBe("failed");
-    expect(review.reviewers[1]!.problem).toBe("Its reply ended without the JSON block");
+    expect(review.reviewers[1]!.problem).toBe("Its reply had no valid JSON block, twice: no fenced ```json block");
+    expect(conversations.promptsOf("beta").filter((prompt) => prompt.includes("could not be read"))).toHaveLength(1);
     expect(review.reviewers[0]!.status).toBe("completed");
     expect(review.phase).toBe("complete");
+  });
+
+  test("a reply without JSON is asked about once more, and the follow-up's block counts", async () => {
+    const first = "I looked and found one thing.";
+    const handler: Handler = (who, prompt, call, signal) => {
+      if (who === "beta" && prompt.includes("could not be read")) return { text: json({ findings: [finding("Three")] }, "Here it is.") };
+      return failing("beta", { text: first })(who, prompt, call, signal);
+    };
+    const conversations = new FakeConversations(handler);
+    const { review } = await play(conversations);
+    expect(review.reviewers[1]!.status).toBe("completed");
+    expect(review.findings.filter((each) => each.reviewerId === "r2")).toHaveLength(1);
+    const followUp = conversations.promptsOf("beta").find((prompt) => prompt.includes("could not be read"))!;
+    expect(followUp).toContain("no fenced ```json block");
+    expect(followUp).toContain(first);
+    expect(followUp).toContain("End your final message with one ```json block");
+    const texts = review.reviewers[1]!.activity.map((each) => `${each.kind}: ${each.text}`);
+    expect(texts).toContain("error: Its reply had no valid JSON block (no fenced ```json block); asking again");
+    expect(texts).toContain("status: Reported 1 finding");
   });
 
   test("a failed conversation fails the seat", async () => {

@@ -12,7 +12,7 @@ import { describeReview, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
 import { acceptedFindings, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
-import { isFinished, isRunning, seatedReviewers, type ModelInfo, type Review } from "../../core/model.ts";
+import { isFinished, isResumable, isRunning, seatedReviewers, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
@@ -30,6 +30,26 @@ const REMEMBERED_PROFILES = 12;
 
 /** The profile setting that names who fixes a review's accepted findings; none means this conversation's agent. */
 export const FIXER_SETTING = "fixer";
+
+/** Where the plugin's storage keeps the reviewer conversations in flight, by conversation id. */
+export const IN_FLIGHT_KEY = "inFlight";
+const IN_FLIGHT_DAYS = 1;
+
+/**
+ * A reviewer conversation started and not heard back from yet: for which review, in which chair's conversation, with
+ * which ask (a hash of the profile and prompt), and its reply if that came in while no review waited for it (after a
+ * restart). Only the same review, resumed, takes one over.
+ */
+interface InFlight {
+  chair: string;
+  review: string;
+  key: string;
+  profile: string;
+  at: number;
+  reply?: ConversationReply;
+}
+
+const askKey = (profile: string, prompt: string) => Bun.hash(`${profile}\u0000${prompt}`).toString(36);
 
 const openInput = z.object({
   target: z
@@ -115,43 +135,100 @@ export function createCouncilHost({
     storage.set(PROFILES_KEY, [name, ...before.filter((each) => each.toLowerCase() !== name.toLowerCase())].slice(0, REMEMBERED_PROFILES));
   }
 
-  /** Conversations on Mirador profiles, started for the reviews of the conversation `chairId`. */
-  function conversationsOf(chairId: string, storage: CanvasPluginContext<Review>["storage"]): Conversations {
+  /** Conversations taken over after a restart in this process, so two asks don't take the same one. */
+  const adopted = new Set<string>();
+
+  /** The reviewer conversations started and not yet heard back from, kept across restarts (`InFlight`). */
+  function inFlight(storage: CanvasPluginContext<Review>["storage"]): Record<string, InFlight> {
+    const known = storage.get(IN_FLIGHT_KEY);
+    return known && typeof known === "object" ? (known as Record<string, InFlight>) : {};
+  }
+
+  /** Changes the conversations in flight, dropping any older than a day. */
+  function keepInFlight(storage: CanvasPluginContext<Review>["storage"], change: (all: Record<string, InFlight>) => void) {
+    const all = { ...inFlight(storage) };
+    change(all);
+    const oldest = clock.now() - IN_FLIGHT_DAYS * 86_400_000;
+    for (const [id, each] of Object.entries(all)) if (each.at < oldest) delete all[id];
+    storage.set(IN_FLIGHT_KEY, Object.keys(all).length > 0 ? all : undefined);
+  }
+
+  /**
+   * Conversations on Mirador profiles, started for the reviews of the conversation `chairId`. An ask the same as one
+   * whose conversation a restart left running (same chair, profile and prompt, as a resumed review asks again) takes
+   * that conversation over, with its reply if it came in meanwhile, rather than starting a new one.
+   */
+  function conversationsOf(chairId: string, reviewId: string, storage: CanvasPluginContext<Review>["storage"]): Conversations {
     return {
       ask: ({ profile, prompt, signal, onStart, onModel }) =>
         new Promise<AgentReply>((resolve, reject) => {
-          const tool = toolContexts.get(chairId);
-          if (!tool) return reject(new Error("Mirador was restarted since this review started; ask the agent to call council_begin."));
           if (signal.aborted) return reject(signal.reason);
+          const key = askKey(profile, prompt);
           let id: string | null = null;
+          let lookups: ReturnType<typeof setTimeout>[] = [];
+          let seen = false;
+          // The conversation's session reports its model a moment after it starts: look a few times, then at the end.
+          const lookUp = () => {
+            if (seen || !id) return;
+            const model = records.modelOf(id);
+            if (!model) return;
+            seen = true;
+            lookups.forEach(clearTimeout);
+            onModel?.(model);
+          };
+          // A conversation given up on in this process (stopped, timed out) is never wanted again: only a restart leaves one to take over.
           const onAbort = () => {
-            if (id) pending.delete(id);
+            lookups.forEach(clearTimeout);
+            if (id) {
+              pending.delete(id);
+              adopted.delete(id);
+              const gone = id;
+              keepInFlight(storage, (all) => delete all[gone]);
+            }
             reject(signal.reason);
           };
           signal.addEventListener("abort", onAbort, { once: true });
+          const settle = (started: { id: string; profile: string }, { text, ended }: ConversationReply) => {
+            signal.removeEventListener("abort", onAbort);
+            lookUp();
+            lookups.forEach(clearTimeout);
+            keepInFlight(storage, (all) => delete all[started.id]);
+            adopted.delete(started.id);
+            resolve({ conversationId: started.id, profile: started.profile, text, ended });
+          };
+          const follow = (started: { id: string; profile: string }) => {
+            id = started.id;
+            lookups = modelLookupMs.map((ms) => setTimeout(lookUp, ms));
+            pending.set(started.id, (reply) => settle(started, reply));
+          };
+
+          const left = Object.entries(inFlight(storage)).find(([each, flight]) => flight.chair === chairId && flight.review === reviewId && flight.key === key && !adopted.has(each) && !pending.has(each));
+          // A conversation that a crash cut short reports as failed: its work is redone in a new one.
+          if (left && left[1].reply && left[1].reply.ended !== "finished") {
+            const dead = left[0];
+            keepInFlight(storage, (all) => delete all[dead]);
+          } else if (left) {
+            const [leftId, flight] = left;
+            adopted.add(leftId);
+            onStart?.(leftId);
+            if (flight.reply) {
+              id = leftId;
+              return settle({ id: leftId, profile: flight.profile }, flight.reply);
+            }
+            return follow({ id: leftId, profile: flight.profile });
+          }
+
+          const tool = toolContexts.get(chairId);
+          if (!tool) {
+            signal.removeEventListener("abort", onAbort);
+            return reject(new Error("Mirador was restarted since this review started; ask the agent to call council_begin."));
+          }
           tool.startConversation({ profile, prompt }).then(
             (started) => {
               if (signal.aborted) return;
-              id = started.id;
               rememberProfile(storage, started.profile);
-              // The conversation's session reports its model a moment after it starts: look a few times, then at the end.
-              const lookups = modelLookupMs.map((ms) => setTimeout(() => lookUp(), ms));
-              let seen = false;
-              const lookUp = () => {
-                if (seen) return;
-                const model = records.modelOf(started.id);
-                if (!model) return;
-                seen = true;
-                lookups.forEach(clearTimeout);
-                onModel?.(model);
-              };
-              signal.addEventListener("abort", () => lookups.forEach(clearTimeout), { once: true });
-              pending.set(started.id, ({ text, ended }) => {
-                signal.removeEventListener("abort", onAbort);
-                lookUp();
-                lookups.forEach(clearTimeout);
-                resolve({ conversationId: started.id, profile: started.profile, text, ended });
-              });
+              keepInFlight(storage, (all) => (all[started.id] = { chair: chairId, review: reviewId, key, profile: started.profile, at: clock.now() }));
+              follow(started);
               onStart?.(started.id);
             },
             (error: unknown) => {
@@ -255,7 +332,7 @@ export function createCouncilHost({
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const out = writer(context, item.id);
     const mock = new MockRunner(listFiles, clock);
-    const agents = new AgentRunner(conversationsOf(context.conversationId, context.storage), clock);
+    const agents = new AgentRunner(conversationsOf(context.conversationId, review.id, context.storage), clock);
     const runner = routeByAgent((agent) => (isProfileAgent(agent) ? agents : mock));
     const session = new ReviewSession(review, { runner, clock, onChange: (next) => out.write(next) });
     sessions.set(item.id, session);
@@ -265,14 +342,20 @@ export function createCouncilHost({
       .finally(() => {
         out.flush();
         sessions.delete(item.id);
+        // Nothing of this review's left over from before a restart is wanted once it has gone on and ended.
+        if (!isRunning(session.review)) keepInFlight(context.storage, (all) => {
+          for (const [id, flight] of Object.entries(all)) if (flight.review === review.id && !pending.has(id)) delete all[id];
+        });
       });
   }
 
-  /** The review of an item, if it can start now; otherwise says why not. */
+  /**
+   * The review of an item, if it can start now (in setup) or resume (cut short by a restart); otherwise says why not.
+   */
   async function startable(item: PluginItem<Review>): Promise<Review> {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const review = settled(item);
-    if (review.phase !== "setup") throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
+    if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before starting the review.");
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
       throw new Error(`There is no file or folder at ${review.target}; give the absolute path of what to review.`);
@@ -280,16 +363,24 @@ export function createCouncilHost({
     return review;
   }
 
-  /** The user's Start: runs the review, or, with profile seats and no tool context to start them from, asks the agent to. */
+  /** Runs a review in setup, or resumes one a restart cut short. */
+  const begin = (item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review) =>
+    launch(item, context, review, (session) => (review.phase === "setup" ? session.run() : session.resume()));
+
+  /**
+   * The user's Start or Resume: runs the review, or, with profile seats and no tool context to start them from, asks the
+   * agent to.
+   */
   async function start(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
     const review = await startable(item);
     const profiles = seatedReviewers(review).filter((reviewer) => isProfileAgent(reviewer.agent));
     if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
       const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
-      await context.prompt(`The user started Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
+      const what = review.phase === "setup" ? "started" : "resumed";
+      await context.prompt(`The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
       return null;
     }
-    launch(item, context, review, (session) => session.run());
+    begin(item, context, review);
     return null;
   }
 
@@ -416,16 +507,16 @@ export function createCouncilHost({
       },
       council_begin: {
         description:
-          "Start a Spectra Council review the user pressed Start on, when it asks you to: starts a conversation for each seat on its Mirador profile. Only call it when the canvas asks; the review then runs on its own and you hear when it ends.",
+          "Start a Spectra Council review the user pressed Start (or Resume) on, when it asks you to: starts a conversation for each seat on its Mirador profile. Only call it when the canvas asks; the review then runs on its own and you hear when it ends.",
         input: jsonSchema(beginInput),
         async run(input, context) {
           const parsed = beginInput.safeParse(input);
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
           const item = itemFor(context, parsed.data.review);
           const review = await startable(item);
-          launch(item, context, review, (session) => session.run());
+          begin(item, context, review);
           const seated = seatedReviewers(review).map((reviewer) => reviewer.label);
-          return `Started review ${review.id} with ${seated.join(", ")}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
+          return `${review.phase === "setup" ? "Started" : "Resumed"} review ${review.id} with ${seated.join(", ")}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
         },
       },
       council_status: {
@@ -484,9 +575,32 @@ export function createCouncilHost({
           return null;
         case "start":
           return start(item, context);
-        case "rule":
-          applyTo(item, context, { type: "ruled", at: clock.now(), findingId: parsed.data.findingId, decision: parsed.data.decision, note: parsed.data.note });
+        case "rule": {
+          const { findingId, decision, note } = parsed.data;
+          const before = settled(item).findings.find((finding) => finding.id === findingId);
+          const after = applyTo(item, context, { type: "ruled", at: clock.now(), findingId, decision, note }).data;
+          if (before?.fix && !after.findings.find((finding) => finding.id === findingId)?.fix) {
+            const fixer = before.fix.fixer ? ` It was handed to the "${before.fix.fixer.profile}" profile, whose conversation can't hear this; its report on ${findingId} will be ignored.` : "";
+            await context.prompt(
+              `The user took ${findingId} out of the fixes for Spectra Council review ${after.id} (${decision === null ? "ruling cleared" : decision}). Don't fix it; if you already changed something for it, tell the user what.${fixer}`,
+              { afterTurn: true },
+            );
+          }
           return null;
+        }
+        case "retry": {
+          const session = sessions.get(item.id);
+          if (!session) throw new Error("This review isn't running; only a running review's reviewer can be retried.");
+          try {
+            session.retry(parsed.data.reviewerId);
+          } catch (error) {
+            if (error instanceof ReviewError) throw new Error(error.message);
+            throw error;
+          }
+          return null;
+        }
+        case "resume":
+          return start(item, context);
         case "handoff":
           await writeHandoff(item, context);
           return null;
@@ -517,6 +631,13 @@ export function createCouncilHost({
       if (reviewer) {
         pending.delete(started.id);
         reviewer(reply);
+        return;
+      }
+      // A reviewer's conversation that ended while no review waited for it (Mirador restarted): kept for a resume.
+      if (inFlight(context.storage)[started.id]) {
+        keepInFlight(context.storage, (all) => {
+          if (all[started.id]) all[started.id] = { ...all[started.id]!, reply };
+        });
         return;
       }
       for (const item of councilItems(context)) {

@@ -5,17 +5,19 @@ import { argumentsOn, isStanding, type Argument, type Finding, type Review } fro
 import type { FindingStatus } from "../core/model.ts";
 import type { Evidence, ViewAction } from "../core/schemas.ts";
 import { ActionPlan, ProposalBlock, RulingControl } from "./Actions.tsx";
-import { ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, StanceBadge, VerdictBanner } from "./ui.tsx";
+import { AlsoMark, AlsoReported, ConfidenceMeter, cx, mergedInto, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, StanceBadge, VerdictBanner } from "./ui.tsx";
 
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
 
 /** Text in which finding ids like "F6" that exist in the review become buttons selecting that finding. */
 function LinkedText({ review, text, select }: { review: Review; text: string; select(id: string): void }) {
   const parts: ReactNode[] = [];
+  const merged = mergedInto(review);
   text.split(/(\bF\d+\b)/).forEach((part, index) => {
-    if (index % 2 === 1 && review.findings.some((finding) => finding.id === part)) {
+    const target = index % 2 === 1 ? (review.findings.some((finding) => finding.id === part) ? part : merged.get(part)) : undefined;
+    if (target) {
       parts.push(
-        <button key={index} className="link finding-ref" onClick={() => select(part)}>
+        <button key={index} className="link finding-ref" title={target === part ? undefined : `${part} was merged into ${target}`} onClick={() => select(target)}>
           {part}
         </button>,
       );
@@ -101,6 +103,7 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
           <FindingStatusBadge status={finding.status} />
           <span className="muted">reported by {label(finding.reviewerId)}</span>
         </div>
+        <AlsoReported review={review} finding={finding} />
         {duplicates.length > 0 && (
           <p className="duplicates muted">
             Possibly the same as{" "}
@@ -215,7 +218,8 @@ export function Deliberation({ review, focus, openPath, act, busy }: { review: R
   const detailRef = useRef<HTMLDivElement>(null);
   const first = useRef(true);
   const sorted = [...review.findings].sort((a, b) => Number(b.status === "disputed") - Number(a.status === "disputed") || bySeverity(a, b));
-  const selected = review.findings.find((finding) => finding.id === picked) ?? sorted[0];
+  const mergedTo = mergedInto(review);
+  const selected = review.findings.find((finding) => finding.id === picked) ?? review.findings.find((finding) => finding.id === mergedTo.get(picked ?? "")) ?? sorted[0];
   const selectedId = selected?.id;
   // In the single-column layout the detail sits below the list: bring it into view when the selection changes.
   useEffect(() => {
@@ -265,7 +269,9 @@ export function Deliberation({ review, focus, openPath, act, busy }: { review: R
                       <RulingMark finding={finding} />
                       <FixBadge finding={finding} />
                     </span>
-                    <span className="council-item-title">{finding.title}</span>
+                    <span className="council-item-title">
+                      {finding.title} <AlsoMark review={review} finding={finding} />
+                    </span>
                     <span className="council-item-foot">
                       <Positions review={review} finding={finding} />
                       <span className="muted">

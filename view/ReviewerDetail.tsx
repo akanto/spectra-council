@@ -1,7 +1,8 @@
 /** One reviewer's full activity and findings, beside the workspace. Only events the runner reported, no private reasoning. */
 import { useEffect, useRef } from "react";
 import { seatDetail } from "../core/agents.ts";
-import type { Review } from "../core/model.ts";
+import { reportersOf, type Review } from "../core/model.ts";
+import type { ViewAction } from "../core/schemas.ts";
 import { ActivityLine, FindingRow } from "./Workspace.tsx";
 import { elapsed, StatusMark, statusWord } from "./ui.tsx";
 
@@ -12,6 +13,8 @@ export function ReviewerDetail({
   reviewerId,
   now,
   close,
+  act,
+  busy,
   openFinding,
   openPath,
 }: {
@@ -19,6 +22,8 @@ export function ReviewerDetail({
   reviewerId: string;
   now: number;
   close(): void;
+  act(action: ViewAction): void;
+  busy: boolean;
   openFinding(id: string): void;
   openPath?: (path: string) => void;
 }) {
@@ -52,7 +57,8 @@ export function ReviewerDetail({
     end.current?.scrollIntoView({ block: "end" });
   }, [count]);
   if (!reviewer) return null;
-  const findings = review.findings.filter((finding) => finding.reviewerId === reviewer.id);
+  // Its own findings and those its report of was merged into, as the seat panel counts them.
+  const findings = review.findings.filter((finding) => reportersOf(finding).includes(reviewer.id));
   const hidden = reviewer.activityCount - reviewer.activity.length;
   return (
     <aside ref={root} className="detail" aria-label={`${reviewer.label}'s activity`}>
@@ -67,9 +73,16 @@ export function ReviewerDetail({
             {` · ${findings.length} finding${findings.length === 1 ? "" : "s"}`}
           </span>
         </div>
-        <button className="icon-button" onClick={close} aria-label="Close">
-          ✕
-        </button>
+        <div className="detail-actions">
+          {review.phase === "independent-review" && reviewer.status === "failed" && (
+            <button onClick={() => act({ kind: "retry", reviewerId: reviewer.id })} disabled={busy}>
+              Retry
+            </button>
+          )}
+          <button className="icon-button" onClick={close} aria-label="Close">
+            ✕
+          </button>
+        </div>
       </header>
       {reviewer.problem && <p className="problem">{reviewer.problem}</p>}
       {findings.length > 0 && (
@@ -77,7 +90,7 @@ export function ReviewerDetail({
           <h3>Findings</h3>
           <ul className="finding-rows compact">
             {findings.map((finding) => (
-              <FindingRow key={finding.id} finding={finding} reviewer="" onOpen={() => openFinding(finding.id)} />
+              <FindingRow key={finding.id} review={review} finding={finding} reviewer="" onOpen={() => openFinding(finding.id)} />
             ))}
           </ul>
         </section>

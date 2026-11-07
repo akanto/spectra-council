@@ -20,17 +20,19 @@ import {
   type Activity,
   type ActivityKind,
   type Argument,
+  type CoReport,
   type Decision,
   type Finding,
   type FindingStatus,
   type ModelInfo,
   type Position,
+  type ResumablePhase,
   type Review,
   type Reviewer,
   type RunnerKind,
   type Stance,
 } from "./model.ts";
-import type { ArgumentInput, FindingInput, FixCheckInput, ProposalInput, Seat, Setup, SetupPatch } from "./schemas.ts";
+import { SEVERITIES, type ArgumentInput, type Evidence, type FindingInput, type FixCheckInput, type ProposalInput, type Seat, type Setup, type SetupPatch } from "./schemas.ts";
 
 export type ReviewerOutcome = "completed" | "failed" | "stopped";
 
@@ -49,6 +51,18 @@ export type ReviewerEvent =
 
 export type ReviewEvent =
   | ReviewerEvent
+  /** The user retries a reviewer that failed in the independent review: its findings so far are dropped, and it waits to run again. */
+  | { type: "reviewer-retried"; reviewerId: string; at: number }
+  /**
+   * After the independent review, findings that report the same problem merge: `merged` fold into `into`, which keeps
+   * their reports (`alsoReported`), the highest severity and all the evidence.
+   */
+  | { type: "findings-merged"; at: number; into: string; merged: string[] }
+  /**
+   * A review a restart cut short goes on in the phase it was in: the work in flight then is dropped (the unfinished
+   * reviewers' findings, the current round's arguments, the synthesis so far), to be done again.
+   */
+  | { type: "resumed"; at: number }
   | { type: "configured"; patch: SetupPatch }
   /**
    * The model a profile seat runs on, as the host learnt it: before the start, what the profile's latest conversation
@@ -63,7 +77,10 @@ export type ReviewEvent =
   | { type: "finding-resolved"; at: number; findingId: string; status: Exclude<FindingStatus, "reported">; rationale: string; dissenters: string[] }
   /** The review ends with the council's verdict. */
   | { type: "concluded"; at: number; summary: string }
-  /** The user's decision on a finding after the verdict; null clears it. Fixed once the finding is handed off. */
+  /**
+   * The user's decision on a finding after the verdict; null clears it. A finding handed off but not fixed yet can still
+   * be dismissed or deferred, which takes it out of the fixes.
+   */
   | { type: "ruled"; at: number; findingId: string; decision: Decision | null; note: string }
   /** The hand-off document of these (accepted) findings was written to `path`. */
   | { type: "handoff-written"; at: number; path: string; findingIds: string[] }
@@ -127,12 +144,15 @@ export function newReview(id: string, setup: Setup, runner: RunnerKind, at: numb
     endedAt: null,
     seq: 0,
     agentHeardAt: null,
+    findingsIssued: 0,
+    interruptedPhase: null,
   };
 }
 
 /**
  * A review as stored by an earlier version, brought up to this one: format 1 had no deliberation, format 2 no rulings,
- * fixes or verification, format 3 no fixer on a fix, format 4 no model on a reviewer. Hosts read stored reviews through
+ * fixes or verification, format 3 no fixer on a fix, format 4 no model on a reviewer, format 5 no merged reports and no
+ * phase to resume in. Hosts read stored reviews through
  * this before anything else touches them.
  */
 export function upgradeReview(stored: Review): Review {
@@ -153,6 +173,7 @@ export function upgradeReview(stored: Review): Review {
           proposal: finding.proposal ?? null,
           ruling: finding.ruling ?? null,
           fix: finding.fix ? { ...finding.fix, fixer: finding.fix.fixer ?? null, problem: finding.fix.problem ?? null } : null,
+          alsoReported: finding.alsoReported ?? [],
         }) as Finding,
     ),
     arguments: old.arguments ?? [],
@@ -161,6 +182,8 @@ export function upgradeReview(stored: Review): Review {
     verdict: old.verdict ?? null,
     handoff: old.handoff ?? null,
     verifications: old.verifications ?? 0,
+    findingsIssued: (old as Partial<Review>).findingsIssued ?? Math.max(0, ...old.findings.map((finding) => Number(finding.id?.slice(1)) || 0)),
+    interruptedPhase: (old as Partial<Review>).interruptedPhase ?? null,
   };
 }
 
@@ -199,6 +222,21 @@ const endActive = (review: Review, at: number): Reviewer[] =>
 /** Sets every reviewer in the deliberation to say what it does now. */
 const deliberatingSay = (review: Review, current: string): Reviewer[] =>
   review.reviewers.map((reviewer) => (reviewer.enabled && reviewer.status === "deliberating" ? { ...reviewer, current } : reviewer));
+
+
+/** Each reviewer's position on a finding, from its latest argument; the reporter and co-reporters back it from round 0. */
+function positionsFrom(finding: Finding, args: Argument[], at: number): Position[] {
+  const positions = new Map<string, Position>();
+  for (const reviewerId of [finding.reviewerId, ...finding.alsoReported.map((report) => report.reviewerId)]) {
+    if (!positions.has(reviewerId)) positions.set(reviewerId, { reviewerId, stance: "supports", confidence: finding.confidence, round: 0, at });
+  }
+  for (const argument of args) {
+    if (argument.findingId !== finding.id) continue;
+    positions.delete(argument.reviewerId);
+    positions.set(argument.reviewerId, { reviewerId: argument.reviewerId, stance: argument.stance, confidence: argument.confidence, round: argument.round, at: argument.at });
+  }
+  return [...positions.values()];
+}
 
 const findingOf = (review: Review, findingId: string): Finding => {
   const finding = review.findings.find(({ id }) => id === findingId);
@@ -272,10 +310,7 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
         round: 0,
         rounds: event.rounds,
         reviewers: review.reviewers.map((reviewer) => (reviewer.enabled && reviewer.status === "completed" ? { ...reviewer, status: "deliberating", current: "Reading the other findings" } : reviewer)),
-        findings: review.findings.map((finding) => ({
-          ...finding,
-          positions: [{ reviewerId: finding.reviewerId, stance: "supports", confidence: finding.confidence, round: 0, at: event.at }],
-        })),
+        findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(finding, [], event.at) })),
       };
     }
     case "round-started": {
@@ -311,8 +346,14 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "ruled": {
       if (review.phase !== "complete" || !review.verdict) throw new ReviewError(`Findings are ruled on once the council has its verdict; the review is ${review.phase}.`);
       const finding = findingOf(review, event.findingId);
-      if (finding.fix) throw new ReviewError(`${finding.id} was handed off already; its ruling can't change.`);
-      return updateFinding(review, finding.id, (it) => ({ ...it, ruling: event.decision === null ? null : { decision: event.decision, note: event.note, at: event.at } }));
+      const ruling = event.decision === null ? null : { decision: event.decision, note: event.note, at: event.at };
+      if (finding.fix) {
+        // Handed off: the note may change, or the finding comes out of the fixes while nobody has fixed it yet.
+        if (event.decision === "accepted") return updateFinding(review, finding.id, (it) => ({ ...it, ruling }));
+        if (finding.fix.state !== "handed-off" && finding.fix.state !== "reopened") throw new ReviewError(`${finding.id} is ${finding.fix.state} already; its ruling can't change.`);
+        return updateFinding(review, finding.id, (it) => ({ ...it, ruling, fix: null }));
+      }
+      return updateFinding(review, finding.id, (it) => ({ ...it, ruling }));
     }
     case "handoff-written": {
       if (review.phase !== "complete" || !review.verdict) throw new ReviewError(`A hand-off is written once the council has its verdict; the review is ${review.phase}.`);
@@ -400,7 +441,51 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "interrupted": {
       if (review.phase === "verification") return endVerification(review, event.at, event.type === "stopped" ? "Re-check stopped" : "Re-check interrupted", false);
       if (!isRunning(review)) return review;
-      return { ...review, phase: event.type, endedAt: event.at, reviewers: endActive(review, event.at) };
+      const interruptedPhase = event.type === "interrupted" ? (review.phase as ResumablePhase) : null;
+      return { ...review, phase: event.type, endedAt: event.at, reviewers: endActive(review, event.at), interruptedPhase };
+    }
+    case "resumed":
+      return resume(review, event.at);
+    case "reviewer-retried": {
+      if (review.phase !== "independent-review") throw new ReviewError(`A reviewer is retried during the independent review; the review is ${review.phase}.`);
+      const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
+      if (!reviewer || !reviewer.enabled) throw new ReviewError(`No reviewer ${event.reviewerId} takes part in the review.`);
+      if (reviewer.status !== "failed") throw new ReviewError(`${reviewer.label} hasn't failed; only a failed reviewer is retried.`);
+      const retried = updateReviewer(review, reviewer.id, (it) => ({
+        ...withActivity(it, { at: event.at, kind: "status", text: "Retrying" }),
+        status: "waiting",
+        current: "Waiting to retry",
+        problem: null,
+        startedAt: null,
+        endedAt: null,
+      }));
+      return { ...retried, findings: review.findings.filter((finding) => finding.reviewerId !== reviewer.id) };
+    }
+    case "findings-merged": {
+      if (review.phase !== "independent-review") throw new ReviewError(`Findings are merged after the independent review; the review is ${review.phase}.`);
+      if (seatedReviewers(review).some((reviewer) => reviewer.status === "waiting" || reviewer.status === "reviewing")) {
+        throw new ReviewError("Findings can't merge while reviewers are still reviewing.");
+      }
+      const into = findingOf(review, event.into);
+      const merged = event.merged.map((id) => findingOf(review, id));
+      if (merged.length === 0 || merged.some((finding) => finding.id === into.id)) throw new ReviewError("Merge other findings into a finding.");
+      const severity = [into, ...merged].map((finding) => finding.severity).sort((a, b) => SEVERITIES.indexOf(a) - SEVERITIES.indexOf(b))[0]!;
+      const seen = new Set(into.evidence.map(evidenceKey));
+      const evidence = [...into.evidence];
+      for (const piece of merged.flatMap((finding) => finding.evidence)) {
+        if (!seen.has(evidenceKey(piece))) (seen.add(evidenceKey(piece)), evidence.push(piece));
+      }
+      const reports = merged.flatMap((finding): CoReport[] => [
+        { reviewerId: finding.reviewerId, findingId: finding.id, title: finding.title, severity: finding.severity, evidence: finding.evidence },
+        ...finding.alsoReported,
+      ]);
+      const gone = new Set(event.merged);
+      return {
+        ...review,
+        findings: review.findings
+          .filter((finding) => !gone.has(finding.id))
+          .map((finding) => (finding.id === into.id ? { ...finding, severity, evidence, alsoReported: [...finding.alsoReported, ...reports] } : finding)),
+      };
     }
     case "agent-heard":
       return { ...review, agentHeardAt: event.at };
@@ -426,7 +511,7 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
       if (review.phase !== "independent-review") throw new ReviewError(`Findings are reported in the independent review; the review is in ${review.phase}.`);
       const finding: Finding = {
         ...event.finding,
-        id: `F${review.findings.length + 1}`,
+        id: `F${review.findingsIssued + 1}`,
         reviewerId: reviewer.id,
         status: "reported",
         reportedAt: event.at,
@@ -435,11 +520,12 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
         proposal: null,
         ruling: null,
         fix: null,
+        alsoReported: [],
       };
       const reported = updateReviewer(review, reviewer.id, (it) =>
         withActivity(it, { at: event.at, kind: "finding", text: `Reported ${finding.id}: ${finding.title}`, ...(finding.evidence[0] ? { path: finding.evidence[0].path } : {}) }),
       );
-      return { ...reported, findings: [...review.findings, finding] };
+      return { ...reported, findings: [...review.findings, finding], findingsIssued: review.findingsIssued + 1 };
     }
     case "argued": {
       if (review.phase !== "deliberation" || review.round < 1) throw new ReviewError(`Arguments are made in a deliberation round; the review is in ${review.phase}.`);
@@ -495,6 +581,52 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
       return updateReviewer(review, reviewer.id, (it) => ({ ...it, status: event.outcome, current, endedAt: event.at, problem: event.problem ?? null }));
     }
   }
+}
+
+const evidenceKey = (evidence: Evidence) => `${evidence.path}:${evidence.line ?? ""}-${evidence.endLine ?? ""}`;
+
+/**
+ * A review a restart cut short, back in the phase it was in, with the work that was in flight dropped so it can be done
+ * again: in the independent review, the unfinished reviewers wait to start over without their findings; in a round,
+ * that round's arguments go and it starts again; in the synthesis, the settling and the proposals go.
+ */
+function resume(review: Review, at: number): Review {
+  if (review.phase !== "interrupted" || review.interruptedPhase === null) throw new ReviewError(`Only a review a restart cut short can resume; this one is ${review.phase}.`);
+  const phase = review.interruptedPhase;
+  const cutShort = (reviewer: Reviewer) => reviewer.enabled && reviewer.status === "stopped";
+  const base: Review = { ...review, endedAt: null, interruptedPhase: null, agentHeardAt: null };
+  if (phase === "independent-review") {
+    const redo = new Set(review.reviewers.filter(cutShort).map(({ id }) => id));
+    return {
+      ...base,
+      phase,
+      findings: review.findings.filter((finding) => !redo.has(finding.reviewerId)),
+      reviewers: review.reviewers.map((reviewer) =>
+        redo.has(reviewer.id) ? { ...withActivity(reviewer, { at, kind: "status", text: "Resuming after a restart" }), status: "waiting", current: "Waiting to resume", startedAt: null, endedAt: null } : reviewer,
+      ),
+    };
+  }
+  const back = review.reviewers.map((reviewer) => (cutShort(reviewer) ? { ...reviewer, status: "deliberating" as const, current: "Resuming after a restart", endedAt: null } : reviewer));
+  if (phase === "deliberation") {
+    // The cut-short round starts again; the engine starts it anew from the round before.
+    const args = review.arguments.filter((argument) => argument.round < review.round);
+    return {
+      ...base,
+      phase,
+      round: Math.max(0, review.round - 1),
+      reviewers: back,
+      arguments: args,
+      findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(finding, args, at) })),
+    };
+  }
+  // The synthesis starts again after the last round.
+  return {
+    ...base,
+    phase: "deliberation",
+    round: review.rounds,
+    reviewers: back,
+    findings: review.findings.map((finding) => ({ ...finding, status: "reported", resolution: null, proposal: null })),
+  };
 }
 
 /** Applies one event; the review it gives back has the next sequence number unless the event changed nothing. */

@@ -267,3 +267,40 @@ export function FixBadge({ finding }: { finding: Finding }) {
 
 /** The fixer profile this conversation chose (null: its own agent), supplied by App for the action plan. */
 export const FixerContext = createContext<string | null>(null);
+
+/** Where a merged-away finding id went: "F9" -> the finding that took its report in. */
+export function mergedInto(review: Review): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const finding of review.findings) for (const report of finding.alsoReported) map.set(report.findingId, finding.id);
+  return map;
+}
+
+const reporterLabel = (review: Review, id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
+
+/** A small "+N" beside a finding that others reported too, with who in the tooltip. */
+export function AlsoMark({ review, finding }: { review: Review; finding: Finding }) {
+  const n = finding.alsoReported.length;
+  if (n === 0) return null;
+  const who = finding.alsoReported.map((report) => `${reporterLabel(review, report.reviewerId)} (${report.findingId})`).join(", ");
+  return (
+    <span className="also-mark" title={`Also reported by ${who}`} aria-label={`Also reported by ${who}`}>
+      +{n}
+    </span>
+  );
+}
+
+/** "Also reported by Codex (F3, “title”), Gemini (F9)". */
+export function AlsoReported({ review, finding }: { review: Review; finding: Finding }) {
+  if (finding.alsoReported.length === 0) return null;
+  return (
+    <p className="also-reported">
+      <span className="muted">Also reported by </span>
+      {finding.alsoReported.map((report, index) => (
+        <span key={`${report.reviewerId}:${report.findingId}`}>
+          {index > 0 && ", "}
+          <strong>{reporterLabel(review, report.reviewerId)}</strong> ({report.findingId}, “{report.title}”)
+        </span>
+      ))}
+    </p>
+  );
+}

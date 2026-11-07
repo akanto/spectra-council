@@ -5,7 +5,8 @@
  * stores each new review the listener gets.
  */
 import { checkersOf, ROUNDS, settle, verdictSummary } from "./deliberation.ts";
-import { isRunning, isStanding, seatedReviewers, type ModelInfo, type Review, type Reviewer } from "./model.ts";
+import { duplicateGroups } from "./duplicates.ts";
+import { isRunning, isStanding, reportersOf, seatedReviewers, type Finding, type ModelInfo, type Review, type Reviewer } from "./model.ts";
 import { PROFILES, type ReviewProfile } from "./profiles.ts";
 import { reduce, type ReviewEvent, type ReviewerEvent } from "./review.ts";
 import { argumentInputSchema, findingInputSchema, fixCheckInputSchema, problemsOf, proposalInputSchema } from "./schemas.ts";
@@ -150,6 +151,8 @@ export class ReviewSession {
   readonly #clock: Clock;
   readonly #onChange: (review: Review) => void;
   readonly #abort = new AbortController();
+  /** The independent reviews under way, the retried ones included; the review moves on once none is left. */
+  readonly #reviewing = new Set<Promise<void>>();
 
   constructor(review: Review, { runner, clock = systemClock, onChange }: SessionOptions) {
     this.#review = review;
@@ -172,25 +175,57 @@ export class ReviewSession {
   /** Runs the review to its verdict; resolves with the review once it concluded or was stopped. */
   async run(): Promise<Review> {
     this.#dispatch({ type: "started", at: this.#clock.now() });
-    const profile = PROFILES[this.#review.profile];
-    const started = this.#review;
-    await Promise.all(seatedReviewers(started).map((reviewer) => this.#runReviewer({ review: started, reviewer, profile })));
-    if (!isRunning(this.#review)) return this.#review;
+    return this.#onwards();
+  }
 
-    const finished = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "completed");
-    if (finished.length >= 2 && this.#review.findings.length > 0) {
-      if (!(await this.#deliberate(profile))) return this.#review;
+  /**
+   * Goes on with a review a restart cut short, from the phase it was in (the work in flight then is done again), to its
+   * verdict.
+   */
+  async resume(): Promise<Review> {
+    this.#dispatch({ type: "resumed", at: this.#clock.now() });
+    return this.#onwards();
+  }
+
+  /** Runs a reviewer that failed in the independent review again; the review waits for it before it moves on. */
+  retry(reviewerId: string) {
+    this.#dispatch({ type: "reviewer-retried", reviewerId, at: this.#clock.now() });
+    const reviewer = this.#review.reviewers.find(({ id }) => id === reviewerId)!;
+    this.#startReviewing({ review: this.#review, reviewer, profile: PROFILES[this.#review.profile] });
+  }
+
+  /** Whatever is left from where the review is: the independent reviews still to do, the deliberation, the verdict. */
+  async #onwards(): Promise<Review> {
+    const profile = PROFILES[this.#review.profile];
+    if (this.#review.phase === "independent-review") {
+      const now = this.#review;
+      for (const reviewer of seatedReviewers(now).filter((each) => each.status === "waiting")) this.#startReviewing({ review: now, reviewer, profile });
+      while (this.#reviewing.size > 0) await Promise.all([...this.#reviewing]);
+      if (!isRunning(this.#review)) return this.#review;
+      for (const group of duplicateGroups(this.#review)) this.#dispatch({ type: "findings-merged", at: this.#clock.now(), ...group });
+      const finished = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "completed");
+      if (finished.length < 2 || this.#review.findings.length === 0) return this.#conclude();
     }
+    if (!(await this.#deliberate(profile))) return this.#review;
+    return this.#conclude();
+  }
+
+  #conclude(): Review {
     this.#dispatch({ type: "concluded", at: this.#clock.now(), summary: verdictSummary(this.#review) });
     return this.#review;
   }
 
-  /** The rounds and the synthesis; false when the review was stopped on the way. */
+  #startReviewing(job: ReviewerJob) {
+    const work = this.#runReviewer(job).finally(() => this.#reviewing.delete(work));
+    this.#reviewing.add(work);
+  }
+
+  /** The rounds (from where they got to, on a resumed review) and the synthesis; false when the review was stopped on the way. */
   async #deliberate(profile: ReviewProfile): Promise<boolean> {
     const signal = this.#abort.signal;
-    const rounds = ROUNDS[this.#review.depth];
-    this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds });
-    for (let round = 1; round <= rounds; round++) {
+    if (this.#review.phase !== "deliberation") this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds: ROUNDS[this.#review.depth] });
+    const rounds = this.#review.rounds;
+    for (let round = this.#review.round + 1; round <= rounds; round++) {
       if (signal.aborted) return false;
       this.#dispatch({ type: "round-started", at: this.#clock.now(), round });
       const table = this.#review;
@@ -212,9 +247,12 @@ export class ReviewSession {
     // Each reporter drafts the fixes for its findings that stand, all at once.
     const settled = this.#review;
     const drafters = seatedReviewers(settled).filter((reviewer) => reviewer.status === "deliberating");
+    const sitting = new Set(drafters.map(({ id }) => id));
+    const drafterOf = (finding: Finding) => reportersOf(finding).find((id) => sitting.has(id));
     await Promise.all(
       drafters.map((reviewer) => {
-        const findingIds = settled.findings.filter((finding) => finding.reviewerId === reviewer.id && isStanding(finding)).map(({ id }) => id);
+        // Each finding's fix is drafted by the first of its reporters still in the deliberation.
+        const findingIds = settled.findings.filter((finding) => isStanding(finding) && drafterOf(finding) === reviewer.id).map(({ id }) => id);
         if (findingIds.length === 0) return;
         return this.#aside(reviewer.id, "proposing fixes", () => this.#runner.propose({ review: settled, reviewer, profile, findingIds }, this.#reporter(reviewer.id), signal));
       }),

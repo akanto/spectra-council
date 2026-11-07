@@ -5,7 +5,7 @@
  * only plays it on a clock.
  */
 import type { Clock, DeliberationJob, ProposalJob, Report, ReviewerJob, ReviewerRunner, VerificationJob } from "./engine.ts";
-import { argumentsOn, type Argument, type Finding } from "./model.ts";
+import { argumentsOn, reportersOf, type Argument, type Finding } from "./model.ts";
 import type { ProfileId, Depth, Evidence, FindingInput, FixCheckInput, ProposalInput, Severity, Confidence, Stance } from "./schemas.ts";
 
 /** Lists a review target's files, relative to it, for a mock to pick from. */
@@ -132,6 +132,12 @@ function readingOrder(files: string[], persona: Persona, count: number): string[
   return [...favourites, ...others].slice(0, count);
 }
 
+/**
+ * Where a kind of finding lives in the target: one file per title, the same for every persona, so personas who draw the
+ * same finding and read that file report it at the same place, as real reviewers who agree do.
+ */
+const homeOf = (title: string, files: string[]) => files.reduce((best, file) => (hash(`${title}|${file}`) < hash(`${title}|${best}`) ? file : best), files[0] ?? "");
+
 /** The steps one mock reviewer takes over the given files. */
 export function mockScript(job: Pick<ReviewerJob, "review" | "reviewer" | "profile">, files: string[]): MockStep[] {
   const { review, reviewer, profile } = job;
@@ -167,7 +173,7 @@ export function mockScript(job: Pick<ReviewerJob, "review" | "reviewer" | "profi
         severity: template.severity,
         confidence: template.confidence,
         category: template.category,
-        evidence: [{ path: file, note: `Where ${reviewer.label} saw it.` }],
+        evidence: [{ path: reads.includes(homeOf(template.title, files)) ? homeOf(template.title, files) : file, note: `Where ${reviewer.label} saw it.` }],
         recommendation: template.recommendation,
       };
       activity(pause(500), "status", `Writing up “${template.title}”`);
@@ -315,7 +321,7 @@ export function mockDeliberation(job: DeliberationJob): MockStep[] {
   const forPersona = (table: Record<string, string[]>) => table[reviewer.agent] ?? table["mock-claude"]!;
 
   for (const finding of review.findings) {
-    const own = finding.reviewerId === reviewer.id;
+    const own = reportersOf(finding).includes(reviewer.id);
     const mine = argumentsOn(review, finding.id).filter((each) => each.reviewerId === reviewer.id);
     const reporterStance = finding.positions.find((each) => each.reviewerId === finding.reviewerId)?.stance;
     // A finding its reporter conceded is settled; nobody argues about it any more.

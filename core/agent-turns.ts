@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 import type { DeliberationJob, ProposalJob, ReviewerJob, VerificationJob } from "./engine.ts";
-import type { Argument, Finding, Review } from "./model.ts";
+import { reportersOf, type Argument, type Finding, type Review } from "./model.ts";
 import {
   argumentInputSchema,
   type Evidence,
@@ -89,7 +89,7 @@ export function reviewPrompt(job: ReviewerJob): string {
 
 export function deliberationPrompt(job: DeliberationJob): string {
   const { review, reviewer, round, rounds } = job;
-  const mine = (finding: Finding) => finding.reviewerId === reviewer.id;
+  const mine = (finding: Finding) => reportersOf(finding).includes(reviewer.id);
   const findingBlocks = review.findings.map((finding) => {
     const positions = finding.positions.map((p) => `${p.reviewerId} ${p.stance} (${p.confidence})`).join(", ");
     return `${findingText(finding, review)}${mine(finding) ? "\n  THIS IS YOUR OWN FINDING" : ""}\n  positions: ${positions || "none yet"}`;
@@ -179,4 +179,21 @@ export function verificationPrompt(job: VerificationJob): string {
     ],
   };
   return [header(job), task, `Fixed findings:\n${blocks.join("\n\n")}`, ending("your checks", '{ "checks": [ ... ] }', "check", fixCheckInputSchema, example)].join("\n\n");
+}
+
+const REPLY_LIMIT = 20_000;
+
+/**
+ * The prompt for the one follow-up conversation after a reply whose JSON block couldn't be read. It quotes the original
+ * task (with its reply shape, schema and example), the previous reply (its end, where the block belongs) and the problem.
+ */
+export function repairPrompt(original: string, reply: string, problem: string): string {
+  const kept = reply.length > REPLY_LIMIT ? `[...earlier part left out...]\n${reply.slice(-REPLY_LIMIT)}` : reply;
+  return [
+    "You are a reviewer on a Spectra Council review. In an earlier conversation you were given the task below and answered it, but your answer could not be read by the program that collects it.",
+    `The task you were given:\n<task>\n${original}\n</task>`,
+    `Your previous reply:\n<previous-reply>\n${kept}\n</previous-reply>`,
+    `What was wrong: ${problem}`,
+    "Reply again, ending with the one ```json block in exactly the shape the task requires (see its shape, JSON Schema and example). Don't redo the work: turn your previous reply into the required block. Only if the previous reply lacks the content the block needs, re-read the files you must. The read-only rule from the task still holds: change no file and run nothing that writes or installs anything.",
+  ].join("\n\n");
 }

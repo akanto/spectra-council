@@ -178,6 +178,20 @@ function SeatCard({
   );
 }
 
+/** Roving tabindex for a radiogroup: arrows move to and choose the neighbouring option (wrapping), Home and End the ends. */
+function radioKeys<T>(options: readonly T[], chosen: T, choose: (option: T) => void) {
+  return (event: React.KeyboardEvent<HTMLElement>) => {
+    const last = options.length - 1;
+    const at = options.indexOf(chosen);
+    const to = event.key === "ArrowRight" || event.key === "ArrowDown" ? (at + 1) % options.length : event.key === "ArrowLeft" || event.key === "ArrowUp" ? (at + last) % options.length : event.key === "Home" ? 0 : event.key === "End" ? last : null;
+    if (to === null) return;
+    event.preventDefault();
+    choose(options[to]!);
+    const buttons = event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]');
+    buttons[to]?.focus();
+  };
+}
+
 export function Setup({ review, configure, start, busy, bridge }: { review: Review; configure(patch: SetupPatch): void; start(): void; busy: boolean; bridge?: CouncilBridge }) {
   const setup = setupOf(review);
   const profiles = useProfiles(bridge);
@@ -227,9 +241,9 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
 
       <section className="field">
         <span className="field-label">Review profile</span>
-        <div className="choice-grid profiles" role="radiogroup" aria-label="Review profile">
+        <div className="choice-grid profiles" role="radiogroup" aria-label="Review profile" onKeyDown={radioKeys(PROFILE_IDS, setup.profile, (id) => configure({ profile: id }))}>
           {PROFILE_IDS.map((id) => (
-            <button key={id} role="radio" aria-checked={setup.profile === id} className={cx("choice", setup.profile === id && "chosen")} onClick={() => configure({ profile: id })}>
+            <button key={id} role="radio" tabIndex={setup.profile === id ? 0 : -1} aria-checked={setup.profile === id} className={cx("choice", setup.profile === id && "chosen")} onClick={() => configure({ profile: id })}>
               <span className="choice-title">{PROFILES[id].title}</span>
               <span className="choice-blurb">{PROFILES[id].blurb}</span>
             </button>
@@ -240,9 +254,9 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
 
       <section className="field">
         <span className="field-label">Depth</span>
-        <div className="segmented" role="radiogroup" aria-label="Depth">
+        <div className="segmented" role="radiogroup" aria-label="Depth" onKeyDown={radioKeys(DEPTHS, setup.depth, (depth) => configure({ depth }))}>
           {DEPTHS.map((depth) => (
-            <button key={depth} role="radio" aria-checked={setup.depth === depth} className={cx(setup.depth === depth && "chosen")} onClick={() => configure({ depth })} title={DEPTH_LABELS[depth].blurb}>
+            <button key={depth} role="radio" tabIndex={setup.depth === depth ? 0 : -1} aria-checked={setup.depth === depth} className={cx(setup.depth === depth && "chosen")} onClick={() => configure({ depth })} title={DEPTH_LABELS[depth].blurb}>
               {DEPTH_LABELS[depth].title}
             </button>
           ))}

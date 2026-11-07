@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { bySeverity } from "../core/describe.ts";
 import { isFinished, isStanding, type Finding, type FindingStatus, type Review } from "../core/model.ts";
 import { SEVERITIES, type Evidence, type Severity } from "../core/schemas.ts";
-import { ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge } from "./ui.tsx";
+import { AlsoMark, AlsoReported, ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge } from "./ui.tsx";
 
 const rulingOf = (finding: Finding) => (!isStanding(finding) ? "n/a" : (finding.ruling?.decision ?? "unruled"));
 const RULING_FILTERS = [["accepted", "Accepted"], ["dismissed", "Dismissed"], ["deferred", "Later"], ["unruled", "Not ruled"]] as const;
@@ -20,6 +20,7 @@ function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, o
       <button className="finding-row" onClick={toggle} aria-expanded={open}>
         <span className="finding-id mono">{finding.id}</span>
         <span className="finding-title">{finding.title}</span>
+        <AlsoMark review={review} finding={finding} />
         <span className="finding-by muted">{reviewer}</span>
         <SeverityBadge severity={finding.severity} />
         <FindingStatusBadge status={finding.status} />
@@ -53,6 +54,7 @@ function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, o
             <dt>Reported by</dt>
             <dd>{reviewer}</dd>
           </dl>
+          <AlsoReported review={review} finding={finding} />
           <h4>Evidence</h4>
           <ul className="evidence">
             {finding.evidence.map((evidence, index) => (
