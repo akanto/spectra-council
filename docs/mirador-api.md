@@ -54,11 +54,16 @@ stopConversation(conversationId: string): Promise<void>;
 
 The turn ends, and the plugin's `replied` hears `ended: "stopped"`.
 
+Until then, the plugin reads the model and effort a conversation runs on from Mirador's database, read-only
+(`hosts/mirador/records.ts`), to name each seat by its model. An API for that would replace the database read: for
+example `conversationModel(id): { model: string; effort: string | null } | null` on the plugin context.
+
 ## 4. Listing profiles
 
 **What:** `profiles(): { name: string; harness: string }[]` on the plugin context.
 
-**Why:** The setup offers real profile names instead of free text plus the names seated before. Today a wrong name fails
+**Why:** The setup offers real profile names instead of free text plus the names seated before. (Today the plugin reads
+them, with the model each last ran on, from Mirador's database; `hosts/mirador/records.ts`.) Today a wrong name fails
 that seat at Start, and the error lists Mirador's profiles.
 
 **Sketch:**

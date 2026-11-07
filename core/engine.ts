@@ -5,7 +5,7 @@
  * stores each new review the listener gets.
  */
 import { checkersOf, ROUNDS, settle, verdictSummary } from "./deliberation.ts";
-import { isRunning, isStanding, seatedReviewers, type Review, type Reviewer } from "./model.ts";
+import { isRunning, isStanding, seatedReviewers, type ModelInfo, type Review, type Reviewer } from "./model.ts";
 import { PROFILES, type ReviewProfile } from "./profiles.ts";
 import { reduce, type ReviewEvent, type ReviewerEvent } from "./review.ts";
 import { argumentInputSchema, findingInputSchema, fixCheckInputSchema, problemsOf, proposalInputSchema } from "./schemas.ts";
@@ -61,7 +61,9 @@ export type Report =
   | { type: "finding-reported"; finding: unknown }
   | { type: "argued"; argument: unknown }
   | { type: "fix-proposed"; proposal: unknown }
-  | { type: "fix-checked"; check: unknown };
+  | { type: "fix-checked"; check: unknown }
+  /** The model the reviewer's conversation runs on, once the host can tell. */
+  | { type: "model-seen"; model: ModelInfo };
 
 /**
  * What a runner gets to propose fixes, in the synthesis: the findings this reviewer reported that stand, settled, with
@@ -112,7 +114,14 @@ export interface AgentReply {
  * conversation lets it run on and ignores its reply.
  */
 export interface Conversations {
-  ask(request: { profile: string; prompt: string; signal: AbortSignal; onStart?: (conversationId: string) => void }): Promise<AgentReply>;
+  ask(request: {
+    profile: string;
+    prompt: string;
+    signal: AbortSignal;
+    onStart?: (conversationId: string) => void;
+    /** The model the conversation runs on, when the host learns it: called at most a few times, before the ask resolves. */
+    onModel?: (model: ModelInfo) => void;
+  }): Promise<AgentReply>;
 }
 
 /** How long a real reviewer's turn may take before its seat gives up on it. */
@@ -258,6 +267,9 @@ export class ReviewSession {
       switch (report.type) {
         case "activity":
           this.#dispatch({ type: "activity", reviewerId, at: at(), kind: report.kind, text: report.text, ...(report.path === undefined ? {} : { path: report.path }) });
+          return;
+        case "model-seen":
+          this.#dispatch({ type: "model-seen", reviewerId, model: report.model });
           return;
         case "finding-reported": {
           const parsed = findingInputSchema.safeParse(report.finding);

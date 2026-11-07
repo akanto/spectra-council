@@ -7,19 +7,20 @@ import { mkdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AgentRunner } from "../../core/agent-runner.ts";
-import { agentLabel, defaultSeats, isProfileAgent, profileName, runnerKindOf } from "../../core/agents.ts";
+import { defaultSeats, isProfileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
 import { acceptedFindings, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
-import { isFinished, isRunning, seatedReviewers, type Review } from "../../core/model.ts";
+import { isFinished, isRunning, seatedReviewers, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
-import { depthSchema, problemsOf, profileIdSchema, SEATS, viewActionSchema, type Setup } from "../../core/schemas.ts";
+import { depthSchema, MAX_SEATS, problemsOf, profileIdSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, targetKind } from "../../core/target-files.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
+import { miradorRecords, noRecords, type MiradorRecords } from "./records.ts";
 
 export const ITEM_TYPE = "council";
 
@@ -39,9 +40,10 @@ const openInput = z.object({
   depth: depthSchema.optional().describe("How thorough the review is; default standard."),
   agents: z
     .array(z.string().min(1))
-    .max(SEATS)
+    .min(1)
+    .max(MAX_SEATS)
     .optional()
-    .describe('Agents to seat, in order: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen); default: the first two mocks of four.'),
+    .describe(`The reviewers to seat, in order, 1 to ${MAX_SEATS}: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen, mock-glm); default: two mocks. The user can add and remove reviewers in the setup.`),
   instructions: z.string().optional().describe("What the user asked the reviewers to pay attention to, in their words."),
   title: z.string().min(1).optional().describe('The review\'s title, e.g. "Architecture review of the payment service".'),
 });
@@ -75,6 +77,10 @@ export interface HostOptions {
   throttleMs?: number;
   /** Writes a hand-off file, making its folder. */
   writeFile?: (path: string, text: string) => Promise<void>;
+  /** Mirador's profiles and the models conversations run on; none by default, Mirador's database in the plugin. */
+  records?: MiradorRecords;
+  /** How long after a reviewer's conversation started its model is looked up, in turn, until one is found. */
+  modelLookupMs?: number[];
 }
 
 const writeWithFolder = async (path: string, text: string) => {
@@ -88,6 +94,8 @@ export function createCouncilHost({
   newId = () => crypto.randomUUID().slice(0, 8),
   throttleMs = 250,
   writeFile = writeWithFolder,
+  records = noRecords,
+  modelLookupMs = [1_500, 5_000, 15_000],
 }: HostOptions = {}): CanvasHost<Review> {
   /** The reviews running in this process, by item id; one missing for a running review was cut short by a restart. */
   const sessions = new Map<string, ReviewSession>();
@@ -110,7 +118,7 @@ export function createCouncilHost({
   /** Conversations on Mirador profiles, started for the reviews of the conversation `chairId`. */
   function conversationsOf(chairId: string, storage: CanvasPluginContext<Review>["storage"]): Conversations {
     return {
-      ask: ({ profile, prompt, signal, onStart }) =>
+      ask: ({ profile, prompt, signal, onStart, onModel }) =>
         new Promise<AgentReply>((resolve, reject) => {
           const tool = toolContexts.get(chairId);
           if (!tool) return reject(new Error("Mirador was restarted since this review started; ask the agent to call council_begin."));
@@ -126,8 +134,22 @@ export function createCouncilHost({
               if (signal.aborted) return;
               id = started.id;
               rememberProfile(storage, started.profile);
+              // The conversation's session reports its model a moment after it starts: look a few times, then at the end.
+              const lookups = modelLookupMs.map((ms) => setTimeout(() => lookUp(), ms));
+              let seen = false;
+              const lookUp = () => {
+                if (seen) return;
+                const model = records.modelOf(started.id);
+                if (!model) return;
+                seen = true;
+                lookups.forEach(clearTimeout);
+                onModel?.(model);
+              };
+              signal.addEventListener("abort", () => lookups.forEach(clearTimeout), { once: true });
               pending.set(started.id, ({ text, ended }) => {
                 signal.removeEventListener("abort", onAbort);
+                lookUp();
+                lookups.forEach(clearTimeout);
                 resolve({ conversationId: started.id, profile: started.profile, text, ended });
               });
               onStart?.(started.id);
@@ -193,6 +215,27 @@ export function createCouncilHost({
       if (error instanceof ReviewError) throw new Error(error.message);
       throw error;
     }
+  }
+
+  /** The profiles a seat can take: Mirador's, else the names the council seated before. */
+  function profilesFor(storage: CanvasPluginContext<Review>["storage"]): ProfileInfo[] {
+    const known = records.profiles();
+    if (known.length > 0) return known;
+    const remembered = storage.get(PROFILES_KEY);
+    return (Array.isArray(remembered) ? remembered.filter((each): each is string => typeof each === "string") : []).map((name) => ({ name, harness: "", model: null }));
+  }
+
+  /** A review in setup with each profile seat labelled by the model its profile's latest conversation ran on. */
+  function identified(review: Review): Review {
+    if (review.phase !== "setup" || !review.reviewers.some((reviewer) => isProfileAgent(reviewer.agent))) return review;
+    const models = new Map<string, ModelInfo>();
+    for (const profile of records.profiles()) if (profile.model) models.set(profile.name.toLowerCase(), profile.model);
+    let next = review;
+    for (const reviewer of review.reviewers) {
+      const model = isProfileAgent(reviewer.agent) ? models.get(profileName(reviewer.agent).toLowerCase()) : undefined;
+      if (model) next = reduce(next, { type: "model-seen", reviewerId: reviewer.id, model });
+    }
+    return next;
   }
 
   function applyTo(item: PluginItem<Review>, context: CanvasPluginContext<Review>, event: ReviewEvent) {
@@ -303,6 +346,22 @@ export function createCouncilHost({
     return null;
   }
 
+  /** Asks the agent to open a new review with an ended one's setup: only a tool may publish an item. */
+  async function rerun(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
+    const review = settled(item);
+    if (!isFinished(review)) throw new Error(`This review is ${review.phase}; it can be run again once it has ended.`);
+    const open = {
+      target: review.target,
+      profile: review.profile,
+      depth: review.depth,
+      agents: seatedReviewers(review).map((reviewer) => reviewer.agent),
+      ...(review.instructions ? { instructions: review.instructions } : {}),
+      title: item.title,
+    };
+    await context.prompt(`The user wants to run Spectra Council review ${review.id} again. Call council_open with ${JSON.stringify(open)}; the user starts it in the canvas.`, { afterTurn: true });
+    return null;
+  }
+
   async function verify(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
     const review = settled(item);
     if (review.phase !== "complete") throw new Error(`Fixes are re-checked once the review is complete; it is ${review.phase}.`);
@@ -347,13 +406,11 @@ export function createCouncilHost({
           const { target, profile = "general", depth = "standard", agents, instructions = "", title } = parsed.data;
           if (!isAbsolute(target)) throw new Error(`The target must be an absolute path; got ${target}.`);
           if ((await targetKind(target)) === null) throw new Error(`There is no file or folder at ${target}.`);
-          const seats = defaultSeats();
-          agents?.forEach((agent, index) => (seats[index] = { agent, enabled: true }));
-          if (agents) for (let index = agents.length; index < SEATS; index++) seats[index] = { ...seats[index]!, enabled: false };
+          const seats = agents ? agents.map((agent) => ({ agent, enabled: true })) : defaultSeats();
           const setup: Setup = { target, profile, depth, seats, instructions };
-          const review = newReview(newId(), setup, runnerKindOf(seats), clock.now());
+          const review = identified(newReview(newId(), setup, runnerKindOf(seats), clock.now()));
           const item = context.publish({ type: ITEM_TYPE, title: title ?? `${PROFILES[profile].title} review · ${basename(target)}`, data: review });
-          const seated = seatedReviewers(review).map((reviewer) => `${agentLabel(reviewer.agent)}${isProfileAgent(reviewer.agent) ? "" : " (mock)"}`);
+          const seated = seatedReviewers(review).map((reviewer) => (isProfileAgent(reviewer.agent) ? `${reviewer.label} (${profileName(reviewer.agent)} profile)` : `${reviewer.label} (mock)`));
           return `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup, seating ${seated.join(", ")}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
         },
       },
@@ -367,7 +424,7 @@ export function createCouncilHost({
           const item = itemFor(context, parsed.data.review);
           const review = await startable(item);
           launch(item, context, review, (session) => session.run());
-          const seated = seatedReviewers(review).map((reviewer) => agentLabel(reviewer.agent));
+          const seated = seatedReviewers(review).map((reviewer) => reviewer.label);
           return `Started review ${review.id} with ${seated.join(", ")}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
         },
       },
@@ -423,7 +480,7 @@ export function createCouncilHost({
       if (!parsed.success) throw new Error(`Unknown action: ${problemsOf(parsed.error)}`);
       switch (parsed.data.kind) {
         case "configure":
-          applyTo(item, context, { type: "configured", patch: parsed.data.patch });
+          context.change(item.id, { data: identified(reduceOrSay(settled(item), { type: "configured", patch: parsed.data.patch })) });
           return null;
         case "start":
           return start(item, context);
@@ -437,12 +494,12 @@ export function createCouncilHost({
           return requestFixes(item, context);
         case "verify":
           return verify(item, context);
+        case "rerun":
+          return rerun(item, context);
         case "fixer":
           return { profile: context.profileSetting(FIXER_SETTING) || null };
-        case "profiles": {
-          const known = context.storage.get(PROFILES_KEY);
-          return { profiles: Array.isArray(known) ? known.filter((each) => typeof each === "string") : [] };
-        }
+        case "profiles":
+          return { profiles: profilesFor(context.storage) };
         case "stop": {
           const session = sessions.get(item.id);
           if (session) session.stop();
@@ -518,4 +575,4 @@ export function createCouncilHost({
   };
 }
 
-export default createCouncilHost();
+export default createCouncilHost({ records: miradorRecords() });

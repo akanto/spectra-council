@@ -35,12 +35,7 @@ describe("the Mirador host", () => {
     expect(item!.type).toBe("council");
     expect(item!.title).toStartWith("Security review · spectra-target-");
     expect(item!.data.phase).toBe("setup");
-    expect(item!.data.reviewers.map((reviewer) => [reviewer.label, reviewer.enabled])).toEqual([
-      ["Gemini", true],
-      ["Codex", false],
-      ["Gemini", false],
-      ["Qwen", false],
-    ]);
+    expect(item!.data.reviewers.map((reviewer) => [reviewer.label, reviewer.enabled])).toEqual([["Gemini", true]]);
   });
 
   test("council_open refuses a relative or missing target", async () => {
@@ -135,7 +130,7 @@ describe("the Mirador host", () => {
     canvas.items[0] = { ...canvas.items[0]!, data: stored };
 
     const listed = host.items.council!.listed!(canvas.items[0]!);
-    expect(listed).toMatchObject({ format: 4, arguments: [], round: 0, rounds: 0, verdict: null });
+    expect(listed).toMatchObject({ format: 5, arguments: [], round: 0, rounds: 0, verdict: null });
     expect(listed).toMatchObject({ handoff: null, verifications: 0 });
     expect(listed.findings[0]).toMatchObject({ positions: [], resolution: null, proposal: null, ruling: null, fix: null });
     expect(await host.tools.council_status!.run({}, context)).toContain("Old");
@@ -469,7 +464,7 @@ describe("the Mirador host", () => {
       const old = { ...rest, format: 2, findings: review().findings.map(({ proposal: _p, ruling: _r, fix: _f, ...finding }) => finding) } as unknown as Review;
       canvas.items[canvas.items.findIndex((it) => it.id === id)] = { ...canvas.item(id), data: old };
       const listed = host.items.council!.listed!(canvas.item(id));
-      expect(listed).toMatchObject({ format: 4, handoff: null, verifications: 0, phase: "complete" });
+      expect(listed).toMatchObject({ format: 5, handoff: null, verifications: 0, phase: "complete" });
       expect(await host.tools.council_status!.run({}, context)).toContain(review().id);
     });
   });

@@ -76,12 +76,18 @@ export function verdictSummary(review: Review): string {
   const { findings } = review;
   if (findings.length === 0) return "The council found nothing to report.";
   const count = (status: FindingStatus) => findings.filter((finding) => finding.status === status).length;
-  const serious = findings.filter((finding) => (finding.status === "confirmed" || finding.status === "agreed") && (finding.severity === "critical" || finding.severity === "high")).length;
+  const isSerious = (finding: Finding) => finding.severity === "critical" || finding.severity === "high";
+  const serious = findings.filter((finding) => (finding.status === "confirmed" || finding.status === "agreed") && isSerious(finding)).length;
+  const contested = findings.filter((finding) => finding.status === "disputed" && isSerious(finding)).length;
+  const failed = review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "failed").map((reviewer) => reviewer.label);
+  const dropped = failed.length > 0 ? ` ${failed.join(", ")} failed and took no part.` : "";
   if (count("reported") === findings.length) {
-    return `${findings.length} finding${findings.length === 1 ? "" : "s"}, not deliberated: fewer than two reviewers finished their review.`;
+    return `${findings.length} finding${findings.length === 1 ? "" : "s"}, not deliberated: fewer than two reviewers finished their review.${dropped}`;
   }
   const parts = (["agreed", "confirmed", "disputed", "withdrawn"] as const).filter((status) => count(status) > 0).map((status) => `${count(status)} ${status}`);
   const head = `${findings.length} finding${findings.length === 1 ? "" : "s"}: ${parts.join(", ")}.`;
-  const tail = serious > 0 ? ` ${serious} serious finding${serious === 1 ? " stands" : "s stand"}.` : " No serious finding stands.";
-  return head + tail;
+  const held = serious > 0 ? ` ${serious} serious finding${serious === 1 ? " stands" : "s stand"}.` : contested > 0 ? " No serious finding is agreed or confirmed." : " No serious finding stands.";
+  // Kept as it was at the verdict (the hand-off quotes it), so it states the outcome rather than what is left to do.
+  const open = contested > 0 ? ` ${contested} serious finding${contested === 1 ? " is" : "s are"} disputed.` : "";
+  return head + held + open + dropped;
 }

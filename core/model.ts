@@ -6,7 +6,7 @@ import type { Confidence, Decision, Depth, Evidence, ProfileId, Severity, Stance
 
 export type { Decision, Stance };
 
-export const REVIEW_FORMAT = 4;
+export const REVIEW_FORMAT = 5;
 
 /**
  * Where a review is: set up, reviewed independently, deliberated in rounds, synthesised into a verdict, and ended. After
@@ -35,12 +35,30 @@ export interface Activity {
   path?: string;
 }
 
+/**
+ * The model a real reviewer runs on, as Mirador names it in the conversation's header: "Opus 5.5" with effort "high",
+ * say. Before the review starts it is what the profile's latest conversation ran on; once a turn starts, what that
+ * turn's conversation runs on.
+ */
+export interface ModelInfo {
+  /** The model's name and version, without a provider prefix: "Opus 5.5", "Qwen 3.8 Max". */
+  name: string;
+  /** The effort or thinking level, lower case ("high", "medium"); null when the model has none or it's unknown. */
+  effort: string | null;
+}
+
 export interface Reviewer {
-  /** The seat's id, "r1" to "r4". */
+  /** The seat's id, "r1", "r2", … in seat order. */
   id: string;
   /** The agent's id in the registry. */
   agent: string;
+  /**
+   * The name the review shows for it: a profile seat's model when known ("Opus 5.5"), else the profile's or mock's
+   * name; made unique across the council ("Opus 5.5 (Home)", "Claude 2") by `withLabels` (core/agents.ts).
+   */
   label: string;
+  /** The model a profile seat runs on, once the host could tell; null for a mock. */
+  model: ModelInfo | null;
   enabled: boolean;
   status: ReviewerStatus;
   /** What it is doing now, in a few words. */

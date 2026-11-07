@@ -26,8 +26,15 @@ async function tour(theme: "light" | "dark") {
 
   await page.goto(`${base}/?theme=${theme}`);
   await page.getByText("Start review").waitFor();
-  await page.locator(".seat-toggle input").nth(2).check();
-  await page.locator(".seat-toggle input").nth(3).check();
+  // Four mock reviewers: the harness starts with two; "Add reviewer" offers its stand-in profiles first, which can't run
+  // there, so the added seats are switched to mocks.
+  const extra = ["mock-gemini", "mock-qwen"];
+  for (let seat = await page.locator(".seats .seat").count(); seat < 4; seat++) {
+    await page.getByRole("button", { name: /Add reviewer/ }).click();
+    await page.locator(".seats .seat").nth(seat).waitFor();
+    await page.locator(".seats .seat select").nth(seat).selectOption(extra[seat - 2] ?? "mock-qwen");
+    await page.waitForTimeout(200);
+  }
   await page.waitForTimeout(300);
   await shot("1-setup");
 
@@ -39,10 +46,11 @@ async function tour(theme: "light" | "dark") {
   await page.locator(".seat-panel").first().click();
   await page.waitForTimeout(400);
   await shot("3-reviewer");
-  await page.locator(".detail .icon-button").click();
+  await page.locator(".detail .icon-button").click(); // closing the detail
 
   await page.locator(".pill.phase-deliberation").waitFor({ timeout: 120_000 });
   await page.waitForTimeout(12_000);
+  // The view moves to the Council tab by itself when the deliberation starts; click it for the case it did not.
   await page.getByRole("tab", { name: /Council/ }).click();
   await page.waitForTimeout(300);
   await shot("4-deliberation");

@@ -138,53 +138,97 @@ function FixStatus({ review, finding, openPath }: { review: Review; finding: Fin
   );
 }
 
-/** The user's ruling on a finding; once handed off, the fix's state instead. */
-export function RulingControl({ review, finding, act, busy, openPath }: { review: Review; finding: Finding; act: Act; busy: boolean; openPath: OpenPath }) {
+/**
+ * The user's ruling on a finding; once handed off, the fix's state instead. Once ruled, `next` offers the next finding
+ * that needs a ruling (the user moves on themselves, so the note field stays in reach).
+ */
+export function RulingControl({ review, finding, act, busy, openPath, next }: { review: Review; finding: Finding; act: Act; busy: boolean; openPath: OpenPath; next?: { id: string; go(): void } | null }) {
   const ruling = finding.ruling;
+  const [saving, setSaving] = useState<Decision | null>(null);
+  useEffect(() => {
+    if (!busy) setSaving(null);
+  }, [busy]);
   const note = useDraft(ruling?.note ?? "", (text) => {
     if (ruling) act({ kind: "rule", findingId: finding.id, decision: ruling.decision, note: text });
   });
   if (!isStanding(finding)) return null;
   if (finding.fix) return <FixStatus review={review} finding={finding} openPath={openPath} />;
   const editable = review.phase === "complete";
-  const rule = (decision: Decision | null) => act({ kind: "rule", findingId: finding.id, decision, note: decision ? note.value : "" });
+  const rule = (decision: Decision | null) => {
+    setSaving(decision);
+    act({ kind: "rule", findingId: finding.id, decision, note: decision ? note.value : "" });
+  };
   return (
-    <section className="ruling">
-      <h3>Your ruling</h3>
-      <div className="segmented" role="group" aria-label="Your ruling">
-        {DECISIONS.map((each) => (
-          <button key={each.value} className={cx("segment", `segment-${each.value}`, ruling?.decision === each.value && "chosen")} aria-pressed={ruling?.decision === each.value} disabled={!editable || busy} onClick={() => rule(ruling?.decision === each.value ? null : each.value)}>
-            {each.label}
-          </button>
-        ))}
+    <section className={cx("ruling", "ruling-top", !ruling && editable && "needs-ruling")}>
+      <div className="ruling-row">
+        <h3>{ruling ? "Your ruling" : "Rule on this finding"}</h3>
+        <div className="segmented" role="group" aria-label="Your ruling">
+          {DECISIONS.map((each) => {
+            const chosen = ruling?.decision === each.value;
+            return (
+              <button key={each.value} className={cx("segment", `segment-${each.value}`, chosen && "chosen")} aria-pressed={chosen} disabled={!editable || (busy && saving === each.value)} onClick={() => rule(chosen ? null : each.value)}>
+                {busy && saving === each.value ? "Saving…" : each.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
       {ruling && (
-        <input className="ruling-note" type="text" placeholder="Note (optional)" aria-label="Note on your ruling" value={note.value} disabled={!editable} onChange={(event) => note.onChange(event.target.value)} onBlur={note.onBlur} />
+        <div className="ruling-row">
+          <input className="ruling-note" type="text" placeholder="Note (optional)" aria-label="Note on your ruling" value={note.value} disabled={!editable} onChange={(event) => note.onChange(event.target.value)} onBlur={note.onBlur} />
+          {next && editable && (
+            <button type="button" onClick={() => (note.onBlur(), next.go())}>
+              Next to rule: {next.id} →
+            </button>
+          )}
+        </div>
       )}
       {!editable && !ruling && <p className="hint">You can rule when the review is complete.</p>}
     </section>
   );
 }
 
-/** Counts of the user's rulings, the actions that follow from them, and the fixes' progress. */
-export function ActionPlan({ review, act, busy, compact, openPath }: { review: Review; act: Act; busy: boolean; compact?: boolean; openPath?: OpenPath }) {
+/** Counts of the user's rulings, the next step that follows from them, and the fixes' progress. */
+export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }: { review: Review; act: Act; busy: boolean; compact?: boolean; openPath?: OpenPath; openCouncil?: () => void }) {
   const standing = review.findings.filter(isStanding);
+  const fixer = useContext(FixerContext);
   const showable = (review.phase === "complete" || review.phase === "verification") && standing.length > 0;
   if (!showable) return null;
   const count = (decision: Decision) => standing.filter((finding) => finding.ruling?.decision === decision).length;
   const accepted = standing.filter((finding) => finding.ruling?.decision === "accepted");
-  const unruled = standing.filter((finding) => !finding.ruling).length;
+  const unruledList = standing.filter((finding) => !finding.ruling);
+  const unruled = unruledList.length;
+  const bulk = unruledList.filter((finding) => finding.status === "agreed" || finding.status === "confirmed");
   const pending = accepted.filter((finding) => finding.fix?.state !== "fixed" && finding.fix?.state !== "verified").length;
+  const toHand = accepted.filter((finding) => !finding.fix).length;
+  const reopened = standing.filter((finding) => finding.fix?.state === "reopened").length;
   const fixed = standing.filter((finding) => finding.fix?.state === "fixed").length;
   const withFix = (state: string) => standing.filter((finding) => finding.fix?.state === state).length;
-  const fixer = useContext(FixerContext);
   const attention = standing.filter((finding) => finding.fix?.problem).length;
   const hasFixes = standing.some((finding) => finding.fix);
   const running = isRunning(review);
   const off = busy || running;
   const handoff = review.handoff;
+  const who = fixer ?? "agent";
+  // The one accent-filled button follows the next step; nothing is primary while the user still has to rule.
+  const next: "verify" | "fix" | null = unruled > 0 ? null : fixed > 0 ? "verify" : toHand + reopened > 0 ? "fix" : null;
+  const fixLabel = toHand === 0 && reopened > 0 ? `Ask ${who} to fix again (${pending})` : `Ask ${who} to fix (${pending})`;
+  const instruction =
+    running
+      ? null
+      : unruled > 0
+        ? null
+        : fixed > 0
+          ? "Fixes reported. Re-check them so the reviewers can verify."
+          : reopened > 0
+            ? "Some fixes were reopened. Ask the fixer to try again."
+            : toHand > 0
+              ? "Hand the accepted findings to the fixer."
+              : accepted.length === 0
+                ? "Nothing accepted, so there is nothing to fix."
+                : null;
   return (
-    <section className="action-plan" aria-label="Action plan">
+    <section className={cx("action-plan", unruled > 0 && "needs-ruling")} aria-label="Action plan">
       <div className="action-plan-head">
         <h3>Action plan</h3>
         <span className="action-plan-counts">
@@ -194,6 +238,12 @@ export function ActionPlan({ review, act, busy, compact, openPath }: { review: R
           <span className="ruling-count">{unruled} not ruled yet</span>
         </span>
       </div>
+      {unruled > 0 && !running && (
+        <p className="next-step" role="status">
+          <span>Rule on each finding: Accept, Dismiss or Later.</span> <strong className="left-count">{unruled} left.</strong>
+        </p>
+      )}
+      {instruction && <p className="next-step">{instruction}</p>}
       {hasFixes && (
         <p className="fix-progress">
           <span className="fix-handed-off">{withFix("handed-off")} handed off</span> · <span className="fix-fixed">{withFix("fixed")} fixed</span> · <span className="fix-verified">{withFix("verified")} verified</span> ·{" "}
@@ -221,22 +271,40 @@ export function ActionPlan({ review, act, busy, compact, openPath }: { review: R
       )}
       {!compact && (
         <div className="action-plan-buttons">
-          <button disabled={off || accepted.length === 0} onClick={() => act({ kind: "handoff" })}>
-            {handoff ? "Rewrite hand-off" : "Write hand-off"}
-          </button>
-          <button className="primary" disabled={off || pending === 0} onClick={() => act({ kind: "fix" })}>
-            Ask {fixer ?? "agent"} to fix ({pending})
-          </button>
-          <button disabled={off || fixed === 0} onClick={() => act({ kind: "verify" })}>
-            Re-check fixes ({fixed})
-          </button>
+          {bulk.length > 0 && !running && (
+            <button disabled={busy || review.phase !== "complete"} onClick={() => bulk.forEach((finding) => act({ kind: "rule", findingId: finding.id, decision: "accepted", note: "" }))}>
+              Accept all agreed &amp; confirmed ({bulk.length})
+            </button>
+          )}
+          {accepted.length > 0 && (
+            <button disabled={off} onClick={() => act({ kind: "handoff" })}>
+              {handoff ? "Rewrite hand-off" : "Write hand-off"}
+            </button>
+          )}
+          {pending > 0 && (
+            <button className={cx(next === "fix" && "primary")} disabled={off} onClick={() => act({ kind: "fix" })}>
+              {fixLabel}
+            </button>
+          )}
+          {fixed > 0 && (
+            <button className={cx(next === "verify" && "primary")} disabled={off} onClick={() => act({ kind: "verify" })}>
+              Re-check fixes ({fixed})
+            </button>
+          )}
         </div>
       )}
-      {!compact && (
+      {!compact && (accepted.length > 0 || hasFixes) && (
         <p className="hint">
           {fixer
             ? `Fixes go to ${fixer} in a conversation of its own · change it in the conversation header (Spectra Council fixer)`
             : "Fixes go to this conversation's agent · to use another profile or model, pick a Spectra Council fixer in the conversation header"}
+        </p>
+      )}
+      {compact && openCouncil && (
+        <p className="action-plan-open">
+          <button className="link open-council" onClick={openCouncil}>
+            Open Council to rule and fix →
+          </button>
         </p>
       )}
       {compact && running && <p className="hint">Re-checking the fixes…</p>}

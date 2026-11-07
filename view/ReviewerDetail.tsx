@@ -1,5 +1,6 @@
 /** One reviewer's full activity and findings, beside the workspace. Only events the runner reported, no private reasoning. */
 import { useEffect, useRef } from "react";
+import { seatDetail } from "../core/agents.ts";
 import type { Review } from "../core/model.ts";
 import { ActivityLine, FindingRow } from "./Workspace.tsx";
 import { elapsed, StatusMark, statusWord } from "./ui.tsx";
@@ -23,6 +24,28 @@ export function ReviewerDetail({
 }) {
   const reviewer = review.reviewers.find((each) => each.id === reviewerId);
   const end = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const root = useRef<HTMLElement>(null);
+  const present = reviewer !== undefined;
+  // Opening (or switching reviewer) moves focus to the heading; in the single-column layout the panel sits below the findings, so scroll to it.
+  useEffect(() => {
+    heading.current?.focus({ preventScroll: true });
+    if (window.matchMedia("(max-width: 720px)").matches) root.current?.scrollIntoView({ block: "start" });
+  }, [reviewerId, present]);
+  // Esc closes the panel when focus is in it or nowhere in particular, and the caller returns focus to the seat that
+  // opened it; an Esc meant for something else (the Stop confirmation, a field) is left alone.
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && !root.current?.contains(focused)) return;
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
   const count = reviewer?.activity.length ?? 0;
   useEffect(() => {
     // A block body: scrollIntoView returns a promise in newer browsers, which React would take for a cleanup.
@@ -32,11 +55,12 @@ export function ReviewerDetail({
   const findings = review.findings.filter((finding) => finding.reviewerId === reviewer.id);
   const hidden = reviewer.activityCount - reviewer.activity.length;
   return (
-    <aside className="detail" aria-label={`${reviewer.label}'s activity`}>
+    <aside ref={root} className="detail" aria-label={`${reviewer.label}'s activity`}>
       <header className="detail-head">
         <StatusMark status={reviewer.status} />
         <div>
-          <h2>{reviewer.label}</h2>
+          <h2 ref={heading} tabIndex={-1}>{reviewer.label}</h2>
+          <div className="detail-sub muted">{seatDetail(reviewer)}</div>
           <span className="muted">
             {statusWord(reviewer.status)}
             {reviewer.startedAt !== null && ` · ${elapsed(reviewer.startedAt, reviewer.endedAt, now)}`}

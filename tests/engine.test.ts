@@ -9,7 +9,7 @@ import { findingInputSchema } from "../core/schemas.ts";
 import { FakeClock, FILES } from "./support.ts";
 
 const review = (depth: "quick" | "standard" | "deep" = "standard", profile: "code" | "architecture" = "architecture") =>
-  newReview("rev1", { target: "/repo", profile, depth, instructions: "", seats: defaultSeats() }, "mock", 0);
+  newReview("rev1", { target: "/repo", profile, depth, instructions: "", seats: ["mock-claude", "mock-codex", "mock-gemini", "mock-qwen"].map((agent, index) => ({ agent, enabled: index < 2 })) }, "mock", 0);
 
 describe("mockScript", () => {
   test("is the same for the same agent, profile, depth and files", () => {

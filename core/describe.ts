@@ -77,3 +77,45 @@ export function describeReview(review: Review): string {
   }
   return lines.join("\n");
 }
+
+/** What each finding status means, in a sentence, for a tooltip or legend. */
+export const STATUS_MEANINGS: Record<Finding["status"], string> = {
+  reported: "Reported; the council hasn't settled it yet.",
+  agreed: "Agreed: every reviewer who weighed in backs it, and nobody challenged it.",
+  confirmed: "Confirmed: most back it, and every challenge to it was answered.",
+  disputed: "Disputed: a challenge still stands. Your ruling decides it.",
+  withdrawn: "Withdrawn: its reporter conceded it isn't a problem.",
+};
+
+/** How the latest re-check of fixes came out, e.g. "After re-check 1: 4 verified, 3 reopened."; null before one. */
+export function recheckLine(review: Review): string | null {
+  if (review.verifications === 0) return null;
+  const fixes = review.findings.filter((finding) => finding.fix?.checks.some((check) => check.pass === review.verifications));
+  if (fixes.length === 0) return null;
+  const verified = fixes.filter((finding) => finding.fix!.state === "verified").length;
+  const reopened = fixes.filter((finding) => finding.fix!.state === "reopened").length;
+  const parts = [verified > 0 ? `${verified} verified` : "", reopened > 0 ? `${reopened} reopened` : ""].filter(Boolean);
+  return `After re-check ${review.verifications}: ${parts.join(", ") || "nothing settled"}.`;
+}
+
+const titleKey = (title: string) => title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/** Whether an argument says its finding is the same as another: "the same as F6", "a duplicate of F6", "F6 again". */
+const SAYS_SAME = /\b(same|duplicates?|identical|again)\b/i;
+
+/**
+ * Other findings that are probably the same problem, until the council merges duplicates: the same title, or one that an
+ * argument about either finding names as the same ("I found the same independently in F6"). Symmetric: if F2 is a
+ * possible duplicate of F6, F6 is one of F2.
+ */
+export function possibleDuplicates(review: Review, finding: Finding): Finding[] {
+  const key = titleKey(finding.title);
+  const linked = new Set<string>();
+  for (const argument of review.arguments) {
+    if (!SAYS_SAME.test(argument.text)) continue;
+    const named = [...argument.text.matchAll(/\bF\d+\b/g)].map((match) => match[0]);
+    if (argument.findingId === finding.id) named.forEach((id) => linked.add(id));
+    else if (named.includes(finding.id)) linked.add(argument.findingId);
+  }
+  return review.findings.filter((other) => other.id !== finding.id && (titleKey(other.title) === key || linked.has(other.id)));
+}

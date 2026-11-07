@@ -53,7 +53,7 @@ describe("profile seats", () => {
   test("council_open seats profiles and mocks, and the runner kind follows the seats", async () => {
     const { host, canvas, context } = setup();
     const answer = await host.tools.council_open!.run({ target, agents: ["profile:alpha", "mock-codex"] }, context);
-    expect(answer).toContain("seating alpha, Codex (mock)");
+    expect(answer).toContain("seating alpha (alpha profile), Codex (mock)");
     expect(canvas.items[0]!.data.runner).toBe("mixed");
     const seats = canvas.items[0]!.data.reviewers.map(({ agent, enabled }) => ({ agent, enabled: agent === "profile:alpha" ? enabled : false }));
     await host.action!(canvas.items[0]!, { kind: "configure", patch: { seats } }, context);
@@ -72,7 +72,7 @@ describe("profile seats", () => {
     expect(review.findings.every((finding) => finding.proposal !== null)).toBe(true);
     expect(canvas.started.filter((each) => each.profile === "alpha").length).toBeGreaterThanOrEqual(3);
     expect(canvas.storage.get(PROFILES_KEY)).toEqual(expect.arrayContaining(["alpha", "beta"]));
-    expect(await host.action!(canvas.items[0]!, { kind: "profiles" }, context)).toEqual({ profiles: expect.arrayContaining(["alpha", "beta"]) });
+    expect(await host.action!(canvas.items[0]!, { kind: "profiles" }, context)).toEqual({ profiles: expect.arrayContaining([{ name: "alpha", harness: "", model: null }, { name: "beta", harness: "", model: null }]) });
   });
 
   test("a seat whose profile ends without the JSON fails, and the other seat carries on", async () => {
@@ -108,5 +108,60 @@ describe("profile seats", () => {
     expect(canvas.prompts).toEqual([]);
     expect(canvas.items[0]!.data.phase).toBe("independent-review");
     restarted.action!(canvas.items[0]!, { kind: "stop" }, context);
+  });
+});
+
+describe("models from Mirador's records", () => {
+  const opus = { name: "Opus 5.5", effort: "high" };
+  const qwen = { name: "Qwen 3.8 Max", effort: "medium" };
+  /** Records where alpha's latest conversation ran Opus, and every reviewer conversation runs Qwen on beta, Opus on alpha. */
+  const records = {
+    profiles: () => [
+      { name: "alpha", harness: "claude", model: opus },
+      { name: "beta", harness: "pi", model: null },
+    ],
+    modelOf: (id: string) => (id.endsWith("-1") || id.endsWith("-3") ? opus : qwen),
+  };
+  const withRecords = () => {
+    const clock = new FakeClock();
+    let ids = 0;
+    const options = { clock, listFiles: async () => FILES, newId: () => `rev${++ids}`, throttleMs: 0, writeFile: async () => {}, records, modelLookupMs: [] };
+    const canvas = new FakeCanvas<Review>();
+    return { clock, options, host: createCouncilHost(options), canvas, context: canvas.context() };
+  };
+
+  test("the setup names a profile seat by the model its profile last ran on, and lists the profiles", async () => {
+    const { host, canvas, context } = withRecords();
+    const answer = await host.tools.council_open!.run({ target, agents: ["profile:alpha", "profile:beta"] }, context);
+    expect(answer).toContain("seating Opus 5.5 (alpha profile), beta (beta profile)");
+    expect(canvas.items[0]!.data.reviewers.map((reviewer) => [reviewer.label, reviewer.model])).toEqual([["Opus 5.5", opus], ["beta", null]]);
+    await host.action!(canvas.items[0]!, { kind: "configure", patch: { seats: [{ agent: "profile:beta", enabled: true }, { agent: "profile:alpha", enabled: true }] } }, context);
+    expect(canvas.items[0]!.data.reviewers.map((reviewer) => reviewer.label)).toEqual(["beta", "Opus 5.5"]);
+    expect(await host.action!(canvas.items[0]!, { kind: "profiles" }, context)).toEqual({ profiles: records.profiles() });
+  });
+
+  test("a running seat is named by the model its conversation runs on", async () => {
+    const harness = withRecords();
+    const { host, canvas, context } = harness;
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha", "profile:beta"] }, context);
+    await host.action!(canvas.items[0]!, { kind: "start" }, context);
+    await drive(harness, host);
+    const review = canvas.items[0]!.data;
+    expect(review.phase).toBe("complete");
+    expect(review.reviewers.every((reviewer) => reviewer.model !== null)).toBe(true);
+    expect(new Set(review.reviewers.map((reviewer) => reviewer.label)).size).toBe(2);
+  });
+
+  test("Run again asks the agent to open a new review with the same setup, once the review ended", async () => {
+    const { host, canvas, context } = withRecords();
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha", "mock-codex"], instructions: "Mind the cache." }, context);
+    await expect(host.action!(canvas.items[0]!, { kind: "rerun" }, context)).rejects.toThrow("once it has ended");
+    await host.action!(canvas.items[0]!, { kind: "start" }, context);
+    await host.action!(canvas.items[0]!, { kind: "stop" }, context);
+    expect(canvas.items[0]!.data.phase).toBe("stopped");
+    await host.action!(canvas.items[0]!, { kind: "rerun" }, context);
+    expect(canvas.prompts.at(-1)).toContain("Call council_open with");
+    expect(canvas.prompts.at(-1)).toContain('"agents":["profile:alpha","mock-codex"]');
+    expect(canvas.prompts.at(-1)).toContain('"instructions":"Mind the cache."');
   });
 });

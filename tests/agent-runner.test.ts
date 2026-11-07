@@ -88,13 +88,13 @@ describe("AgentRunner in a whole review", () => {
     expect(review.verdict).not.toBeNull();
     const alpha = review.reviewers[0]!;
     const texts = alpha.activity.map((each) => `${each.kind}: ${each.text}`);
-    expect(texts).toContain("status: Asking alpha to review");
+    expect(texts).toContain("status: Asking the alpha profile to review");
     expect(texts).toContain("tool: Started conversation c-alpha-0");
     expect(texts).toContain("note: Read the code.");
     expect(texts).toContain("status: Reported 2 findings");
     expect(texts.some((text) => text.startsWith("error: Ignored a proposal for F9"))).toBe(true);
-    expect(texts).toContain("status: Asking alpha to propose fixes");
-    expect(review.reviewers[1]!.activity.map((each) => each.text)).toContain("Asking beta to argue round 2");
+    expect(texts).toContain("status: Asking the alpha profile to propose fixes");
+    expect(review.reviewers[1]!.activity.map((each) => each.text)).toContain("Asking the beta profile to argue round 2");
   });
 
   test("prompts carry the target, rules, brief and instructions; deliberation lists the other seat's findings and arguments", async () => {
@@ -127,14 +127,14 @@ describe("AgentRunner failures", () => {
   test("a reply without JSON fails that seat; the other goes on", async () => {
     const { review } = await play(new FakeConversations(failing("beta", { text: "I looked and found nothing." })));
     expect(review.reviewers[1]!.status).toBe("failed");
-    expect(review.reviewers[1]!.problem).toBe("beta ended without the JSON block");
+    expect(review.reviewers[1]!.problem).toBe("Its reply ended without the JSON block");
     expect(review.reviewers[0]!.status).toBe("completed");
     expect(review.phase).toBe("complete");
   });
 
   test("a failed conversation fails the seat", async () => {
     const { review } = await play(new FakeConversations(failing("alpha", { text: null, ended: "failed" })));
-    expect(review.reviewers[0]!.problem).toBe("alpha's conversation was failed");
+    expect(review.reviewers[0]!.problem).toBe("Its conversation failed");
     expect(review.reviewers[1]!.status).toBe("completed");
   });
 
@@ -142,7 +142,7 @@ describe("AgentRunner failures", () => {
     const never: Handler = (who, prompt, call, signal) => (who === "beta" && !isDeliberation(prompt) ? new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason))) : council(who, prompt, call, signal));
     const { review, clock } = await play(new FakeConversations(never));
     expect(review.reviewers[1]!.status).toBe("failed");
-    expect(review.reviewers[1]!.problem).toBe("beta took longer than 15 minutes");
+    expect(review.reviewers[1]!.problem).toBe("Its turn took longer than 15 minutes");
     expect(clock.time).toBeGreaterThanOrEqual(1_000_000 + 15 * 60_000);
     expect(await clock.step()).toBe(false);
   });

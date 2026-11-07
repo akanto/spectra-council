@@ -79,8 +79,15 @@ the phase, where `ReviewerRunner.verify` has each reporter and backer check a fi
   asks the agent to call `council_begin`, and that tool starts the review.
 - **Limits.** Seats run in parallel. Stop aborts the review. Started conversations run on, and their replies are
   ignored. A Mirador restart interrupts a running review, as before.
+- **Seats.** A council has one to `MAX_SEATS` (8) seats; a new review starts with two, and the user adds and removes
+  reviewers in the setup. (Reviews stored before this may have unseated seats, `enabled: false`, which take no part.)
 - **Model and effort.** A seat runs on its profile's defaults. [mirador-api.md](mirador-api.md) lists the API
-  extensions that would allow more.
+  extensions that would allow choosing them. The review names a profile seat by its model ("Opus 5.5", effort "high"),
+  not by its profile: `model-seen` records the model and `withLabels` (core/agents.ts) relabels the seats, telling
+  equal names apart. The plugin API has no way to read a profile's or a conversation's model, so the host reads
+  Mirador's own database read-only (`hosts/mirador/records.ts`, `~/.mirador/state.sqlite`): in the setup, the model
+  the profile's latest conversation ran on; once a turn started, its conversation's header choices. If the database
+  can't be read, seats keep their profile names. Replace this with API calls once Mirador offers them.
 
 ## Later milestones
 

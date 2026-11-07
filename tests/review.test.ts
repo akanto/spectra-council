@@ -4,7 +4,8 @@ import { MAX_ACTIVITY, REVIEW_FORMAT } from "../core/model.ts";
 import { newReview, reduce, ReviewError, setupOf, upgradeReview } from "../core/review.ts";
 import type { ArgumentInput, FindingInput } from "../core/schemas.ts";
 
-const setup = { target: "/repo", profile: "code" as const, depth: "quick" as const, instructions: "", seats: defaultSeats() };
+/** Four seats, two taking part: the shape of a review stored before seats could be removed. */
+const setup = { target: "/repo", profile: "code" as const, depth: "quick" as const, instructions: "", seats: ["mock-claude", "mock-codex", "mock-gemini", "mock-qwen"].map((agent, index) => ({ agent, enabled: index < 2 })) };
 const fresh = () => newReview("rev1", setup, "mock", 0);
 
 const finding: FindingInput = {
@@ -17,7 +18,15 @@ const finding: FindingInput = {
 };
 
 describe("reduce", () => {
-  test("a new review seats four agents, two taking part", () => {
+  test("a new review seats two agents", () => {
+    const review = newReview("rev2", { ...setup, seats: defaultSeats() }, "mock", 0);
+    expect(review.reviewers.map((reviewer) => [reviewer.id, reviewer.label, reviewer.enabled])).toEqual([
+      ["r1", "Claude", true],
+      ["r2", "Codex", true],
+    ]);
+  });
+
+  test("a review with unseated seats keeps them out of the run", () => {
     const review = fresh();
     expect(review.reviewers.map((reviewer) => [reviewer.id, reviewer.label, reviewer.enabled])).toEqual([
       ["r1", "Claude", true],
@@ -541,8 +550,8 @@ describe("upgradeReview", () => {
     expect(upgraded.findings[1]!.fix).toBeNull();
   });
 
-  test("the review format is 4", () => {
-    expect(REVIEW_FORMAT).toBe(4);
+  test("the review format is 5", () => {
+    expect(REVIEW_FORMAT).toBe(5);
   });
 
   test("a current review is returned as it is", () => {

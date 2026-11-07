@@ -80,11 +80,11 @@ export class AgentRunner implements ReviewerRunner {
 
   async #turn<S extends z.ZodType>(job: ReviewerJob, report: Reporter, signal: AbortSignal, what: string, prompt: string, schema: S, apply: (reply: z.infer<S>) => string) {
     const profile = profileName(job.reviewer.agent);
-    report({ type: "activity", kind: "status", text: `Asking ${profile} ${what}` });
+    report({ type: "activity", kind: "status", text: `Asking the ${profile} profile ${what}` });
     const reply = await this.#ask(profile, prompt, report, signal);
-    if (reply.ended !== "finished") throw new Error(`${profile}'s conversation was ${reply.ended}`);
+    if (reply.ended !== "finished") throw new Error(reply.ended === "failed" ? "Its conversation failed" : "Its conversation was stopped");
     const parsed = lastJson(reply.text, schema);
-    if (parsed === null) throw new Error(`${profile} ended without the JSON block`);
+    if (parsed === null) throw new Error("Its reply ended without the JSON block");
     const prose = proseBefore(reply.text ?? "");
     if (prose) report({ type: "activity", kind: "note", text: prose });
     const summary = apply(parsed);
@@ -102,11 +102,12 @@ export class AgentRunner implements ReviewerRunner {
       prompt,
       signal: child.signal,
       onStart: (conversationId) => report({ type: "activity", kind: "tool", text: `Started conversation ${conversationId}` }),
+      onModel: (model) => report({ type: "model-seen", model }),
     });
     // Rejects with the timeout, or with the signal's reason when the sleep is cancelled by an abort.
     const limit = this.#clock.sleep(this.#limitMs, child.signal).then((): never => {
       child.abort(new Error("timed out"));
-      throw new Error(`${profile} took longer than ${Math.round(this.#limitMs / 60_000)} minutes`);
+      throw new Error(`Its turn took longer than ${Math.round(this.#limitMs / 60_000)} minutes`);
     });
     // Whichever loses the race must not leave an unhandled rejection behind.
     ask.catch(() => {});

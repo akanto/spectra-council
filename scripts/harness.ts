@@ -24,6 +24,14 @@ const target = resolve(args.find((arg, index) => !arg.startsWith("--") && !(port
 
 const handoffs = join(repo, ".harness", "handoff");
 const host = createCouncilHost({
+  // Stand-ins for Mirador's profiles, so the setup offers them with their models as it does in Mirador.
+  records: {
+    profiles: () => [
+      { name: "Home", harness: "claude", model: { name: "Opus 5.5", effort: "high" } },
+      { name: "pi home", harness: "pi", model: { name: "Qwen 3.8 Max", effort: "medium" } },
+    ],
+    modelOf: () => null,
+  },
   writeFile: async (path, text) => {
     await mkdir(handoffs, { recursive: true });
     await Bun.write(join(handoffs, basename(path)), text);
@@ -152,7 +160,7 @@ Bun.serve<{ canvas: Canvas }>({
     async open(socket) {
       const canvas = socket.data.canvas;
       canvas.socket = socket;
-      await host.tools.council_open!.run({ target, profile: "architecture", agents: ["mock-codex", "mock-claude", "mock-gemini", "mock-qwen"] }, canvas.context());
+      await host.tools.council_open!.run({ target, profile: "architecture", agents: ["mock-codex", "mock-claude"] }, canvas.context());
     },
     // A closed page stops its review, as nothing will show it any more.
     async close(socket) {

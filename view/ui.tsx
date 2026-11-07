@@ -1,7 +1,7 @@
 /** Small pieces the views share: status marks, badges, times, and the logo. */
 import { createContext, useEffect, useState } from "react";
+import { recheckLine, STATUS_MEANINGS } from "../core/describe.ts";
 import type { Finding, FindingStatus, FixState, Phase, Review, ReviewerStatus } from "../core/model.ts";
-import { STANCE_VERBS } from "../core/review.ts";
 import type { Confidence, Severity, Stance } from "../core/schemas.ts";
 
 export const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
@@ -119,7 +119,11 @@ const FINDING_STATUS_WORDS: Record<FindingStatus, string> = {
 };
 
 export function FindingStatusBadge({ status }: { status: FindingStatus }) {
-  return <span className={`badge finding-${status}`}>{FINDING_STATUS_WORDS[status]}</span>;
+  return (
+    <span className={`badge finding-${status}`} title={STATUS_MEANINGS[status]}>
+      {FINDING_STATUS_WORDS[status]}
+    </span>
+  );
 }
 
 export function ConfidenceMeter({ confidence }: { confidence: Confidence }) {
@@ -160,26 +164,42 @@ export const elapsed = (start: number | null, end: number | null, now: number) =
 
 const STANCE_WORDS: Record<Stance, string> = { supports: "Supports", challenges: "Challenges", uncertain: "Uncertain" };
 
+export const STANCE_GLYPHS: Record<Stance, string> = { supports: "✓", challenges: "✕", uncertain: "?" };
+
 export function StanceBadge({ stance }: { stance: Stance }) {
-  return <span className={`badge stance-${stance}`}>{STANCE_WORDS[stance]}</span>;
+  return (
+    <span className={`badge stance-${stance}`}>
+      <span aria-hidden="true">{STANCE_GLYPHS[stance]}</span> {STANCE_WORDS[stance]}
+    </span>
+  );
 }
 
-/** One chip per seated reviewer, showing its latest stance on a finding; faint when it has taken none. */
+/** One chip per seated reviewer, showing its latest stance on a finding; faint when it has taken none, struck when it failed. */
 export function Positions({ review, finding }: { review: Review; finding: Finding }) {
+  const seated = review.reviewers.filter((reviewer) => reviewer.enabled);
+  // Two letters when they tell the reviewers apart, else the initial and the reviewer's number.
+  const short = seated.map((reviewer) => reviewer.label.slice(0, 2));
+  const unique = new Set(short).size === short.length;
   return (
-    <span className="positions" aria-label="Positions">
-      {review.reviewers
-        .filter((reviewer) => reviewer.enabled)
-        .map((reviewer) => {
-          const position = finding.positions.find((each) => each.reviewerId === reviewer.id);
-          const title = position ? `${reviewer.label}: ${STANCE_VERBS[position.stance]} (${position.confidence}, round ${position.round})` : `${reviewer.label}: no position yet`;
-          return (
-            <span key={reviewer.id} className={cx("position", position ? `stance-${position.stance}` : "none")} title={title}>
-              <span className="position-dot" />
-              {reviewer.label.slice(0, 2)}
+    <span className="positions" role="group" aria-label="Each reviewer's position on this finding">
+      {seated.map((reviewer, index) => {
+        const position = finding.positions.find((each) => each.reviewerId === reviewer.id);
+        const failed = reviewer.status === "failed";
+        const text = failed
+          ? `${reviewer.label} failed and took no part`
+          : position
+            ? `${reviewer.label}: ${position.stance === "supports" ? "supports" : position.stance === "challenges" ? "challenges" : "is uncertain"}, ${position.confidence} confidence, ${position.round === 0 ? "reported it" : `round ${position.round}`}`
+            : `${reviewer.label}: no position yet`;
+        const tag = unique ? short[index] : `${reviewer.label.slice(0, 1)}${index + 1}`;
+        return (
+          <span key={reviewer.id} className={cx("position", failed ? "failed" : position ? `stance-${position.stance}` : "none")} role="img" aria-label={text} title={text}>
+            <span className="position-glyph" aria-hidden="true">
+              {failed ? "✕" : position ? STANCE_GLYPHS[position.stance] : ""}
             </span>
-          );
-        })}
+            <span aria-hidden="true">{tag}</span>
+          </span>
+        );
+      })}
     </span>
   );
 }
@@ -198,11 +218,13 @@ export function VerdictBanner({ review }: { review: Review }) {
     );
   }
   if (!review.verdict) return null;
+  const recheck = recheckLine(review);
   const statuses: FindingStatus[] = ["confirmed", "agreed", "disputed", "withdrawn"];
   return (
     <section className="verdict">
       <h3>Verdict</h3>
       <p>{review.verdict.summary}</p>
+      {recheck && <p className="verdict-recheck">{recheck}</p>}
       <div className="verdict-counts">
         {statuses.map((status) => {
           const n = review.findings.filter((finding) => finding.status === status).length;
@@ -222,7 +244,7 @@ export function RulingMark({ finding }: { finding: Finding }) {
   if (!decision) return null;
   return (
     <span className={`ruling-mark ruling-${decision}`} title={`${RULING_WORDS[decision]}${finding.ruling?.note ? `: ${finding.ruling.note}` : ""}`}>
-      {RULING_MARKS[decision]} {decision === "deferred" ? "later" : ""}
+      {RULING_MARKS[decision]} {RULING_WORDS[decision]}
     </span>
   );
 }

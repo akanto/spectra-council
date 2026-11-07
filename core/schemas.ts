@@ -12,8 +12,8 @@ export const CONFIDENCES = ["high", "medium", "low"] as const;
 export const STANCES = ["supports", "challenges", "uncertain"] as const;
 export const DECISIONS = ["accepted", "dismissed", "deferred"] as const;
 
-/** How many seats a council has: the workspace shows one panel each. */
-export const SEATS = 4;
+/** The most seats a council can have; it starts with two, and the user adds and removes seats. The workspace shows one panel each. */
+export const MAX_SEATS = 8;
 
 export const profileIdSchema = z.enum(PROFILE_IDS);
 export const depthSchema = z.enum(DEPTHS);
@@ -89,7 +89,7 @@ export const fixCheckInputSchema = z.object({
 
 export type FixCheckInput = z.infer<typeof fixCheckInputSchema>;
 
-/** One seat at the council: the agent in it, or empty. */
+/** One seat at the council: the agent in it. `enabled` is false only in reviews from before seats could be removed. */
 export const seatSchema = z.object({
   agent: z.string().min(1).describe('A mock persona\'s id (mock-claude, …), or "profile:" and a Mirador profile\'s name, e.g. "profile:pi home".'),
   enabled: z.boolean(),
@@ -101,7 +101,7 @@ export const setupSchema = z.object({
   target: z.string().min(1).describe("The absolute path of the repository, folder or document to review."),
   profile: profileIdSchema.default("general"),
   depth: depthSchema.default("standard"),
-  seats: z.array(seatSchema).length(SEATS),
+  seats: z.array(seatSchema).min(1).max(MAX_SEATS),
   instructions: z.string().default(""),
 });
 
@@ -113,7 +113,7 @@ export const setupPatchSchema = z
     target: z.string().min(1),
     profile: profileIdSchema,
     depth: depthSchema,
-    seats: z.array(seatSchema).length(SEATS),
+    seats: z.array(seatSchema).min(1).max(MAX_SEATS),
     instructions: z.string(),
   })
   .partial();
@@ -129,13 +129,18 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("rule"), findingId: z.string().min(1), decision: decisionSchema.nullable(), note: z.string().default("") }),
   /** Write the hand-off document of the accepted findings. */
   z.object({ kind: z.literal("handoff") }),
+  /** Ask the conversation's agent to open a new review with this one's setup, for a review that ended. */
+  z.object({ kind: z.literal("rerun") }),
   /** Ask the conversation's agent to fix the accepted findings, by the hand-off. */
   z.object({ kind: z.literal("fix") }),
   /** Re-check the fixed findings in a verification round. */
   z.object({ kind: z.literal("verify") }),
   /** Who fixes: resolves to `{ profile }`, the fixer profile this conversation chose, or null for its own agent. */
   z.object({ kind: z.literal("fixer") }),
-  /** The Mirador profiles the council has seated before: resolves to `{ profiles: string[] }`, names most recent first. */
+  /**
+   * The Mirador profiles a seat can take: resolves to `{ profiles: ProfileInfo[] }` (core/agents.ts), each with the model
+   * its latest conversation ran on where the host can tell.
+   */
   z.object({ kind: z.literal("profiles") }),
 ]);
 

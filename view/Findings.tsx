@@ -1,7 +1,7 @@
 /** Every finding, filterable by reviewer and severity, each opening to its summary, evidence and recommendation. */
 import { useEffect, useRef, useState } from "react";
 import { bySeverity } from "../core/describe.ts";
-import { isStanding, type Finding, type FindingStatus, type Review } from "../core/model.ts";
+import { isFinished, isStanding, type Finding, type FindingStatus, type Review } from "../core/model.ts";
 import { SEVERITIES, type Evidence, type Severity } from "../core/schemas.ts";
 import { ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge } from "./ui.tsx";
 
@@ -10,7 +10,7 @@ const RULING_FILTERS = [["accepted", "Accepted"], ["dismissed", "Dismissed"], ["
 
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
 
-function FindingCard({ review, finding, reviewer, open, toggle, openPath }: { review: Review; finding: Finding; reviewer: string; open: boolean; toggle(): void; openPath?: (path: string) => void }) {
+function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, openPath }: { review: Review; finding: Finding; reviewer: string; open: boolean; toggle(): void; openInCouncil?: () => void; openPath?: (path: string) => void }) {
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
     if (open) ref.current?.scrollIntoView({ block: "nearest" });
@@ -25,11 +25,24 @@ function FindingCard({ review, finding, reviewer, open, toggle, openPath }: { re
         <FindingStatusBadge status={finding.status} />
         <RulingMark finding={finding} />
         <FixBadge finding={finding} />
-        {finding.positions.length > 0 && <Positions review={review} finding={finding} />}
       </button>
+      {finding.positions.length > 0 && (
+        <div className="finding-card-positions">
+          <Positions review={review} finding={finding} />
+        </div>
+      )}
       {open && (
         <div className="finding-body">
           <p>{finding.summary}</p>
+          <p className="finding-state">
+            <FindingStatusBadge status={finding.status} /> <RulingMark finding={finding} /> <FixBadge finding={finding} />
+            {openInCouncil && (
+              <button className="link" onClick={openInCouncil}>
+                Open in Council →
+              </button>
+            )}
+          </p>
+          {finding.fix?.summary && <p className="muted">Fix: {finding.fix.summary}{finding.fix.files.length > 0 && ` (${finding.fix.files.join(", ")})`}</p>}
           <dl className="finding-facts">
             <dt>Category</dt>
             <dd>{finding.category}</dd>
@@ -76,7 +89,7 @@ function FindingCard({ review, finding, reviewer, open, toggle, openPath }: { re
   );
 }
 
-export function Findings({ review, focus, openPath }: { review: Review; focus: string | null; openPath?: (path: string) => void }) {
+export function Findings({ review, focus, openInCouncil, openPath }: { review: Review; focus: string | null; openInCouncil?: (id: string) => void; openPath?: (path: string) => void }) {
   const [reviewer, setReviewer] = useState<string | null>(null);
   const [severity, setSeverity] = useState<Severity | null>(null);
   const [status, setStatus] = useState<FindingStatus | null>(null);
@@ -128,7 +141,7 @@ export function Findings({ review, focus, openPath }: { review: Review; focus: s
         )}
       </div>
       {shown.length === 0 ? (
-        <p className="empty-note">{review.findings.length === 0 ? "No findings yet." : "No findings match the filters."}</p>
+        <p className="empty-note">{review.findings.length === 0 ? (isFinished(review) ? "No findings were reported." : "No findings yet.") : "No findings match the filters."}</p>
       ) : (
         <ul className="finding-cards">
           {shown.map((finding) => (
@@ -139,6 +152,7 @@ export function Findings({ review, focus, openPath }: { review: Review; focus: s
               reviewer={label(finding.reviewerId)}
               open={open === finding.id}
               toggle={() => setOpen(open === finding.id ? null : finding.id)}
+              {...(review.rounds > 0 && openInCouncil ? { openInCouncil: () => openInCouncil(finding.id) } : {})}
               {...(openPath ? { openPath } : {})}
             />
           ))}

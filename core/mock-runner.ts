@@ -33,6 +33,7 @@ const PERSONAS: Record<string, Persona> = {
   "mock-codex": { pace: 0.7, prefers: /\.(ts|tsx|js|py|go|rs|java|kt|c|cc|cpp|swift|rb)$/i, findingBias: -1, habit: "Tracing the main code path" },
   "mock-gemini": { pace: 0.9, prefers: /\.(md|tex|json|ya?ml|toml|ini|cfg)$|(^|\/)docs?\//i, findingBias: 0, habit: "Comparing the docs with the code" },
   "mock-qwen": { pace: 1.4, prefers: /./, findingBias: 1, habit: "Checking edge cases" },
+  "mock-glm": { pace: 1.1, prefers: /(^|\/)(index|api|types?|schemas?|models?|interfaces?)\.|\.d\.ts$/i, findingBias: 0, habit: "Checking the contracts between modules" },
 };
 
 const DEFAULT_PERSONA: Persona = { pace: 1, prefers: /./, findingBias: 0, habit: "Checking the details" };
@@ -183,6 +184,7 @@ const ODDS: Record<string, [supports: number, challenges: number]> = {
   "mock-codex": [0.32, 0.5],
   "mock-gemini": [0.4, 0.25],
   "mock-qwen": [0.4, 0.46],
+  "mock-glm": [0.5, 0.32],
 };
 const DEFAULT_ODDS: [number, number] = [0.45, 0.35];
 
@@ -208,6 +210,10 @@ const SUPPORTS: Record<string, string[]> = {
     "I tried the edge cases at {loc} and {id}, “{title}”, shows up on them.",
     "The unusual inputs at {loc} make {id} fail the way it describes.",
   ],
+  "mock-glm": [
+    "The contract at {loc} promises more than the callers get, which is the gap {id}, “{title}”, names.",
+    "I checked what {loc} exports against how it is used, and {id} holds.",
+  ],
 };
 
 const CHALLENGES: Record<string, string[]> = {
@@ -226,6 +232,10 @@ const CHALLENGES: Record<string, string[]> = {
   "mock-qwen": [
     "At the edge case in {loc} the value is validated before use, so {id} does not hold.",
     "I tried the empty and oversized inputs at {loc}; both are rejected, which contradicts {id}.",
+  ],
+  "mock-glm": [
+    "The types at {loc} rule out the case {id} describes, so “{title}” can't happen through this interface.",
+    "Every caller of {loc} goes through the checked entry point, so {id} does not hold.",
   ],
 };
 

@@ -9,7 +9,7 @@ const finding: FindingInput = { title: "Off by one", summary: "Drops the last el
 
 /** Three reviewers (r1 Claude, r2 Codex, r3 Gemini) finished their review; r1 reported F1; round 1 is open. */
 function council(severity: FindingInput["severity"] = "medium"): Review {
-  const seats = defaultSeats().map((seat, index) => ({ ...seat, enabled: index < 3 }));
+  const seats = ["mock-claude", "mock-codex", "mock-gemini", "mock-qwen"].map((agent, index) => ({ agent, enabled: index < 3 }));
   let review = reduce(newReview("rev1", { target: "/repo", profile: "code", depth: "standard", instructions: "", seats }, "mock", 0), { type: "started", at: 1 });
   for (const reviewerId of ["r1", "r2", "r3"]) review = reduce(review, { type: "reviewer-started", reviewerId, at: 2 });
   review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 3, finding: { ...finding, severity } });
@@ -45,7 +45,7 @@ describe("settle", () => {
   });
 
   test("one challenger among three supporters is disputed, with that dissenter", () => {
-    const seats = defaultSeats().map((seat) => ({ ...seat, enabled: true }));
+    const seats = ["mock-claude", "mock-codex", "mock-gemini", "mock-qwen"].map((agent) => ({ agent, enabled: true }));
     let review = reduce(newReview("rev1", { target: "/repo", profile: "code", depth: "standard", instructions: "", seats }, "mock", 0), { type: "started", at: 1 });
     for (const reviewerId of ["r1", "r2", "r3", "r4"]) review = reduce(review, { type: "reviewer-started", reviewerId, at: 2 });
     review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 3, finding });
@@ -108,9 +108,19 @@ describe("verdictSummary", () => {
     expect(verdictSummary(resolve(council("high"), "confirmed"))).toBe("1 finding: 1 confirmed. 1 serious finding stands.");
   });
 
-  test("a disputed or withdrawn serious finding doesn't count", () => {
-    expect(verdictSummary(resolve(council("critical"), "disputed"))).toBe("1 finding: 1 disputed. No serious finding stands.");
+  test("a disputed or withdrawn serious finding doesn't count as standing; a disputed one is named", () => {
+    expect(verdictSummary(resolve(council("critical"), "disputed"))).toBe("1 finding: 1 disputed. No serious finding is agreed or confirmed. 1 serious finding is disputed.");
     expect(verdictSummary(resolve(council("critical"), "withdrawn"))).toBe("1 finding: 1 withdrawn. No serious finding stands.");
+  });
+
+  test("a reviewer that failed is named", () => {
+    let review = reduce(newReview("r", { target: "/repo", profile: "code", depth: "quick", instructions: "", seats: defaultSeats() }, "mock", 0), { type: "started", at: 1 });
+    review = reduce(review, { type: "reviewer-started", reviewerId: "r2", at: 2 });
+    review = reduce(review, { type: "reviewer-finished", reviewerId: "r2", at: 3, outcome: "failed", problem: "Its conversation failed" });
+    expect(verdictSummary(review)).toBe("The council found nothing to report.");
+    review = reduce(review, { type: "reviewer-started", reviewerId: "r1", at: 2 });
+    review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 4, finding });
+    expect(verdictSummary(review)).toBe("1 finding, not deliberated: fewer than two reviewers finished their review. Codex failed and took no part.");
   });
 
   test("a medium agreed finding is not serious", () => {

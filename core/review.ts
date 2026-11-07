@@ -10,7 +10,7 @@
  * (handoff-written), the agent is asked to fix them (fix-requested) and reports each fix (fix-reported), and a
  * verification round has reviewers re-check the fixes (verification-started → fix-checked → verification-ended).
  */
-import { agentLabel, runnerKindOf } from "./agents.ts";
+import { agentLabel, runnerKindOf, withLabels } from "./agents.ts";
 import {
   MAX_ACTIVITY,
   REVIEW_FORMAT,
@@ -23,6 +23,7 @@ import {
   type Decision,
   type Finding,
   type FindingStatus,
+  type ModelInfo,
   type Position,
   type Review,
   type Reviewer,
@@ -49,6 +50,11 @@ export type ReviewerEvent =
 export type ReviewEvent =
   | ReviewerEvent
   | { type: "configured"; patch: SetupPatch }
+  /**
+   * The model a profile seat runs on, as the host learnt it: before the start, what the profile's latest conversation
+   * ran on; once a turn started, what its conversation runs on. Relabels the seat by its model.
+   */
+  | { type: "model-seen"; reviewerId: string; model: ModelInfo }
   | { type: "started"; at: number }
   /** The independent review is over and the findings go on the table: the reviewers who finished it take part. */
   | { type: "deliberation-started"; at: number; rounds: number }
@@ -87,6 +93,7 @@ const reviewerOf = (seat: Seat, index: number): Reviewer => ({
   id: `r${index + 1}`,
   agent: seat.agent,
   label: agentLabel(seat.agent),
+  model: null,
   enabled: seat.enabled,
   status: "idle",
   current: null,
@@ -107,7 +114,7 @@ export function newReview(id: string, setup: Setup, runner: RunnerKind, at: numb
     instructions: setup.instructions,
     runner,
     phase: "setup",
-    reviewers: setup.seats.map(reviewerOf),
+    reviewers: withLabels(setup.seats.map(reviewerOf)),
     findings: [],
     arguments: [],
     round: 0,
@@ -125,7 +132,8 @@ export function newReview(id: string, setup: Setup, runner: RunnerKind, at: numb
 
 /**
  * A review as stored by an earlier version, brought up to this one: format 1 had no deliberation, format 2 no rulings,
- * fixes or verification, format 3 no fixer on a fix. Hosts read stored reviews through this before anything else touches them.
+ * fixes or verification, format 3 no fixer on a fix, format 4 no model on a reviewer. Hosts read stored reviews through
+ * this before anything else touches them.
  */
 export function upgradeReview(stored: Review): Review {
   if (stored.format === REVIEW_FORMAT) return stored;
@@ -135,6 +143,7 @@ export function upgradeReview(stored: Review): Review {
   return {
     ...old,
     format: REVIEW_FORMAT,
+    reviewers: old.reviewers.map((reviewer) => ({ ...reviewer, model: (reviewer as Partial<Reviewer>).model ?? null })),
     findings: old.findings.map(
       (finding) =>
         ({
@@ -224,8 +233,22 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "configured": {
       if (review.phase !== "setup") throw new ReviewError("The review has started; its setup can't change any more.");
       const { seats, ...rest } = event.patch;
-      const reviewers = seats ? seats.map((seat, index) => ({ ...reviewerOf(seat, index), id: review.reviewers[index]?.id ?? `r${index + 1}` })) : review.reviewers;
+      // A seat keeps the model seen for it while its agent stays the same.
+      const reviewers = seats
+        ? withLabels(
+            seats.map((seat, index) => {
+              const before = review.reviewers[index];
+              return { ...reviewerOf(seat, index), model: before?.agent === seat.agent ? before.model : null };
+            }),
+          )
+        : review.reviewers;
       return { ...review, ...rest, reviewers, runner: runnerKindOf(reviewers) };
+    }
+    case "model-seen": {
+      const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
+      if (!reviewer) throw new ReviewError(`No reviewer ${event.reviewerId} sits at the council.`);
+      if (reviewer.model?.name === event.model.name && reviewer.model.effort === event.model.effort) return review;
+      return { ...review, reviewers: withLabels(review.reviewers.map((it) => (it.id === reviewer.id ? { ...it, model: event.model } : it))) };
     }
     case "started": {
       if (review.phase !== "setup") throw new ReviewError(`The review can't start: it is ${review.phase}.`);
