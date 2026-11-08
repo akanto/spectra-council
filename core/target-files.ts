@@ -3,7 +3,7 @@
  * that skips what is usually generated; a single file is itself. Uses Bun, which every host of the engine runs on.
  */
 import { stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 const MAX_FILES = 5000;
 
@@ -46,4 +46,12 @@ export async function listTargetFiles(target: string): Promise<string[]> {
   if (kind !== "folder") return [];
   const files = (await gitFiles(target)) ?? (await walkedFiles(target));
   return files.filter((file) => !SKIPPED.test(file) && !NOT_REVIEWED.test(file)).slice(0, MAX_FILES).sort();
+}
+
+/** Resolve source links using the target's actual filesystem kind, never its extension. */
+export async function resolveTargetPath(target: string, path: string): Promise<string> {
+  if (isAbsolute(path)) return path;
+  const kind = await targetKind(target);
+  if (!kind) throw new Error(`Cannot resolve source path: review target ${target} is unavailable.`);
+  return resolve(kind === "file" ? dirname(target) : target, path);
 }

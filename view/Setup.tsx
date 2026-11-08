@@ -40,6 +40,14 @@ function useDraft(value: string, commit: (text: string) => void) {
 function KnobInput({ id, label, value, min, max, commit }: { id: string; label: string; value: number; min: number; max: number; commit(value: number): void }) {
   const [text, setText] = useState(String(value));
   const input = useRef<HTMLInputElement>(null);
+  // Picking "Other profile…" moves the focus to the name field, also from the keyboard.
+  const focusName = useRef(false);
+  useEffect(() => {
+    if (focusName.current && input.current) {
+      focusName.current = false;
+      input.current.focus();
+    }
+  });
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The value last sent, so a quick change back to the review's (still stale) value is sent too.
   const sent = useRef(value);
@@ -163,16 +171,46 @@ function SeatCard({
   const saved = isProfile ? profileName(seat.agent) : "";
   const listed = isProfile && profiles.some((profile) => profile.name === saved);
   const [name, setName] = useState(saved);
+  const input = useRef<HTMLInputElement>(null);
+  // Picking "Other profile…" moves the focus to the name field, also from the keyboard.
+  const focusName = useRef(false);
   useEffect(() => {
-    setName(saved);
+    if (focusName.current && input.current) {
+      focusName.current = false;
+      input.current.focus();
+    }
+  });
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    // Not while the name is being typed: a commit coming back would overwrite what was typed since.
+    if (document.activeElement !== input.current) setName(saved);
   }, [saved]);
-  const commit = (text: string) => {
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  /** Seats a non-empty name; it stays a draft in the field until the user leaves it (done) or keeps typing. */
+  const seatName = (text: string) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
     const trimmed = text.trim();
+    if (trimmed && trimmed !== saved) setAgent(index, profileAgent(trimmed));
+    return trimmed;
+  };
+  const commit = (text: string) => {
+    const trimmed = seatName(text);
     if (!trimmed) return setName(saved);
     setName(trimmed);
-    if (trimmed !== saved) setAgent(index, profileAgent(trimmed));
     // A name from the list shows as that option; any other shows as its own.
     setOther(false);
+  };
+  const type = (text: string) => {
+    setName(text);
+    if (timer.current) clearTimeout(timer.current);
+    // Seated once the typing pauses, so Start review is ready without leaving the field.
+    timer.current = setTimeout(() => seatName(text), 400);
   };
   const showOther = other || seat.agent === UNNAMED_PROFILE;
   const mock = MOCK_AGENTS.find((agent) => agent.id === seat.agent);
@@ -198,8 +236,13 @@ function SeatCard({
       <select
         value={showOther ? OTHER : seat.agent}
         onChange={(event) => {
-          if (event.target.value === OTHER) setOther(true);
-          else {
+          if (event.target.value === OTHER) {
+            // The seat waits for a name from here on: Start review mustn't run it as the agent it had before.
+            setOther(true);
+            setName("");
+            focusName.current = true;
+            if (seat.agent !== UNNAMED_PROFILE) setAgent(index, UNNAMED_PROFILE);
+          } else {
             setOther(false);
             setAgent(index, event.target.value);
           }
@@ -231,10 +274,11 @@ function SeatCard({
         <input
           className="seat-name"
           type="text"
+          ref={input}
           value={name}
           placeholder="Profile name"
           aria-label={`Mirador profile for reviewer ${n}`}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => type(event.target.value)}
           onBlur={() => commit(name)}
           onKeyDown={(event) => {
             if (event.key === "Enter") commit(event.currentTarget.value);
@@ -263,7 +307,17 @@ function radioKeys<T>(options: readonly T[], chosen: T, choose: (option: T) => v
   };
 }
 
-export function Setup({ review, configure, start, busy, bridge }: { review: Review; configure(patch: SetupPatch): void; start(): void; busy: boolean; bridge?: CouncilBridge }) {
+export function Setup({ review, configure, start, busy, bridge }: { review: Review; configure(patch: SetupPatch): void; start(): Promise<unknown>; busy: boolean; bridge?: CouncilBridge }) {
+  const [startState, setStartState] = useState<"idle" | "sending" | "prompted">("idle");
+  const requestStart = async () => {
+    setStartState("sending");
+    try {
+      const result = await start();
+      setStartState((result as { prompted?: boolean } | null)?.prompted ? "prompted" : "idle");
+    } catch {
+      setStartState("idle"); // The sender displays the host's error.
+    }
+  };
   const setup = setupOf(review);
   const profiles = useProfiles(bridge);
   const instructions = useDraft(setup.instructions, (text) => configure({ instructions: text }));
@@ -303,8 +357,8 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
     const agent = next ? profileAgent(next.name) : UNNAMED_PROFILE;
     send([...seats, { agent, enabled: true }]);
   };
-  // A seat switched to "Other profile…" keeps its old agent until a profile is named: it mustn't start as that.
-  const unnamed = seats.flatMap((seat, at) => (seat.agent === UNNAMED_PROFILE || (others.includes(at) && !isProfileAgent(seat.agent)) ? [at + 1] : []));
+  // A seat switched to "Other profile…" becomes unnamed at once (SeatCard), so the review can't start as its old agent.
+  const unnamed = seats.flatMap((seat, at) => (seat.agent === UNNAMED_PROFILE ? [at + 1] : []));
 
   return (
     <div className="setup">
@@ -380,7 +434,8 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
         <div className="seats">
           {seats.map((seat, index) => (
             <SeatCard
-              key={`${index}:${seat.agent}`}
+              // By position only: a seat that changes agent (a name seated while typing) keeps its card and the focus.
+              key={index}
               index={index}
               seat={seat}
               reviewer={seatedReviewers[index]?.agent === seat.agent ? seatedReviewers[index] : undefined}
@@ -420,14 +475,15 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
       <div className="setup-actions">
         <button
           className="primary"
-          disabled={busy || count === 0 || unnamed.length > 0}
+          disabled={busy || startState !== "idle" || count === 0 || unnamed.length > 0}
           onClick={() => {
             instructions.onBlur();
-            start();
+            void requestStart();
           }}
         >
           Start review
         </button>
+        {startState === "prompted" && <span role="status">Asked the agent to start the review… <button className="link" disabled={busy} onClick={() => setStartState("idle")}>Retry start</button></span>}
         {count === 0 && <span className="hint">Seat at least one reviewer.</span>}
         {unnamed.length > 0 && <span className="hint">Name the profile for reviewer {unnamed.join(", ")}, or pick another agent.</span>}
       </div>

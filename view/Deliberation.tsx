@@ -1,9 +1,10 @@
 /** The Council tab: the findings on the left, and the selected one's positions, resolution and argument timeline. */
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import { bySeverity, possibleDuplicates, STATUS_MEANINGS } from "../core/describe.ts";
 import { argumentsOn, isStanding, type Argument, type Finding, type Review } from "../core/model.ts";
 import type { FindingStatus } from "../core/model.ts";
 import type { Evidence, ViewAction } from "../core/schemas.ts";
+import { FindingEvidence } from "./Findings.tsx";
 import { ActionPlan, ProposalBlock, RulingControl } from "./Actions.tsx";
 import { AlsoMark, AlsoReported, ConfidenceMeter, cx, mergedInto, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, StanceBadge, VerdictBanner } from "./ui.tsx";
 
@@ -101,6 +102,7 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
         <div className="council-detail-meta">
           <SeverityBadge severity={finding.severity} />
           <FindingStatusBadge status={finding.status} />
+          <span className="muted">{finding.category}</span>
           <span className="muted">reported by {label(finding.reviewerId)}</span>
         </div>
         <AlsoReported review={review} finding={finding} />
@@ -122,6 +124,7 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
       <RulingControl review={review} finding={finding} act={act} busy={busy} openPath={openPath} next={next} />
 
       <p>{finding.summary}</p>
+      <FindingEvidence finding={finding} openPath={openPath} />
 
       <h3>Positions</h3>
       <ul className="position-grid">
@@ -210,17 +213,18 @@ function StatusLegend() {
   );
 }
 
-export function Deliberation({ review, focus, openPath, act, busy }: { review: Review; focus: string | null; openPath?: (path: string) => void; act(action: ViewAction): void; busy: boolean }) {
-  const [picked, setPicked] = useState<string | null>(focus);
-  useEffect(() => {
-    if (focus) setPicked(focus);
-  }, [focus]);
+export function Deliberation({ review, focus, select, openPath, act, busy }: { select(id: string): void; review: Review; focus: string | null; openPath?: (path: string) => void; act(action: ViewAction): void; busy: boolean }) {
+  const picked = focus;
+  const setPicked = select;
   const detailRef = useRef<HTMLDivElement>(null);
   const first = useRef(true);
   const sorted = [...review.findings].sort((a, b) => Number(b.status === "disputed") - Number(a.status === "disputed") || bySeverity(a, b));
   const mergedTo = mergedInto(review);
   const selected = review.findings.find((finding) => finding.id === picked) ?? review.findings.find((finding) => finding.id === mergedTo.get(picked ?? "")) ?? sorted[0];
   const selectedId = selected?.id;
+  useEffect(() => {
+    if (selectedId && selectedId !== focus) select(selectedId);
+  }, [selectedId, focus, select]);
   // In the single-column layout the detail sits below the list: bring it into view when the selection changes.
   useEffect(() => {
     if (first.current) {

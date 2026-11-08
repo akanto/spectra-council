@@ -1,7 +1,7 @@
 /** One reviewer's full activity and findings, beside the workspace. Only events the runner reported, no private reasoning. */
 import { useEffect, useRef } from "react";
 import { seatDetail } from "../core/agents.ts";
-import { reportersOf, type Review } from "../core/model.ts";
+import { isActive, reportersOf, type Review } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
 import { ActivityLine, FindingRow, removable, removeHint } from "./Workspace.tsx";
 import { elapsed, StatusMark, statusWord } from "./ui.tsx";
@@ -34,6 +34,7 @@ export function ReviewerDetail({
   const present = reviewer !== undefined;
   // Opening (or switching reviewer) moves focus to the heading; in the single-column layout the panel sits below the findings, so scroll to it.
   useEffect(() => {
+    if (root.current) root.current.scrollTop = 0;
     heading.current?.focus({ preventScroll: true });
     if (window.matchMedia("(max-width: 720px)").matches) root.current?.scrollIntoView({ block: "start" });
   }, [reviewerId, present]);
@@ -51,11 +52,15 @@ export function ReviewerDetail({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
-  const count = reviewer?.activity.length ?? 0;
+  const count = reviewer?.activityCount ?? 0;
+  const previous = useRef({ reviewerId, count });
   useEffect(() => {
-    // A block body: scrollIntoView returns a promise in newer browsers, which React would take for a cleanup.
-    end.current?.scrollIntoView({ block: "end" });
-  }, [count]);
+    const before = previous.current;
+    previous.current = { reviewerId, count };
+    if (before.reviewerId === reviewerId && count > before.count && reviewer && isActive(reviewer)) {
+      end.current?.scrollIntoView({ block: "end" });
+    }
+  }, [reviewerId, count, reviewer]);
   if (!reviewer) return null;
   // Its own findings and those its report of was merged into, as the seat panel counts them.
   const findings = review.findings.filter((finding) => reportersOf(finding).includes(reviewer.id));

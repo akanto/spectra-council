@@ -134,3 +134,21 @@ describe("handoff", () => {
     expect(handoffMarkdown(ruled(concluded("mirador")))).not.toContain("deterministic mocks");
   });
 });
+
+
+test("accepted uncorroborated reports use recommendations and exclude dismissed or deferred reports", () => {
+  const review = ruled(concluded());
+  review.rounds = 0;
+  for (const finding of review.findings) {
+    finding.status = "reported";
+    finding.resolution = null;
+    finding.proposal = null;
+  }
+  const deferred = apply(review, { type: "ruled", at: 61, findingId: "F2", decision: "deferred", note: "" });
+  expect(acceptedFindings(deferred).map((finding) => finding.id)).toEqual(["F1"]);
+  const md = handoffMarkdown(deferred);
+  expect(md).toContain("Loop to n.");
+  expect(md).toContain("council status: reported");
+  expect(md).not.toContain("## F2:");
+  expect(md).not.toContain("## F3:");
+});

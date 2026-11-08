@@ -170,6 +170,8 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
    * its latest conversation ran on where the host can tell.
    */
   z.object({ kind: z.literal("profiles") }),
+  /** Resolve a source link against the folder containing the reviewed files. */
+  z.object({ kind: z.literal("resolve-path"), path: z.string().min(1) }),
 ]);
 
 export type ViewAction = z.infer<typeof viewActionSchema>;

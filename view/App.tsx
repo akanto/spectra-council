@@ -38,6 +38,8 @@ function useSender(bridge: CouncilBridge, onError: (message: string | null) => v
 
 export function App({ bridge }: { bridge: CouncilBridge }) {
   const [review, setReview] = useState<Review | null>(null);
+  const currentReview = useRef(review);
+  currentReview.current = review;
   const [tab, setTab] = useState<Tab>("workspace");
   const [reviewerId, setReviewerId] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
@@ -98,7 +100,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
     setPicked(true);
     setTab(next);
     setReviewerId(null);
-    if (!keepFocus) setFocus(null);
+    if (!keepFocus && next === "workspace") setFocus(null);
   };
   const openFinding = (id: string) => {
     setFocus(id);
@@ -131,7 +133,19 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const shownTab: Tab = tab === "council" && !hasCouncil ? "workspace" : tab;
   const nudge = review.phase === "deliberation" && hasCouncil && shownTab === "workspace" && reviewerId !== null;
   const target = review.target;
-  const openPath = bridge.openFile ? (path: string) => bridge.openFile!(path === target || path.startsWith("/") ? path : `${target.replace(/\/$/, "")}/${path}`) : undefined;
+  const openPath = bridge.openFile ? (path: string) => {
+    if (path.startsWith("/")) {
+      bridge.openFile!(path);
+      return;
+    }
+    const stillCurrent = () => currentReview.current?.id === review.id && currentReview.current?.target === target;
+    Promise.resolve(bridge.send({ kind: "resolve-path", path })).then((result) => {
+      if (!stillCurrent()) return;
+      const resolved = (result as { path?: unknown } | null)?.path;
+      if (typeof resolved !== "string" || !resolved.startsWith("/")) throw new Error("The host could not resolve this source path.");
+      bridge.openFile!(resolved);
+    }).catch((error) => { if (stillCurrent()) setProblem(messageOf(error)); });
+  } : undefined;
   const seatedList = seatedReviewers(review);
   const seated = seatedList.length;
   const failed = seatedList.filter((reviewer) => reviewer.status === "failed").length;
@@ -193,7 +207,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
       )}
 
       {review.phase === "setup" ? (
-        <Setup review={review} bridge={bridge} busy={busy} configure={(patch: SetupPatch) => void send({ kind: "configure", patch }).catch(() => {})} start={() => void send({ kind: "start" }).catch(() => {})} />
+        <Setup review={review} bridge={bridge} busy={busy} configure={(patch: SetupPatch) => void send({ kind: "configure", patch }).catch(() => {})} start={() => send({ kind: "start" })} />
       ) : (
         <>
           <nav className="tabs" role="tablist" aria-label="Review views" onKeyDown={onTabKey}>
@@ -219,7 +233,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
                   openedReviewer={reviewerId}
                   openFinding={openFinding}
                   openAll={() => choose("findings")}
-                  openCouncil={() => choose("council")}
+                  openCouncil={() => choose(hasCouncil ? "council" : "findings")}
                   rerun={() => send({ kind: "rerun" })}
                   resume={() => send({ kind: "resume" })}
                   act={act}
@@ -227,9 +241,9 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
                   {...(openPath ? { openPath } : {})}
                 />
               ) : shownTab === "council" ? (
-                <Deliberation key={focus ?? ""} review={review} focus={focus} act={act} busy={busy} {...(openPath ? { openPath } : {})} />
+                <Deliberation select={setFocus} review={review} focus={focus} act={act} busy={busy} {...(openPath ? { openPath } : {})} />
               ) : (
-                <Findings review={review} focus={focus} openInCouncil={openInCouncil} {...(openPath ? { openPath } : {})} />
+                <Findings select={setFocus} act={act} busy={busy} review={review} focus={focus} openInCouncil={openInCouncil} {...(openPath ? { openPath } : {})} />
               )}
             </main>
             {reviewerId && shownTab === "workspace" && (

@@ -19,7 +19,7 @@ import { PROFILES } from "../../core/profiles.ts";
 import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
 import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
-import { listTargetFiles, targetKind } from "../../core/target-files.ts";
+import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
 import { miradorRecords, noRecords, type MiradorRecords } from "./records.ts";
 
@@ -386,7 +386,7 @@ export function createCouncilHost({
       const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
       const what = review.phase === "setup" ? "started" : "resumed";
       await context.prompt(`The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
-      return null;
+      return { prompted: true };
     }
     begin(item, context, review);
     return null;
@@ -636,6 +636,8 @@ export function createCouncilHost({
           return rerun(item, context);
         case "fixer":
           return { profile: context.profileSetting(FIXER_SETTING) || null };
+        case "resolve-path":
+          return { path: await resolveTargetPath(item.data.target, parsed.data.path) };
         case "profiles":
           return { profiles: profilesFor(context.storage) };
         case "stop": {

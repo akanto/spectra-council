@@ -1,6 +1,6 @@
 /** After the verdict: the proposed fix, the user's ruling, the fix's progress and the action plan that drives the hand-off. */
 import { useContext, useEffect, useRef, useState } from "react";
-import { isRunning, isStanding, type Finding, type Review } from "../core/model.ts";
+import { isRunning, isRulable, type Finding, type Review } from "../core/model.ts";
 import type { Decision, ViewAction } from "../core/schemas.ts";
 import { cx, FIX_WORDS, FixerContext } from "./ui.tsx";
 
@@ -179,7 +179,7 @@ export function RulingControl({ review, finding, act, busy, openPath, next }: { 
   const note = useDraft(ruling?.note ?? "", (text) => {
     if (ruling) act({ kind: "rule", findingId: finding.id, decision: ruling.decision, note: text });
   });
-  if (!isStanding(finding)) return null;
+  if (!isRulable(review, finding)) return null;
   if (finding.fix) return <FixStatus review={review} finding={finding} openPath={openPath} act={act} busy={busy} />;
   const editable = review.phase === "complete";
   const rule = (decision: Decision | null) => {
@@ -218,7 +218,7 @@ export function RulingControl({ review, finding, act, busy, openPath, next }: { 
 
 /** Counts of the user's rulings, the next step that follows from them, and the fixes' progress. */
 export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }: { review: Review; act: Act; busy: boolean; compact?: boolean; openPath?: OpenPath; openCouncil?: () => void }) {
-  const standing = review.findings.filter(isStanding);
+  const standing = review.findings.filter((finding) => isRulable(review, finding));
   const fixer = useContext(FixerContext);
   const showable = (review.phase === "complete" || review.phase === "verification") && standing.length > 0;
   if (!showable) return null;
@@ -331,7 +331,7 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
       {compact && openCouncil && (
         <p className="action-plan-open">
           <button className="link open-council" onClick={openCouncil}>
-            Open Council to rule and fix →
+            Open {review.rounds > 0 ? "Council" : "Findings"} to rule and fix →
           </button>
         </p>
       )}

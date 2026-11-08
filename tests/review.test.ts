@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
-import { MAX_ACTIVITY, REVIEW_FORMAT } from "../core/model.ts";
+import { isRulable, isStanding, MAX_ACTIVITY, REVIEW_FORMAT } from "../core/model.ts";
 import { newReview, reduce, ReviewError, setupOf, upgradeReview } from "../core/review.ts";
 import type { ArgumentInput, FindingInput } from "../core/schemas.ts";
 
@@ -567,4 +567,17 @@ describe("upgradeReview", () => {
     const review = concluded();
     expect(upgradeReview(review)).toBe(review);
   });
+});
+
+
+test("reported findings gain individual rulings only after a review without deliberation", () => {
+  let review = reduce(fresh(), { type: "started", at: 1 });
+  review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 2, finding });
+  const report = review.findings[0]!;
+  for (const phase of ["setup", "independent-review", "stopped", "interrupted", "deliberation", "synthesis"] as const) {
+    expect(isRulable({ ...review, phase }, report)).toBe(false);
+  }
+  for (const phase of ["complete", "verification"] as const) expect(isRulable({ ...review, phase }, report)).toBe(true);
+  expect(isRulable({ ...review, phase: "complete", rounds: 2 }, report)).toBe(false);
+  expect(isStanding(report)).toBe(false);
 });

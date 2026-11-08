@@ -319,3 +319,7 @@ export const seatedReviewers = (review: Review) => review.reviewers.filter((revi
 
 /** Findings that stand after the synthesis: the ones worth a fix proposal and a ruling. */
 export const isStanding = (finding: Finding) => finding.status === "agreed" || finding.status === "confirmed" || finding.status === "disputed";
+
+/** Uncorroborated reports can be ruled on individually after a review without deliberation. */
+export const isRulable = (review: Review, finding: Finding) => isStanding(finding) ||
+  (finding.status === "reported" && review.rounds === 0 && (review.phase === "complete" || review.phase === "verification"));

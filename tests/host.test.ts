@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review } from "../core/model.ts";
@@ -27,6 +27,59 @@ function setup() {
 }
 
 describe("the Mirador host", () => {
+  test("start after a restart reports that the agent was prompted", async () => {
+    const { host, canvas, context } = setup();
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    const restarted = createCouncilHost();
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start" }, context)).toEqual({ prompted: true });
+    expect(canvas.items[0]!.data.phase).toBe("setup");
+    expect(canvas.prompts).toHaveLength(1);
+    expect(canvas.promptOptions[0]).toEqual({ afterTurn: true });
+  });
+
+  test("source paths resolve against real file and folder targets without changing the review", async () => {
+    const { host, canvas, context } = setup();
+    const folder = join(target, "folder.with.dots");
+    await mkdir(folder, { recursive: true });
+    for (const name of ["report.md", "file with spaces", "LICENSE"]) await writeFile(join(folder, name), "test");
+    await host.tools.council_open!.run({ target, agents: ["mock-codex"] }, context);
+    const initial = canvas.items[0]!;
+    const resolve = (reviewTarget: string, path: string) => host.action!({ ...initial, data: { ...initial.data, target: reviewTarget } }, { kind: "resolve-path", path }, context);
+    for (const name of ["report.md", "file with spaces", "LICENSE"]) {
+      expect(await resolve(join(folder, name), name)).toEqual({ path: join(folder, name) });
+      expect(await resolve(join(folder, name), "nested/source.ts")).toEqual({ path: join(folder, "nested/source.ts") });
+    }
+    for (const dir of [folder, folder + "/"]) expect(await resolve(dir, "nested/source.ts")).toEqual({ path: join(folder, "nested/source.ts") });
+    const missing = join(target, "missing");
+    expect(await resolve(missing, "/absolute/source.ts")).toEqual({ path: "/absolute/source.ts" });
+    await expect(resolve(missing, "source.ts")).rejects.toThrow("unavailable");
+    expect(canvas.items[0]).toEqual(initial);
+  });
+
+  test("one reviewer can accept reported findings, hand them off and request fixes", async () => {
+    const { host, canvas, context, clock, written } = setup();
+    await host.tools.council_open!.run({ target, agents: ["mock-claude"] }, context);
+    const id = canvas.items[0]!.id;
+    const act = (action: unknown) => host.action!(canvas.item(id), action, context);
+    await act({ kind: "start" });
+    await clock.runAll();
+    await clock.settle();
+    const review = () => canvas.item(id).data;
+    expect(review().phase).toBe("complete");
+    expect(review().rounds).toBe(0);
+    expect(review().findings.length).toBeGreaterThan(0);
+    const first = review().findings[0]!;
+    expect(first.status).toBe("reported");
+    for (const decision of ["dismissed", "deferred", null, "accepted"]) await act({ kind: "rule", findingId: first.id, decision });
+    await act({ kind: "handoff" });
+    expect(written[0]!.text).toContain(first.recommendation!);
+    await act({ kind: "fix" });
+    expect(review().findings[0]!.fix?.state).toBe("handed-off");
+    expect(review().findings[0]!.status).toBe("reported");
+    expect(review().findings[0]!.resolution).toBeNull();
+    expect(review().findings.slice(1).every((finding) => !finding.fix)).toBe(true);
+  });
+
   test("council_open publishes a review in setup", async () => {
     const { host, canvas, context } = setup();
     const answer = await host.tools.council_open!.run({ target, profile: "security", agents: ["mock-gemini"] }, context);

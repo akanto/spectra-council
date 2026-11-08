@@ -1,6 +1,6 @@
 /** The live workspace: one panel per seat, what each reviewer is doing, and the findings as they come in. */
 import { useEffect, useState } from "react";
-import { isFinished, isResumable, isStanding, reportersOf, type Activity, type Finding, type Review, type Reviewer } from "../core/model.ts";
+import { isFinished, isResumable, isRulable, reportersOf, type Activity, type Finding, type Review, type Reviewer } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
 import { seatDetail } from "../core/agents.ts";
 import { bySeverity } from "../core/describe.ts";
@@ -171,8 +171,11 @@ function RerunPanel({ review, rerun, resume, quiet }: { review: Review; rerun():
 }
 
 /** Reopened fixes first, then standing findings nobody has ruled on, other standing ones, the rest, withdrawn last. */
-const attention = (finding: Finding) => (finding.fix?.state === "reopened" ? 0 : isStanding(finding) && !finding.ruling ? 1 : isStanding(finding) ? 2 : finding.status === "withdrawn" ? 4 : 3);
-const byAttention = (a: Finding, b: Finding) => attention(a) - attention(b) || bySeverity(a, b);
+const attention = (review: Review, finding: Finding) => {
+  const rulable = isRulable(review, finding);
+  return finding.fix?.state === "reopened" ? 0 : rulable && !finding.ruling ? 1 : rulable ? 2 : finding.status === "withdrawn" ? 4 : 3;
+};
+const byAttention = (review: Review) => (a: Finding, b: Finding) => attention(review, a) - attention(review, b) || bySeverity(a, b);
 
 export function Workspace({ review, now, openReviewer, openedReviewer, openFinding, openAll, openCouncil, rerun, resume, act, busy, openPath }: { review: Review; now: number; openReviewer(id: string, from: HTMLElement): void; openedReviewer: string | null; openFinding(id: string): void; openAll(): void; openCouncil(): void; rerun(): Promise<unknown>; resume(): Promise<unknown>; act(action: ViewAction): void; busy: boolean; openPath?: (path: string) => void }) {
   const counts = new Map<string, number>();
@@ -183,7 +186,7 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
   for (const argument of review.arguments) argued.set(argument.reviewerId, (argued.get(argument.reviewerId) ?? 0) + 1);
   const label = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id)?.label ?? id;
   const seated = review.reviewers.filter((reviewer) => reviewer.enabled);
-  const top = [...review.findings].sort(byAttention).slice(0, 6);
+  const top = [...review.findings].sort(byAttention(review)).slice(0, 6);
   return (
     <div className="workspace">
       <RerunPanel review={review} rerun={rerun} resume={resume} />

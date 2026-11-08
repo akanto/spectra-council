@@ -17,6 +17,10 @@ export interface Harness {
   url: string;
   /** The fixture folder under review. */
   target: string;
+  review(): Review;
+  setReview(review: Review): void;
+  restartHost(): void;
+  prompts: string[];
   stop(): Promise<void>;
 }
 
@@ -56,6 +60,7 @@ const BRIDGE = `
     }
   })();
   window.__prompts = [];
+  window.__openedPaths = [];
   window.mirador = {
     place: "canvas",
     onItem(listener) { listeners.add(listener); if (latest) listener(latest, ${JSON.stringify(CONTEXT)}); return () => listeners.delete(listener); },
@@ -70,7 +75,7 @@ const BRIDGE = `
     addToComposer: () => Promise.reject(new Error("no")),
     openLink() {},
     setFullscreen() {},
-    openFile() {},
+    openFile(path) { window.__openedPaths.push(path); },
   };
 })();`;
 
@@ -90,6 +95,7 @@ function miradorParentPage(canvas: MiradorCanvas, assets: string) {
   const post = (message) => frame.contentWindow.postMessage({ source, ...message }, "*");
   window.__frameErrors = [];
   window.__prompts = [];
+  window.__openedPaths = [];
   let polling = false;
   const poll = async () => {
     if (polling) return;
@@ -112,6 +118,7 @@ function miradorParentPage(canvas: MiradorCanvas, assets: string) {
       const { reply, problem } = await (await fetch("/action", { method: "POST", body: JSON.stringify(m.action) })).json();
       post(problem ? { kind: "item-reply-failed", requestId: m.requestId, message: problem } : { kind: "item-reply", requestId: m.requestId, reply });
     }
+    if (m.kind === "item-open-file") window.__openedPaths.push(m.path);
     if (m.kind === "item-prompt") { window.__prompts.push(m.text); post({ kind: "item-reply", requestId: m.requestId, reply: null }); }
   });
 </script>`;
@@ -126,7 +133,7 @@ export async function startHarness(sourceTarget: string | null, { mirador }: { m
       await writeFile(join(target, file), `// ${file}\nexport const name = ${JSON.stringify(file)};\n`);
     }
   }
-  const host = createCouncilHost({ writeFile: async () => {} });
+  let host = createCouncilHost({ writeFile: async () => {} });
   const view = Bun.file(join(import.meta.dir, "..", "dist", "view.js"));
 
   let item: PluginItem<Review> | null = null;
@@ -138,6 +145,7 @@ export async function startHarness(sourceTarget: string | null, { mirador }: { m
     waiting.forEach((wake) => wake());
     waiting = [];
   };
+  const prompts: string[] = [];
   const storage = new Map<string, unknown>();
   const context: CanvasToolContext<Review> & CanvasActionContext<Review> = {
     conversationId: "e2e",
@@ -158,7 +166,7 @@ export async function startHarness(sourceTarget: string | null, { mirador }: { m
       changed();
       return item;
     },
-    prompt: async () => {},
+    prompt: async (text) => { prompts.push(text); },
     startConversation: async () => {
       throw new Error("The e2e harness has no Mirador profiles; seats are mocks.");
     },
@@ -199,6 +207,10 @@ export async function startHarness(sourceTarget: string | null, { mirador }: { m
   return {
     url: `http://127.0.0.1:${server.port}/`,
     target,
+    review: () => item!.data,
+    setReview: (review) => { context.change(item!.id, { data: review }); },
+    restartHost: () => { host = createCouncilHost({ writeFile: async () => {} }); },
+    prompts,
     async stop() {
       if (item) await Promise.resolve(host.action!(item, { kind: "stop" }, context)).catch(() => {});
       await server.stop(true);
