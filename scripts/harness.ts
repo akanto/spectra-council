@@ -6,6 +6,8 @@
  *   bun run harness [target] [--port 4830]
  *
  * Open http://127.0.0.1:4830 (add ?theme=dark for Mirador's dark colours). Each page load gets a fresh review.
+ * Only that address (or localhost:<port>) answers: other Host headers are refused, and /socket needs the page's own
+ * Origin and a random per-process token that only the HTML page carries (see harness-auth.ts).
  *
  * A stand-in agent answers "Ask agent to fix": it marks each finding it was asked about fixed, a second apart, with the
  * council's proposed fix as what it changed. Hand-offs are written to .harness/handoff/, not into the target.
@@ -15,12 +17,9 @@ import { basename, join, resolve } from "node:path";
 import type { Review } from "../core/model.ts";
 import type { CanvasActionContext, CanvasToolContext, PluginItem } from "../hosts/mirador/api.ts";
 import { createCouncilHost } from "../hosts/mirador/host.ts";
+import { AUTH_TIMEOUT_MS, hostAllowed, newToken, parseSocketMessage, tokenMatches, upgradeAllowed, type SocketState } from "./harness-auth.ts";
 
 const repo = join(import.meta.dir, "..");
-const args = process.argv.slice(2);
-const portAt = args.indexOf("--port");
-const port = portAt >= 0 ? Number(args[portAt + 1]) : 4830;
-const target = resolve(args.find((arg, index) => !arg.startsWith("--") && !(portAt >= 0 && index === portAt + 1)) ?? repo);
 
 const handoffs = join(repo, ".harness", "handoff");
 const host = createCouncilHost({
@@ -64,10 +63,16 @@ let nextItem = 1;
 /** The plugin's storage, shared by the pages: profiles "seated before", so the setup offers them. */
 const storage = new Map<string, unknown>([["seatedProfiles", ["Home", "pi home"]]]);
 
+interface SocketData {
+  canvas: Canvas;
+  state: SocketState;
+  authTimer: ReturnType<typeof setTimeout> | null;
+}
+
 /** One page's canvas: its items, and the socket to tell about each change. */
 class Canvas {
   items: PluginItem<Review>[] = [];
-  socket: Bun.ServerWebSocket<{ canvas: Canvas }> | null = null;
+  socket: Bun.ServerWebSocket<SocketData> | null = null;
 
   private push(item: PluginItem<Review>) {
     this.socket?.send(JSON.stringify({ kind: "item", item }));
@@ -117,7 +122,7 @@ const DARK = {
   "--mirador-code-bg": "#232428",
 };
 
-const page = (dark: boolean) => `<!doctype html>
+const page = (dark: boolean, token: string) => `<!doctype html>
 <html><head><meta charset="utf-8"><title>Spectra Council harness</title>
 <style>${dark ? `:root{color-scheme:dark;${Object.entries(DARK).map(([name, value]) => `${name}:${value}`).join(";")}}` : ":root{color-scheme:light}"}</style>
 <script>
@@ -131,7 +136,15 @@ const page = (dark: boolean) => `<!doctype html>
     if (message.kind === "item") { latest = message.item; for (const listener of listeners) listener(latest, { seenAgentEditAt: null, imagesFromOtherSites: false }); }
     if (message.kind === "reply") { const w = waiting.get(message.requestId); waiting.delete(message.requestId); message.problem ? w.reject(new Error(message.problem)) : w.resolve(message.reply); }
   };
-  const ready = new Promise((resolve) => (socket.onopen = resolve));
+  const token = ${JSON.stringify(token)};
+  // The bridge is ready once the host has authenticated this page and opened its review.
+  const ready = new Promise((resolve, reject) => {
+    socket.onopen = () => socket.send(JSON.stringify({ kind: "auth", token }));
+    socket.onclose = () => reject(new Error("The harness closed the socket"));
+    socket.onerror = () => reject(new Error("The harness socket failed"));
+    socket.addEventListener("message", (event) => { if (JSON.parse(event.data).kind === "ready") resolve(); });
+  });
+  ready.catch(() => {});
   window.mirador = {
     onItem(listener) { listeners.add(listener); if (latest) listener(latest, { seenAgentEditAt: null, imagesFromOtherSites: false }); return () => listeners.delete(listener); },
     async send(action) { await ready; const requestId = next++; return new Promise((resolve, reject) => { waiting.set(requestId, { resolve, reject }); socket.send(JSON.stringify({ requestId, action })); }); },
@@ -142,44 +155,87 @@ const page = (dark: boolean) => `<!doctype html>
 })();
 </script></head><body><script type="module" src="/view.js"></script></body></html>`;
 
-Bun.serve<{ canvas: Canvas }>({
-  hostname: "127.0.0.1",
-  port,
-  async fetch(request, server) {
-    const url = new URL(request.url);
-    if (url.pathname === "/socket") {
-      if (server.upgrade(request, { data: { canvas: new Canvas() } })) return undefined;
-      return new Response("Expected a WebSocket", { status: 400 });
-    }
-    if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
-    if (url.pathname === "/view.js") return new Response(Bun.file(join(repo, "dist", "view.js")), { headers: { "content-type": "text/javascript" } });
-    if (url.pathname === "/") return new Response(page(url.searchParams.get("theme") === "dark"), { headers: { "content-type": "text/html" } });
-    return new Response("Not found", { status: 404 });
-  },
-  websocket: {
-    async open(socket) {
-      const canvas = socket.data.canvas;
-      canvas.socket = socket;
-      await host.tools.council_open!.run({ target, profile: "architecture", agents: ["mock-codex", "mock-claude"] }, canvas.context());
-    },
-    // A closed page stops its review, as nothing will show it any more.
-    async close(socket) {
-      const canvas = socket.data.canvas;
-      canvas.socket = null;
-      for (const item of canvas.items) await Promise.resolve(host.action!(item, { kind: "stop" }, canvas.context())).catch(() => {});
-    },
-    async message(socket, raw) {
-      const { requestId, action } = JSON.parse(String(raw)) as { requestId: number; action: unknown };
-      const canvas = socket.data.canvas;
-      const item = canvas.items.at(-1)!;
-      try {
-        const reply = await host.action!(item, action, canvas.context());
-        socket.send(JSON.stringify({ kind: "reply", requestId, reply: reply ?? null }));
-      } catch (error) {
-        socket.send(JSON.stringify({ kind: "reply", requestId, problem: error instanceof Error ? error.message : String(error) }));
-      }
-    },
-  },
-});
+export interface RunningHarness {
+  port: number;
+  stop(): Promise<void>;
+}
 
-console.log(`Spectra Council harness on http://127.0.0.1:${port}, reviewing ${target}`);
+/** Starts the harness on 127.0.0.1 (port 0 picks a free one) reviewing `target`. */
+export function startHarness({ target, port }: { target: string; port: number }): RunningHarness {
+  const token = newToken();
+  const refuse = () => new Response("Forbidden", { status: 403, headers: { "cache-control": "no-store" } });
+
+  const server = Bun.serve<SocketData>({
+    hostname: "127.0.0.1",
+    port,
+    async fetch(request, server) {
+      // Every request, the HTML bootstrap included, must name the harness's own authority (defeats DNS rebinding).
+      if (!hostAllowed(request.headers.get("host"), server.port!)) return refuse();
+      const url = new URL(request.url);
+      if (url.pathname === "/socket") {
+        if (!upgradeAllowed(request.headers, server.port!)) return refuse();
+        if (server.upgrade(request, { data: { canvas: new Canvas(), state: "unauthenticated", authTimer: null } satisfies SocketData })) return undefined;
+        return new Response("Expected a WebSocket", { status: 400 });
+      }
+      if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
+      if (url.pathname === "/view.js") return new Response(Bun.file(join(repo, "dist", "view.js")), { headers: { "content-type": "text/javascript" } });
+      if (url.pathname === "/") {
+        return new Response(page(url.searchParams.get("theme") === "dark", token), { headers: { "content-type": "text/html", "cache-control": "no-store" } });
+      }
+      return new Response("Not found", { status: 404 });
+    },
+    websocket: {
+      // A socket has AUTH_TIMEOUT_MS to send the token; no review exists until it does.
+      open(socket) {
+        socket.data.authTimer = setTimeout(() => socket.close(1008, "Authentication timed out"), AUTH_TIMEOUT_MS);
+      },
+      // A closed page stops its review, as nothing will show it any more.
+      async close(socket) {
+        if (socket.data.authTimer) clearTimeout(socket.data.authTimer);
+        const canvas = socket.data.canvas;
+        canvas.socket = null;
+        for (const item of canvas.items) await Promise.resolve(host.action!(item, { kind: "stop" }, canvas.context())).catch(() => {});
+      },
+      async message(socket, raw) {
+        const data = socket.data;
+        const message = parseSocketMessage(raw);
+        if (!message) return void socket.close(1008, "Malformed message");
+        if (data.state === "unauthenticated") {
+          if (message.kind !== "auth" || !tokenMatches(message.token, token)) return void socket.close(1008, "Not authenticated");
+          if (data.authTimer) clearTimeout(data.authTimer);
+          data.authTimer = null;
+          data.state = "opening";
+          data.canvas.socket = socket;
+          try {
+            await host.tools.council_open!.run({ target, profile: "architecture", agents: ["mock-codex", "mock-claude"] }, data.canvas.context());
+          } catch (error) {
+            console.error(`[harness] could not open the review: ${error instanceof Error ? error.message : error}`);
+            return void socket.close(1011, "Could not open the review");
+          }
+          data.state = "ready";
+          socket.send(JSON.stringify({ kind: "ready" }));
+          return;
+        }
+        // Actions only once the review is open; an auth message after that is a protocol error.
+        if (data.state !== "ready" || message.kind !== "action") return void socket.close(1008, "Unexpected message");
+        const item = data.canvas.items.at(-1)!;
+        try {
+          const reply = await host.action!(item, message.action, data.canvas.context());
+          socket.send(JSON.stringify({ kind: "reply", requestId: message.requestId, reply: reply ?? null }));
+        } catch (error) {
+          socket.send(JSON.stringify({ kind: "reply", requestId: message.requestId, problem: error instanceof Error ? error.message : String(error) }));
+        }
+      },
+    },
+  });
+  return { port: server.port!, stop: () => server.stop(true) };
+}
+
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  const portAt = args.indexOf("--port");
+  const port = portAt >= 0 ? Number(args[portAt + 1]) : 4830;
+  const target = resolve(args.find((arg, index) => !arg.startsWith("--") && !(portAt >= 0 && index === portAt + 1)) ?? repo);
+  const running = startHarness({ target, port });
+  console.log(`Spectra Council harness on http://127.0.0.1:${running.port}, reviewing ${target}`);
+}

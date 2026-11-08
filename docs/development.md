@@ -25,6 +25,14 @@ bun run e2e                           # build, then a mock review in Chrome and 
 bun run api-compat                    # hosts/mirador/api.ts against Mirador's plugin API types
 ```
 
+The harness binds 127.0.0.1 only, and its canonical address is `http://127.0.0.1:<port>` (`localhost:<port>` works
+too; any other Host header gets a 403, which also defeats DNS rebinding). A page's socket must come from that exact
+Origin and send a random 256-bit token as its first message. The token is made when the harness starts, lasts until
+it stops, and is only in the HTML page (served `Cache-Control: no-store`, never in a URL or a log). The review is
+opened only after the token checks out; a socket that sends anything else first, a malformed message, or nothing within
+5 seconds is closed. Proxies and clients without an Origin are refused. Open the page in a browser rather than
+connecting to `/socket` yourself (`scripts/screenshots.ts` does).
+
 `bun run e2e` needs Chrome, and WebKit (`bunx playwright-core install webkit`) with Mirador's
 `shared/canvas-document.ts` for the framed run: the installed app's, or `MIRADOR_CANVAS`. A setup that can't run is
 skipped. Screenshots go to `.harness/e2e/`. `bun run api-compat` reads Mirador's `shared/` from `MIRADOR_SHARED`,
