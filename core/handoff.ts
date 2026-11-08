@@ -153,8 +153,9 @@ export function handoffMarkdown(review: Review): string {
     }
 
     const fix = finding.fix;
-    if (fix) {
-      out.push("### Fix status", "", `State: ${fix.state}.`);
+    // Handed off with nothing reported or checked yet says nothing; handed off again after a reopening is still "reopened".
+    if (fix && (fix.state !== "handed-off" || fix.summary || fix.checks.length > 0)) {
+      out.push("### Fix status", "", `State: ${fix.state === "handed-off" && fix.checks.length > 0 ? "reopened" : fix.state}.`);
       if (fix.summary) out.push(`Reported change: ${oneLine(fix.summary)}`);
       if (fix.files.length > 0) out.push(`Files changed: ${fix.files.map((file) => `\`${file}\``).join(", ")}`);
       out.push("");
@@ -181,4 +182,18 @@ export function handoffMarkdown(review: Review): string {
   }
 
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+/** A short digest of the hand-off text (cyrb53), to tell whether the file on disk is stale. */
+export function digestOf(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }

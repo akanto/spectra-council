@@ -14,7 +14,7 @@ import { isProfileAgent, profileAgent, profileName, runnerKindOf, type ProfileIn
 import { describeReview, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
-import { acceptedFindings, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
+import { acceptedFindings, digestOf, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
 import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
@@ -458,16 +458,19 @@ export function createCouncilHost({
     if (accepted.length === 0) throw new Error("Accept at least one finding before writing the hand-off.");
     const path = await handoffPath(review);
     const event: ReviewEvent = { type: "handoff-written", at: clock.now(), path, findingIds: accepted.map(({ id }) => id) };
-    await writeFile(path, handoffMarkdown(reduceOrSay(review, event)));
+    const text = handoffMarkdown(reduceOrSay(review, event));
+    await writeFile(path, text);
     // Recorded on the review as it is now: the agent may have reported a fix or a ticket while the file was written.
-    return applyTo(item, context, event);
+    return applyTo(item, context, { ...event, digest: digestOf(text) });
   }
 
   /** The review with a hand-off of exactly its accepted findings: the one written, or a new one if it is missing or stale. */
   async function currentHandoff(item: PluginItem<Review>, context: CanvasPluginContext<Review>): Promise<Review> {
     const review = current(item, context);
     const accepted = acceptedFindings(review).map(({ id }) => id);
-    const upToDate = review.handoff && review.handoff.findingIds.length === accepted.length && accepted.every((id) => review.handoff!.findingIds.includes(id));
+    const sameFindings = review.handoff && review.handoff.findingIds.length === accepted.length && accepted.every((id) => review.handoff!.findingIds.includes(id));
+    // The file is stale when its text would differ now: a fix report, a reopening, a changed ruling note, a new dismissal.
+    const upToDate = sameFindings && review.handoff!.digest === digestOf(handoffMarkdown(review));
     return upToDate ? review : writeHandoff(item, context);
   }
 

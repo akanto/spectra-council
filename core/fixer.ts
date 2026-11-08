@@ -50,7 +50,7 @@ export const ASK_REPORT_EXAMPLE = `\`\`\`json
 export function fixerPrompt(review: Review, findingIds: string[], handoffPath: string): string {
   const titles = findingIds.map((id) => {
     const finding = review.findings.find((each) => each.id === id);
-    const reopened = finding?.fix?.state === "reopened" ? " (fixed before, reopened by the council's re-check)" : "";
+    const reopened = finding?.fix?.checks.some((check) => check.outcome === "reopened") ? " (fixed before, reopened by the council's re-check)" : "";
     return `- ${id}: ${finding?.title ?? "?"}${reopened}`;
   });
   return [

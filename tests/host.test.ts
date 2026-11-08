@@ -400,6 +400,34 @@ describe("the Mirador host", () => {
       void canvas;
     });
 
+    test("fix after a reopening rewrites the hand-off with the re-check feedback and keeps the warning", async () => {
+      const env = await completed();
+      const { host, context, clock, review, act, canvas, written } = env;
+      const ids = standing(review()).map(({ id }) => id);
+      for (const findingId of ids) await act({ kind: "rule", findingId, decision: "accepted" });
+      await act({ kind: "fix" });
+      await act({ kind: "fix" });
+      expect(written).toHaveLength(1);
+      for (const id of ids) await host.tools.council_mark_fixed!.run({ finding: id, summary: "done", files: ["src/a.ts"] }, context);
+      await act({ kind: "verify" });
+      await clock.step();
+      await clock.runAll();
+      await clock.settle();
+      const reopened = review().findings.filter((it) => it.fix?.state === "reopened");
+      expect(reopened.length).toBeGreaterThan(0);
+      const before = written.length;
+      await act({ kind: "fix" });
+      expect(written).toHaveLength(before + 1);
+      const text = written.at(-1)!.text;
+      expect(text).toContain("### Fix status");
+      expect(text).toContain("What was wrong with it:");
+      for (const finding of reopened) expect(text).toContain(finding.fix!.checks.find((check) => check.outcome === "reopened")!.text);
+      // Asked again with nothing changed, the file stays as it is.
+      await act({ kind: "fix" });
+      expect(written).toHaveLength(before + 1);
+      void canvas;
+    });
+
     test("stopping a verification round returns to complete with the fixes unsettled", async () => {
       const env = await completed();
       const ids = standing(env.review()).map(({ id }) => id);

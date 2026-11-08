@@ -8,9 +8,10 @@ function review(): Review {
     id: "rev7",
     target: "/repo",
     findings: [
-      { id: "F1", title: "Off by one", fix: { state: "handed-off" } },
-      { id: "F2", title: "Race in cache", fix: { state: "reopened" } },
+      { id: "F1", title: "Off by one", fix: { state: "handed-off", checks: [] } },
+      { id: "F2", title: "Race in cache", fix: { state: "reopened", checks: [{ outcome: "reopened" }] } },
       { id: "F3", title: "Leaky handle", fix: null },
+      { id: "F4", title: "Asked again", fix: { state: "handed-off", checks: [{ outcome: "reopened" }] } },
     ],
   } as unknown as Review;
 }
@@ -26,6 +27,10 @@ describe("fixerPrompt", () => {
     expect(text).not.toContain("Leaky handle");
     expect(text).toContain("/repo/.spectra-council/review-rev7.md");
     expect(text.indexOf("F2:")).toBeLessThan(text.indexOf("F1:"));
+  });
+
+  test("a finding handed off again after a reopening keeps the warning", () => {
+    expect(fixerPrompt(review(), ["F4"], "/x.md")).toContain("reopened by the council");
   });
 
   test("it marks only the reopened findings", () => {

@@ -209,6 +209,8 @@ export interface Handoff {
   path: string;
   findingIds: string[];
   at: number;
+  /** A digest of the Markdown written, to tell whether the file is stale; missing in reviews stored before it. */
+  digest?: string;
 }
 
 /** What the user decided to do about a finding after the verdict: accepted, dismissed or deferred. */

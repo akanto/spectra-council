@@ -101,7 +101,7 @@ export type ReviewEvent =
    */
   | { type: "ruled"; at: number; findingId: string; decision: Decision | null; note: string }
   /** The hand-off document of these (accepted) findings was written to `path`. */
-  | { type: "handoff-written"; at: number; path: string; findingIds: string[] }
+  | { type: "handoff-written"; at: number; path: string; findingIds: string[]; digest?: string }
   /** The agent was asked to fix these accepted findings, by the hand-off: this conversation's, or another profile's. */
   | { type: "fix-requested"; at: number; findingIds: string[]; profile?: string }
   /** A conversation was started on the fixer's profile to fix these findings. */
@@ -436,7 +436,7 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (review.phase !== "complete" || !review.verdict) throw new ReviewError(`A hand-off is written once the council has its verdict; the review is ${review.phase}.`);
       if (event.findingIds.length === 0) throw new ReviewError("Accept at least one finding before writing the hand-off.");
       for (const id of event.findingIds) if (findingOf(review, id).ruling?.decision !== "accepted") throw new ReviewError(`${id} isn't accepted.`);
-      return { ...review, handoff: { path: event.path, findingIds: event.findingIds, at: event.at } };
+      return { ...review, handoff: { path: event.path, findingIds: event.findingIds, at: event.at, ...(event.digest ? { digest: event.digest } : {}) } };
     }
     case "fix-requested": {
       if (review.phase !== "complete") throw new ReviewError(`Fixes are asked for once the review is complete; it is ${review.phase}.`);
