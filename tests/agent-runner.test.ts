@@ -257,7 +257,7 @@ describe("AgentRunner turn identities", () => {
     const beta = conversations.prompts.filter((each) => each.profile === "beta" && !isDeliberation(each.prompt)).map((each) => JSON.parse(each.turn!));
     expect(beta).toEqual([
       ["rev", "r2", "review", "ask"],
-      ["rev", "r2", "review", "repair"],
+      ["rev", "r2", "review", "repair", "Nothing to report."],
     ]);
   });
 

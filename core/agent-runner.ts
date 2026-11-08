@@ -108,7 +108,9 @@ export class AgentRunner implements ReviewerRunner {
    */
   async #turn<S extends z.ZodType>(job: ReviewerJob, report: Reporter, signal: AbortSignal, task: string[], what: string, prompt: string, schema: S, apply: (reply: z.infer<S>) => string) {
     const profile = profileName(job.reviewer.agent);
-    const turn = (attempt: string) => JSON.stringify([job.review.id, job.reviewer.id, ...task, attempt]);
+    // A repair also names the reply it repairs: after a restart the first ask is asked anew, and its new reply must not
+    // take over the repair of the old one.
+    const turn = (attempt: string, repairing?: string) => JSON.stringify([job.review.id, job.reviewer.id, ...task, attempt, ...(repairing === undefined ? [] : [repairing])]);
     report({ type: "activity", kind: "status", text: `Asking the ${profile} profile ${what}` });
     let reply = await this.#ask(profile, prompt, turn("ask"), report, signal);
     if (reply.ended !== "finished") throw new Error(reply.ended === "failed" ? "Its conversation failed" : "Its conversation was stopped");
@@ -118,7 +120,7 @@ export class AgentRunner implements ReviewerRunner {
       const problem = jsonProblem(reply.text, schema);
       const short = problem.length > PROBLEM_LENGTH ? `${problem.slice(0, PROBLEM_LENGTH - 1).trimEnd()}…` : problem;
       report({ type: "activity", kind: "error", text: `Its reply had no valid JSON block (${short}); asking again` });
-      const again = await this.#ask(profile, repairPrompt(prompt, reply.text ?? "", problem), turn("repair"), report, signal);
+      const again = await this.#ask(profile, repairPrompt(prompt, reply.text ?? "", problem), turn("repair", reply.text ?? ""), report, signal);
       if (again.ended !== "finished") throw new Error(`Its reply had no valid JSON block (${short}), and the follow-up conversation ${again.ended === "failed" ? "failed" : "was stopped"}`);
       parsed = lastJson(again.text, schema);
       if (parsed === null) throw new Error(`Its reply had no valid JSON block, twice: ${jsonProblem(again.text, schema)}`);
