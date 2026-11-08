@@ -268,6 +268,18 @@ describe("reviewPrompt", () => {
     expect(prompt).toContain("Report at most 6 findings");
     expect(prompt).not.toContain("Standard depth");
   });
+
+  test("asks for plain-language findings: impact first, one defect each, scenario as steps, Markdown subset", () => {
+    const review = fresh();
+    const prompt = reviewPrompt({ review, reviewer: review.reviewers[0]!, profile: PROFILES.code });
+    expect(prompt).toContain("Summary, first sentence: the impact in plain language");
+    expect(prompt).toContain("One defect per finding");
+    expect(prompt).toContain("short bullet list of steps");
+    expect(prompt).toContain("no headings, tables, code blocks or HTML");
+    expect(prompt).toContain("write each line break as \\n");
+    // The schema descriptions the agent sees say the same.
+    expect(prompt).toContain("Open with ONE plain-language sentence of the impact");
+  });
 });
 
 describe("host", () => {

@@ -3,6 +3,7 @@ import { useContext, useEffect, useRef, useState } from "react";
 import { isRunning, isRulable, type Finding, type Review } from "../core/model.ts";
 import type { Decision, ViewAction } from "../core/schemas.ts";
 import { cx, FIX_WORDS, FixerContext } from "./ui.tsx";
+import { Markdown } from "./Markdown.tsx";
 
 type Act = (action: ViewAction) => void;
 type OpenPath = ((path: string) => void) | undefined;
@@ -54,11 +55,13 @@ export function ProposalBlock({ review, finding, openPath }: { review: Review; f
       <h3>
         Proposed fix <span className="muted proposal-by">drafted by {drafter}</span>
       </h3>
-      <p className="proposal-summary">{proposal.summary}</p>
+      <Markdown className="proposal-summary" review={review} text={proposal.summary} {...(openPath ? { openPath } : {})} />
       {proposal.steps.length > 0 && (
         <ol className="proposal-steps">
           {proposal.steps.map((step, index) => (
-            <li key={index}>{step}</li>
+            <li key={index}>
+              <Markdown inline review={review} text={step} {...(openPath ? { openPath } : {})} />
+            </li>
           ))}
         </ol>
       )}
@@ -72,12 +75,12 @@ export function ProposalBlock({ review, finding, openPath }: { review: Review; f
       )}
       <p>
         <strong>Verify: </strong>
-        {proposal.verification}
+        <Markdown inline review={review} text={proposal.verification} {...(openPath ? { openPath } : {})} />
       </p>
       {proposal.risks && (
         <p>
           <strong>Risks: </strong>
-          {proposal.risks}
+          <Markdown inline review={review} text={proposal.risks} {...(openPath ? { openPath } : {})} />
         </p>
       )}
     </section>
@@ -138,7 +141,7 @@ function FixStatus({ review, finding, openPath, act, busy }: { review: Review; f
           <span className="muted"> · “Ask … to fix” in the action plan hands it over again.</span>
         </p>
       )}
-      {fix.summary ? <p>{fix.summary}</p> : <p className="muted">Waiting for the agent to report the fix.</p>}
+      {fix.summary ? <Markdown review={review} text={fix.summary} {...(openPath ? { openPath } : {})} /> : <p className="muted">Waiting for the agent to report the fix.</p>}
       {fix.files.length > 0 && (
         <p className="proposal-files">
           <span className="muted">Changed </span>
@@ -156,7 +159,7 @@ function FixStatus({ review, finding, openPath, act, busy }: { review: Review; f
                 <span className={cx("badge", `fix-${check.outcome}`)}>{check.outcome}</span>
                 <span className="muted">re-check {check.pass}</span>
               </span>
-              <span>{check.text}</span>
+              <Markdown inline review={review} text={check.text} {...(openPath ? { openPath } : {})} />
             </li>
           ))}
         </ul>

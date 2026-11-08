@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
-import { acceptedFindings, handoffFile, handoffMarkdown } from "../core/handoff.ts";
+import { acceptedFindings, handoffFile, handoffMarkdown, prose } from "../core/handoff.ts";
 import type { Review } from "../core/model.ts";
 import { newReview, reduce, type ReviewEvent } from "../core/review.ts";
 import type { FindingInput } from "../core/schemas.ts";
@@ -152,4 +152,19 @@ test("accepted uncorroborated reports use recommendations and exclude dismissed 
   expect(md).toContain("council status: reported");
   expect(md).not.toContain("## F2:");
   expect(md).not.toContain("## F3:");
+});
+
+describe("prose", () => {
+  test("keeps paragraphs and lists, and can't open a heading or a tag", () => {
+    expect(prose("Impact first.\n\n\n\nCause:\n- step one\n- step two  ")).toBe("Impact first.\n\nCause:\n- step one\n- step two");
+    expect(prose("# Not a heading\n<script>x</script>")).toBe("\\# Not a heading\n&lt;script>x&lt;/script>");
+  });
+
+  test("code stays verbatim; rules, setext underlines and open fences can't break the document", () => {
+    expect(prose("Uses `Array<string>` and `a < b`, not <b>")).toBe("Uses `Array<string>` and `a < b`, not &lt;b>");
+    expect(prose("Impact.\n---\nmore\n=====")).toBe("Impact.\n\\---\nmore\n\\=====");
+    expect(prose("Example:\n```ts\n# comment\nconst a = b < c;\n```")).toBe("Example:\n```ts\n# comment\nconst a = b < c;\n```");
+    expect(prose("Example:\n```ts\nfoo()")).toBe("Example:\n```ts\nfoo()\n```");
+    expect(prose("- a list item stays")).toBe("- a list item stays");
+  });
 });

@@ -56,20 +56,41 @@ function ending(what: string, shape: string, itemName: string, schema: z.ZodType
 const evidenceLine = (e: Evidence) => `${e.path}${e.line ? `:${e.line}${e.endLine ? `-${e.endLine}` : ""}` : ""}${e.quote ? ` "${e.quote}"` : ""}${e.note ? ` (${e.note})` : ""}`;
 const evidenceText = (evidence: Evidence[]) => (evidence.length === 0 ? "none" : evidence.map(evidenceLine).join("; "));
 
+/** Multi-line text (Markdown paragraphs and lists) indented under its label, with no blank lines inside an item. */
+const indented = (text: string, by: string) => text.trim().replace(/\n\s*\n/g, "\n").replace(/\n/g, `\n${by}`);
+
 function findingText(finding: Finding, review: Review): string {
   return [
     `${finding.id} reported by ${finding.reviewerId}: ${finding.title}`,
     `  severity ${finding.severity}, confidence ${finding.confidence}, category ${finding.category}`,
-    `  summary: ${finding.summary}`,
+    `  summary: ${indented(finding.summary, "    ")}`,
     `  evidence: ${evidenceText(finding.evidence)}`,
-    ...(finding.recommendation ? [`  recommendation: ${finding.recommendation}`] : []),
+    ...(finding.recommendation ? [`  recommendation: ${indented(finding.recommendation, "    ")}`] : []),
   ].join("\n");
 }
 
-const argumentText = (a: Argument) =>
-  `${a.id} [round ${a.round}] ${a.reviewerId} on ${a.findingId}, ${a.stance} (${a.confidence})${a.replyTo ? `, replying to ${a.replyTo}` : ""}: ${a.text}${a.evidence.length > 0 ? ` Evidence: ${evidenceText(a.evidence)}` : ""}`;
+const argumentText = (a: Argument, by = "  ") =>
+  `${a.id} [round ${a.round}] ${a.reviewerId} on ${a.findingId}, ${a.stance} (${a.confidence})${a.replyTo ? `, replying to ${a.replyTo}` : ""}: ${indented(a.text, by)}${a.evidence.length > 0 ? `\n${by}Evidence: ${evidenceText(a.evidence)}` : ""}`;
 
 const findingsById = (review: Review, ids: string[]) => ids.flatMap((id) => review.findings.filter((finding) => finding.id === id));
+
+/**
+ * How a finding should read: people who never saw the code rule on it, so it leads with the impact in plain words, keeps
+ * one defect per finding, and uses the Markdown subset the view renders.
+ */
+export const WRITING_FINDINGS = [
+  "How to write each finding (a person who doesn't know the code reads it and decides what to do):",
+  bullets([
+    "Title: the problem as the user would notice it, in a few plain words, not a function name.",
+    "Summary, first sentence: the impact in plain language: what goes wrong for the user or the system, and when. No code names in it.",
+    "Then, after a blank line, the cause in a few short sentences; put code names in `backticks` and only where they help. The full file and line details go in the evidence; in the text, cite a place as path:line only where it helps the reader.",
+    "Where it helps, the scenario as a short bullet list of steps that ends in the wrong result.",
+    "One defect per finding. If you found several problems, report each as its own finding; don't chain them with \"Moreover\" or \"Also\".",
+    "Recommendation: the fix in a sentence or a short bullet list.",
+    "Formatting: Markdown with inline `code`, **bold**, paragraphs and - bullet lists only; no headings, tables, code blocks or HTML. Cite places as path:line, e.g. src/server.ts:42.",
+    "Inside the JSON strings, write each line break as \\n (a raw line break makes the JSON unreadable).",
+  ]),
+].join("\n");
 
 export function reviewPrompt(job: ReviewerJob): string {
   const task = [
@@ -79,8 +100,8 @@ export function reviewPrompt(job: ReviewerJob): string {
   const example = {
     findings: [
       {
-        title: "Unchecked result of the parser",
-        summary: "parse() can return null on bad input, and the caller dereferences it, so a malformed file crashes the server.",
+        title: "A malformed upload crashes the server",
+        summary: "Uploading a file that doesn't parse takes the whole server down instead of rejecting the upload.\n\n`parse()` returns null on bad input, and the upload handler uses the result without checking it:\n\n- POST a truncated JSON file to /upload\n- the handler reads `doc.id` on null and throws\n- the process exits",
         severity: "high",
         confidence: "medium",
         category: job.profile.categories[0] ?? "correctness",
@@ -89,7 +110,7 @@ export function reviewPrompt(job: ReviewerJob): string {
       },
     ],
   };
-  return [header(job, "Review"), task, ending("your findings", '{ "findings": [ ... ] }', "finding", findingInputSchema, example)].join("\n\n");
+  return [header(job, "Review"), task, WRITING_FINDINGS, ending("your findings", '{ "findings": [ ... ] }', "finding", findingInputSchema, example)].join("\n\n");
 }
 
 export function groupingPrompt(job: ReviewerJob): string {
@@ -128,6 +149,7 @@ export function deliberationPrompt(job: DeliberationJob): string {
       "concede your own finding if you no longer support it (stance \"challenges\" or \"uncertain\" on your own finding).",
     ]),
     "Don't repeat arguments already made. An empty list is fine if you have nothing to add.",
+    "Write each argument so someone who doesn't know the code can follow it: your conclusion first in one plain sentence, then what you checked. Markdown with inline `code`, **bold** and - bullets only, no code blocks; cite places as path:line. Inside the JSON strings, write each line break as \\n.",
   ].join("\n");
   const example = {
     arguments: [
@@ -135,7 +157,7 @@ export function deliberationPrompt(job: DeliberationJob): string {
         findingId: review.findings.find((finding) => !mine(finding))?.id ?? "F1",
         stance: "challenges",
         confidence: "medium",
-        text: "The caller already validates the input two lines above, so the null case cannot happen.",
+        text: "This can't happen in practice: the caller already rejects an empty body two lines above (src/server.ts:40), so `parse()` never sees bad input.",
         evidence: [{ path: "src/server.ts", line: 40, quote: "if (!body) return reply(400)" }],
         replyTo: review.arguments[0]?.id ?? undefined,
       },
@@ -145,7 +167,7 @@ export function deliberationPrompt(job: DeliberationJob): string {
     header(job, `Deliberation ${round}/${rounds}`),
     task,
     `Findings:\n${findingBlocks.join("\n\n")}`,
-    `Arguments so far:\n${review.arguments.length === 0 ? "none" : review.arguments.map(argumentText).join("\n")}`,
+    `Arguments so far:\n${review.arguments.length === 0 ? "none" : review.arguments.map((a) => argumentText(a)).join("\n")}`,
     ending("your arguments", '{ "arguments": [ ... ] }', "argument", argumentInputSchema, example),
   ].join("\n\n");
 }
@@ -159,7 +181,7 @@ export function proposalPrompt(job: ProposalJob): string {
     return [
       findingText(finding, review),
       `  council: ${res ? `${res.status}. ${res.rationale}` : "not settled"}${names ? ` Dissenters: ${names}.` : ""}`,
-      ...(minority.length > 0 ? [`  minority report (standing challenges):\n${minority.map((a) => `    ${argumentText(a)}`).join("\n")}`] : []),
+      ...(minority.length > 0 ? [`  minority report (standing challenges):\n${minority.map((a) => `    ${argumentText(a, "      ")}`).join("\n")}`] : []),
     ].join("\n");
   });
   const task = [

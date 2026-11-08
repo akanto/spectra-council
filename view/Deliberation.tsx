@@ -5,27 +5,11 @@ import { argumentsOn, isStanding, type Argument, type Finding, type Resolution, 
 import type { FindingStatus } from "../core/model.ts";
 import type { Evidence, ViewAction } from "../core/schemas.ts";
 import { FindingEvidence } from "./Findings.tsx";
+import { Markdown } from "./Markdown.tsx";
 import { ActionPlan, ProposalBlock, RulingControl } from "./Actions.tsx";
 import { AlsoMark, AlsoReported, ConfidenceMeter, cx, mergedInto, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, StanceBadge, VerdictBanner } from "./ui.tsx";
 
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
-
-/** Text in which finding ids like "F6" that exist in the review become buttons selecting that finding. */
-function LinkedText({ review, text, select }: { review: Review; text: string; select(id: string): void }) {
-  const parts: ReactNode[] = [];
-  const merged = mergedInto(review);
-  text.split(/(\bF\d+\b)/).forEach((part, index) => {
-    const target = index % 2 === 1 ? (review.findings.some((finding) => finding.id === part) ? part : merged.get(part)) : undefined;
-    if (target) {
-      parts.push(
-        <button key={index} className="link finding-ref" title={target === part ? undefined : `${part} was merged into ${target}`} onClick={() => select(target)}>
-          {part}
-        </button>,
-      );
-    } else parts.push(<Fragment key={index}>{part}</Fragment>);
-  });
-  return <>{parts}</>;
-}
 
 /** Scroll to an argument and flash it, so "answering A42" shows what it answers. */
 function jumpToArgument(id: string) {
@@ -62,9 +46,7 @@ function ArgumentItem({ review, argument, openPath, select }: { review: Review; 
           {parent ? ` (${label(parent.reviewerId)})` : ""}
         </div>
       )}
-      <p>
-        <LinkedText review={review} text={argument.text} select={select} />
-      </p>
+      <Markdown review={review} text={argument.text} select={select} {...(openPath ? { openPath } : {})} />
       {argument.evidence.length > 0 && (
         <ul className="evidence">
           {argument.evidence.map((evidence, index) => (
@@ -90,7 +72,7 @@ function ArgumentItem({ review, argument, openPath, select }: { review: Review; 
  * core from their latest challenge, which the argument id jumps to). Reviews settled before the reasons were kept show
  * the names and the rationale.
  */
-function MinorityReport({ review, resolution, select }: { review: Review; resolution: Resolution; select(id: string): void }) {
+function MinorityReport({ review, resolution, select, openPath }: { review: Review; resolution: Resolution; select(id: string): void; openPath?: ((path: string) => void) | undefined }) {
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
   const dissent = resolution.dissent ?? [];
   const silent = resolution.dissenters.filter((id) => !dissent.some((each) => each.reviewerId === id));
@@ -103,7 +85,7 @@ function MinorityReport({ review, resolution, select }: { review: Review; resolu
             {resolution.dissenters.map(label).join(", ") || "A reviewer"} still challenge{resolution.dissenters.length === 1 ? "s" : ""} this finding.
           </p>
           <p>
-            <LinkedText review={review} text={resolution.rationale} select={select} />
+            <Markdown inline review={review} text={resolution.rationale} select={select} />
           </p>
         </>
       ) : (
@@ -111,7 +93,7 @@ function MinorityReport({ review, resolution, select }: { review: Review; resolu
           {dissent.map((each) => (
             <li key={each.reviewerId}>
               <strong>{label(each.reviewerId)}</strong> still challenges it{each.reason ? ": " : "."}
-              {each.reason && <LinkedText review={review} text={each.reason} select={select} />}{" "}
+              {each.reason && <Markdown inline review={review} text={each.reason} select={select} {...(openPath ? { openPath } : {})} />}{" "}
               <button className="link mono argument-jump" title="Show the full argument" onClick={() => jumpToArgument(each.argumentId)}>
                 {each.argumentId}
               </button>
@@ -126,7 +108,7 @@ function MinorityReport({ review, resolution, select }: { review: Review; resolu
       )}
       {dissent.length > 0 && (
         <p className="muted">
-          <LinkedText review={review} text={resolution.rationale} select={select} />
+          <Markdown inline review={review} text={resolution.rationale} select={select} />
         </p>
       )}
     </div>
@@ -169,12 +151,13 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
         )}
       </header>
 
-      {resolution && resolution.status === "disputed" && <MinorityReport review={review} resolution={resolution} select={select} />}
+      {resolution && resolution.status === "disputed" && <MinorityReport review={review} resolution={resolution} select={select} openPath={openPath} />}
+
+      <Markdown className="finding-summary" review={review} text={finding.summary} select={select} {...(openPath ? { openPath } : {})} />
 
       <RulingControl review={review} finding={finding} act={act} busy={busy} openPath={openPath} next={next} />
 
-      <p>{finding.summary}</p>
-      <FindingEvidence finding={finding} openPath={openPath} />
+      <FindingEvidence review={review} finding={finding} openPath={openPath} select={select} />
 
       <h3>Positions</h3>
       <ul className="position-grid">
@@ -206,7 +189,7 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
             Resolution <FindingStatusBadge status={resolution.status} />
           </h4>
           <p>
-            <LinkedText review={review} text={resolution.rationale} select={select} />
+            <Markdown inline review={review} text={resolution.rationale} select={select} />
           </p>
         </div>
       )}

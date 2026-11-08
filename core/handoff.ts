@@ -14,6 +14,38 @@ export const handoffFile = (review: Review) => `.spectra-council/review-${review
 export const acceptedFindings = (review: Review) => review.findings.filter((finding) => finding.ruling?.decision === "accepted").sort(bySeverity);
 
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+/** Outside code spans: "<" can't open a tag. */
+const escapeTags = (line: string) => line.split(/(`+[^`]*`+)/).map((part, index) => (index % 2 === 1 ? part : part.replace(/</g, "&lt;"))).join("");
+
+/**
+ * A reviewer's Markdown kept as Markdown, in a finding's section of the hand-off: paragraphs, lists and code stay, but
+ * nothing in it can break the document's structure. Outside code, a leading "#" (a heading), a line of only "-", "=",
+ * "*" or "_" (a rule, or a setext heading under the line before) is escaped and "<" can't open a tag; a fence left
+ * open is closed. Code spans and fenced blocks stay verbatim. Runs of blank lines shrink to one.
+ */
+export const prose = (text: string) => {
+  const out: string[] = [];
+  let fence: string | null = null;
+  for (const raw of text.replace(/\r\n?/g, "\n").split("\n")) {
+    const line = raw.trimEnd();
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      out.push(line);
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = null;
+      continue;
+    }
+    if (marker) {
+      fence = marker;
+      out.push(line);
+      continue;
+    }
+    const escaped = /^\s*([-=*_])(\s*\1)*\s*$/.test(line) ? line.replace(/^(\s*)/, "$1\\") : line.replace(/^(\s*)#/, "$1\\#");
+    out.push(escapeTags(escaped));
+  }
+  if (fence) out.push(fence);
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+};
+
 const isoDate = (at: number) => new Date(at).toISOString().slice(0, 10);
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -75,7 +107,7 @@ export function handoffMarkdown(review: Review): string {
     out.push(`- Reported by: ${label(finding.reviewerId)}, ${finding.confidence} confidence`);
     if (finding.ruling?.note.trim()) out.push(`- The user's note: ${oneLine(finding.ruling.note)}`);
     out.push("");
-    out.push("### What's wrong", "", oneLine(finding.summary), "");
+    out.push("### What's wrong", "", prose(finding.summary), "");
     const timeline = argumentsOn(review, finding.id);
     if (finding.status === "disputed") {
       out.push("### Minority report", "");
@@ -117,7 +149,7 @@ export function handoffMarkdown(review: Review): string {
       if (proposal.risks) out.push(`Risks: ${oneLine(proposal.risks)}`, "");
     } else {
       out.push("No fix was proposed." + (finding.recommendation ? " The reporting reviewer recommended:" : ""), "");
-      if (finding.recommendation) out.push(oneLine(finding.recommendation), "");
+      if (finding.recommendation) out.push(prose(finding.recommendation), "");
     }
 
     const fix = finding.fix;

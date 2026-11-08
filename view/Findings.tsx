@@ -4,6 +4,7 @@ import { bySeverity } from "../core/describe.ts";
 import { isFinished, isRulable, reportersOf, type Finding, type FindingStatus, type Review } from "../core/model.ts";
 import { SEVERITIES, type Evidence, type Severity, type ViewAction } from "../core/schemas.ts";
 import { ActionPlan, ProposalBlock, RulingControl } from "./Actions.tsx";
+import { Markdown } from "./Markdown.tsx";
 import { AlsoMark, AlsoReported, ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge } from "./ui.tsx";
 
 const rulingOf = (review: Review, finding: Finding) => (!isRulable(review, finding) ? "n/a" : (finding.ruling?.decision ?? "unruled"));
@@ -13,7 +14,7 @@ const RULING_FILTERS = [["accepted", "Accepted"], ["dismissed", "Dismissed"], ["
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
 
 /** The original report, shared by both places where users rule on findings. */
-export function FindingEvidence({ finding, openPath }: { finding: Finding; openPath?: ((path: string) => void) | undefined }) {
+export function FindingEvidence({ review, finding, openPath, select }: { review: Review; finding: Finding; openPath?: ((path: string) => void) | undefined; select?: (id: string) => void }) {
   return (
     <section aria-label="Original evidence and recommendation">
       <h4>Evidence</h4>
@@ -35,7 +36,7 @@ export function FindingEvidence({ finding, openPath }: { finding: Finding; openP
       {finding.recommendation && (
         <>
           <h4>Recommendation</h4>
-          <p>{finding.recommendation}</p>
+          <Markdown review={review} text={finding.recommendation} {...(select ? { select } : {})} {...(openPath ? { openPath } : {})} />
         </>
       )}
     </section>
@@ -67,7 +68,7 @@ function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, o
       {open && (
         <div className="finding-body">
           <RulingControl review={review} finding={finding} act={act} busy={busy} openPath={openPath} next={next} />
-          <p>{finding.summary}</p>
+          <Markdown className="finding-summary" review={review} text={finding.summary} {...(openPath ? { openPath } : {})} />
           <p className="finding-state">
             <FindingStatusBadge status={finding.status} /> <RulingMark finding={finding} /> <FixBadge finding={finding} />
             {openInCouncil && (
@@ -76,7 +77,12 @@ function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, o
               </button>
             )}
           </p>
-          {finding.fix?.summary && <p className="muted">Fix: {finding.fix.summary}{finding.fix.files.length > 0 && ` (${finding.fix.files.join(", ")})`}</p>}
+          {finding.fix?.summary && (
+            <p className="muted">
+              Fix: <Markdown inline review={review} text={finding.fix.summary} {...(openPath ? { openPath } : {})} />
+              {finding.fix.files.length > 0 && ` (${finding.fix.files.join(", ")})`}
+            </p>
+          )}
           <dl className="finding-facts">
             <dt>Category</dt>
             <dd>{finding.category}</dd>
@@ -88,13 +94,13 @@ function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, o
             <dd>{reviewer}</dd>
           </dl>
           <AlsoReported review={review} finding={finding} />
-          <FindingEvidence finding={finding} openPath={openPath} />
+          <FindingEvidence review={review} finding={finding} openPath={openPath} />
           <ProposalBlock review={review} finding={finding} openPath={openPath} />
           {finding.resolution && (
             <>
               <h4>Resolution</h4>
               <p>
-                <FindingStatusBadge status={finding.resolution.status} /> {finding.resolution.rationale}
+                <FindingStatusBadge status={finding.resolution.status} /> <Markdown inline review={review} text={finding.resolution.rationale} />
               </p>
             </>
           )}

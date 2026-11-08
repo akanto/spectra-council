@@ -45,13 +45,18 @@ export type Evidence = z.infer<typeof evidenceSchema>;
 
 /** A finding as a reviewer reports it; the engine gives it its id, reviewer and status. */
 export const findingInputSchema = z.object({
-  title: z.string().min(1).max(160).describe("The problem in a few words."),
-  summary: z.string().min(1).describe("What is wrong and why it matters, in a few sentences."),
+  title: z.string().min(1).max(160).describe("The problem in a few plain words, as the user would notice it, not a code name."),
+  summary: z
+    .string()
+    .min(1)
+    .describe(
+      "Markdown (inline `code`, **bold**, paragraphs, - bullet lists; no HTML). Open with ONE plain-language sentence of the impact: what the user or the system sees go wrong, and when, readable by someone who never saw the code. Then a blank line and the cause in a few short sentences, naming code only where needed (in backticks). Where it helps, the scenario as a short bullet list of steps ending in the wrong result. One defect per finding: report a separate problem as a separate finding.",
+    ),
   severity: severitySchema,
   confidence: confidenceSchema.describe("How sure the reviewer is that the problem is real."),
   category: z.string().min(1).describe('The kind of problem, e.g. "correctness", "methodology", "injection".'),
   evidence: z.array(evidenceSchema).min(1).describe("Where in the target it shows; at least one place."),
-  recommendation: z.string().optional().describe("What would fix it."),
+  recommendation: z.string().optional().describe("What would fix it, in a sentence or a short bullet list (Markdown)."),
 });
 
 export type FindingInput = z.infer<typeof findingInputSchema>;
@@ -64,7 +69,12 @@ export const argumentInputSchema = z.object({
   findingId: z.string().min(1).describe('The finding argued about, e.g. "F3".'),
   stance: stanceSchema.describe("Whether the reviewer backs the finding, challenges it, or can't tell yet."),
   confidence: confidenceSchema.describe("How sure the reviewer is of its stance."),
-  text: z.string().min(1).describe("The argument in a few sentences: what the reviewer checked and what it showed."),
+  text: z
+    .string()
+    .min(1)
+    .describe(
+      "The argument in a few plain sentences (Markdown: inline `code`, **bold**, - bullets): open with your conclusion in one sentence a non-author can follow, then what you checked and what it showed. Cite places as path:line.",
+    ),
   evidence: z.array(evidenceSchema).default([]).describe("Where in the target the argument rests; a challenge should point at something."),
   replyTo: z.string().min(1).optional().describe('The argument this one answers, e.g. "A4".'),
 });
@@ -87,7 +97,7 @@ export type ProposalInput = z.infer<typeof proposalInputSchema>;
 export const fixCheckInputSchema = z.object({
   findingId: z.string().min(1).describe('The finding whose fix was checked, e.g. "F3".'),
   outcome: z.enum(["verified", "reopened"]).describe("Whether the fix resolves the finding."),
-  text: z.string().min(1).describe("What the reviewer checked and what it showed, in a few sentences."),
+  text: z.string().min(1).describe("What the reviewer checked and what it showed, in a few plain sentences (Markdown allowed), the outcome first."),
   evidence: z.array(evidenceSchema).default([]).describe("Where in the target the check rests."),
 });
 
