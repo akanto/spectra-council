@@ -65,16 +65,34 @@ const names = (reviewers: Reviewer[]) => {
   return labels.length <= 1 ? (labels[0] ?? "") : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
 };
 
+const its = (reviewers: Reviewer[]) => (reviewers.length === 1 ? "its" : "their");
+
 /**
- * Settles one finding from each reviewer's last stance on it:
+ * Whether a reviewer's recorded stances count in the synthesis: those of every seated reviewer still at the council,
+ * and those of one that failed after taking part in the deliberation (it argued at least once), whose last stances
+ * stand as it left them. A removed reviewer has no say, and one that failed before arguing anything (in the independent
+ * review, or in its first round) left no stance of its own to keep.
+ */
+export function countsIn(review: Review, reviewer: Reviewer): boolean {
+  if (!reviewer.enabled) return false;
+  if (reviewer.status === "deliberating" || reviewer.status === "completed") return true;
+  return reviewer.status === "failed" && review.arguments.some((argument) => argument.reviewerId === reviewer.id);
+}
+
+/**
+ * Settles one finding from the last stance of each reviewer who counts (`countsIn`), or gives null when nothing settles
+ * it and it stays reported:
  * - withdrawn: its reporter no longer backs it;
  * - disputed: someone's challenge still stands, however many back it (the dissent is kept, not outvoted);
- * - agreed: nobody ever challenged it, and everyone who took part backs it;
- * - confirmed: otherwise; it was challenged and the challenge was answered, or some couldn't tell but nobody objects.
+ * - agreed: nobody ever challenged it, and everyone who counts backs it;
+ * - confirmed: otherwise, when someone backs it: each challenge was answered (its challenger came round to back it), or
+ *   some couldn't tell but nobody objects;
+ * - null: nobody backs it (its reporters were removed, or failed before taking part, and no one else backs it).
+ * A reviewer that failed during the deliberation keeps its last stance, and the rationale says it couldn't continue: a
+ * timeout neither answers a challenge nor takes back support.
  */
-export function settle(review: Review, finding: Finding): Settlement {
+export function settle(review: Review, finding: Finding): Settlement | null {
   const byId = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id);
-  const reporter = byId(finding.reviewerId);
   const stanceOf = (id: string) => finding.positions.find((position) => position.reviewerId === id)?.stance;
 
   // Withdrawn once no one who reported it backs it any more (the reporter and any whose report merged into it); a
@@ -90,28 +108,48 @@ export function settle(review: Review, finding: Finding): Settlement {
     };
   }
 
-  const participants = review.reviewers.filter((reviewer) => reviewer.enabled && (reviewer.status === "deliberating" || reviewer.status === "completed"));
+  const participants = review.reviewers.filter((reviewer) => countsIn(review, reviewer));
   const backers = participants.filter((reviewer) => stanceOf(reviewer.id) === "supports");
   const dissenters = participants.filter((reviewer) => stanceOf(reviewer.id) === "challenges");
   const unsure = participants.filter((reviewer) => stanceOf(reviewer.id) === "uncertain");
+  // Whose stance here was kept from before they failed: the deliberation went on without them, and the rationale says so.
+  const leftEarly = participants.filter((reviewer) => reviewer.status === "failed" && stanceOf(reviewer.id) !== undefined);
+  const early = leftEarly.length > 0 ? `; ${names(leftEarly)} couldn't continue, so ${its(leftEarly)} last stance${leftEarly.length === 1 ? " counts" : "s count"}` : "";
   const tally = `${backers.length} of ${participants.length} back it`;
+  const timeline = argumentsOn(review, finding.id);
 
   if (dissenters.length > 0) {
-    const timeline = argumentsOn(review, finding.id);
     const dissent = dissenters.flatMap((reviewer): Dissent[] => {
       const latest = timeline.filter((argument) => argument.reviewerId === reviewer.id && argument.stance === "challenges").at(-1);
       return latest ? [{ reviewerId: reviewer.id, reason: firstSentence(latest.text), argumentId: latest.id }] : [];
     });
     const plural = dissenters.length === 1 ? "challenge stands" : "challenges stand";
-    return { status: "disputed", rationale: `${tally}; ${names(dissenters)}'s ${plural}.`, dissenters: dissenters.map((reviewer) => reviewer.id), dissent };
+    return { status: "disputed", rationale: `${tally}; ${names(dissenters)}'s ${plural}${early}.`, dissenters: dissenters.map((reviewer) => reviewer.id), dissent };
   }
-  const everChallenged = argumentsOn(review, finding.id).some((argument) => argument.stance === "challenges" && argument.reviewerId !== finding.reviewerId);
-  if (!everChallenged && unsure.length === 0 && backers.length === participants.length && participants.length > 1) {
-    return { status: "agreed", rationale: `All ${participants.length} reviewers back it.`, dissenters: [] };
+  // Only positive support makes a finding stand: silence, doubt and departures confirm nothing.
+  if (backers.length === 0) return null;
+
+  // A challenge is answered only when its challenger came round to back it. One who came round only as far as "couldn't
+  // tell" is named among the unsure, and a removed reviewer's challenge no longer counts; neither is an answer.
+  const reporterIds = reportersOf(finding);
+  const challengerIds = [...new Set(timeline.filter((argument) => argument.stance === "challenges" && !reporterIds.includes(argument.reviewerId)).map((argument) => argument.reviewerId))];
+  if (challengerIds.length === 0 && unsure.length === 0 && backers.length === participants.length && participants.length > 1) {
+    return { status: "agreed", rationale: `All ${participants.length} reviewers back it${early}.`, dissenters: [] };
   }
-  const answered = everChallenged ? "; the challenge was answered" : "";
+  const answeredBy = backers.filter((reviewer) => challengerIds.includes(reviewer.id));
+  const answered =
+    answeredBy.length === 0
+      ? ""
+      : answeredBy.length === challengerIds.length
+        ? `; the challenge${answeredBy.length === 1 ? " was" : "s were"} answered`
+        : `; ${names(answeredBy)}'s challenge${answeredBy.length === 1 ? " was" : "s were"} answered`;
   const doubt = unsure.length > 0 ? `; ${names(unsure)} couldn't tell` : "";
-  return { status: "confirmed", rationale: `${tally}${answered}${doubt}.`, dissenters: [] };
+  const setAside = challengerIds.flatMap((id) => {
+    const reviewer = byId(id);
+    return reviewer && !reviewer.enabled ? [reviewer] : [];
+  });
+  const removed = setAside.length > 0 ? `; ${names(setAside)} ${setAside.length === 1 ? "was" : "were"} removed, so ${its(setAside)} challenge${setAside.length === 1 ? " no longer counts" : "s no longer count"}` : "";
+  return { status: "confirmed", rationale: `${tally}${answered}${doubt}${removed}${early}.`, dissenters: [] };
 }
 
 /**
@@ -133,15 +171,20 @@ export function verdictSummary(review: Review): string {
   const isSerious = (finding: Finding) => finding.severity === "critical" || finding.severity === "high";
   const serious = findings.filter((finding) => (finding.status === "confirmed" || finding.status === "agreed") && isSerious(finding)).length;
   const contested = findings.filter((finding) => finding.status === "disputed" && isSerious(finding)).length;
-  const failed = review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "failed").map((reviewer) => reviewer.label);
-  const dropped = failed.length > 0 ? ` ${failed.join(", ")} failed and took no part.` : "";
-  if (count("reported") === findings.length) {
+  const failed = review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "failed");
+  const dropped = failed.length > 0 ? ` ${names(failed)} failed and couldn't continue.` : "";
+  // Without a deliberation (rounds is set when one starts), every finding is still as reported.
+  if (review.rounds === 0) {
     return `${findings.length} finding${findings.length === 1 ? "" : "s"}, not deliberated: fewer than two reviewers finished their review.${dropped}`;
   }
+  // A finding the synthesis left reported had no backing left to stand on; it is counted, not dropped from the verdict.
+  const unsettled = count("reported");
   const parts = (["agreed", "confirmed", "disputed", "withdrawn"] as const).filter((status) => count(status) > 0).map((status) => `${count(status)} ${status}`);
+  if (unsettled > 0) parts.push(`${unsettled} unsettled`);
   const head = `${findings.length} finding${findings.length === 1 ? "" : "s"}: ${parts.join(", ")}.`;
   const held = serious > 0 ? ` ${serious} serious finding${serious === 1 ? " stands" : "s stand"}.` : contested > 0 ? " No serious finding is agreed or confirmed." : " No serious finding stands.";
   // Kept as it was at the verdict (the hand-off quotes it), so it states the outcome rather than what is left to do.
   const open = contested > 0 ? ` ${contested} serious finding${contested === 1 ? " is" : "s are"} disputed.` : "";
-  return head + held + open + dropped;
+  const unbacked = unsettled > 0 ? ` ${unsettled === 1 ? "1 finding was" : `${unsettled} findings were`} left unsettled, with no one backing ${unsettled === 1 ? "it" : "them"}.` : "";
+  return head + held + open + unbacked + dropped;
 }

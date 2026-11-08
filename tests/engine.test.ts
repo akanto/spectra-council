@@ -189,6 +189,49 @@ describe("ReviewSession", () => {
     expect(final.findings.every((finding) => finding.status !== "reported")).toBe(true);
   });
 
+  /** Two reviewers: r1 reports one finding; in the deliberation each does what `turn` says for its round, or throws. */
+  async function twoReviewerRun(turn: (reviewerId: string, round: number) => { stance: "supports" | "challenges" | "uncertain"; text: string } | "fail" | null) {
+    const clock = new FakeClock();
+    const runner: ReviewerRunner = {
+      async run(job, report) {
+        if (job.reviewer.id === "r1") report({ type: "finding-reported", finding: { title: "Off by one", summary: "Drops the last element.", severity: "high", confidence: "high", category: "correctness", evidence: [{ path: "src/engine.ts", line: 3 }] } });
+      },
+      async deliberate(job, report) {
+        const move = turn(job.reviewer.id, job.round);
+        if (move === "fail") throw new Error("Timed out");
+        if (move) report({ type: "argued", argument: { findingId: "F1", confidence: "high", evidence: [], ...move } });
+      },
+      async propose() {},
+      async verify() {},
+    };
+    const done = new ReviewSession(review(), { runner, clock, onChange: () => {} }).run();
+    await clock.runAll();
+    return done;
+  }
+
+  test("a challenger that times out in a later round leaves the finding disputed, its challenge unanswered", async () => {
+    const final = await twoReviewerRun((reviewerId, round) => (reviewerId !== "r2" ? null : round === 1 ? { stance: "challenges", text: "Not reachable: the caller trims the list first." } : "fail"));
+    expect(final.phase).toBe("complete");
+    expect(final.reviewers[1]).toMatchObject({ status: "failed", problem: "Timed out" });
+    const finding = final.findings[0]!;
+    expect(finding.status).toBe("disputed");
+    expect(finding.resolution).toMatchObject({
+      rationale: "1 of 2 back it; Codex's challenge stands; Codex couldn't continue, so its last stance counts.",
+      dissenters: ["r2"],
+      dissent: [{ reviewerId: "r2", reason: "Not reachable: the caller trims the list first.", argumentId: "A1" }],
+    });
+    expect(finding.resolution!.rationale).not.toContain("answered");
+    expect(final.verdict?.summary).toBe("1 finding: 1 disputed. No serious finding is agreed or confirmed. 1 serious finding is disputed. Codex failed and couldn't continue.");
+  });
+
+  test("a finding nobody backs after its reporter fails stays reported, and the verdict counts it unsettled", async () => {
+    const final = await twoReviewerRun((reviewerId) => (reviewerId === "r1" ? "fail" : { stance: "uncertain", text: "I can't tell from the code." }));
+    expect(final.phase).toBe("complete");
+    const finding = final.findings[0]!;
+    expect(finding).toMatchObject({ status: "reported", resolution: null, proposal: null });
+    expect(final.verdict?.summary).toBe("1 finding: 1 unsettled. No serious finding stands. 1 finding was left unsettled, with no one backing it. Claude failed and couldn't continue.");
+  });
+
   async function completeRun() {
     const clock = new FakeClock();
     const done = new ReviewSession(fourReviewers(), { runner: new MockRunner(async () => FILES, clock), clock, onChange: () => {} }).run();

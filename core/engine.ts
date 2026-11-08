@@ -285,7 +285,9 @@ export class ReviewSession {
         return false;
       }
       const finding = this.#review.findings.find((each) => each.id === id)!;
-      this.#dispatch({ type: "finding-resolved", at: this.#clock.now(), findingId: id, ...settle(this.#review, finding) });
+      // A finding nobody backs any more stays reported; the verdict counts it as unsettled.
+      const settlement = settle(this.#review, finding);
+      if (settlement) this.#dispatch({ type: "finding-resolved", at: this.#clock.now(), findingId: id, ...settlement });
     }
     // Each reporter drafts the fixes for its findings that stand, all at once.
     const settled = this.#review;

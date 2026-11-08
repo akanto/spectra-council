@@ -1,5 +1,6 @@
 /** The Council tab: the findings on the left, and the selected one's positions, resolution and argument timeline. */
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
+import { countsIn } from "../core/deliberation.ts";
 import { bySeverity, possibleDuplicates, STATUS_MEANINGS } from "../core/describe.ts";
 import { argumentsOn, isStanding, type Argument, type Finding, type Resolution, type Review } from "../core/model.ts";
 import type { FindingStatus } from "../core/model.ts";
@@ -164,11 +165,23 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
         {seated.map((reviewer) => {
           const position = finding.positions.find((each) => each.reviewerId === reviewer.id);
           const failed = reviewer.status === "failed";
+          // A reviewer that failed after taking part keeps its last stance in the synthesis; show it with the failure.
+          const kept = failed && position && countsIn(review, reviewer) ? position : undefined;
           return (
-            <li key={reviewer.id} className={cx("position-card", failed ? "failed" : position ? `stance-${position.stance}` : "none")} title={failed ? `${reviewer.label} failed and took no part` : undefined}>
+            <li
+              key={reviewer.id}
+              className={cx("position-card", failed ? "failed" : position ? `stance-${position.stance}` : "none")}
+              title={failed ? `${reviewer.label} failed and couldn't continue${kept ? "; its last stance counts" : ""}` : undefined}
+            >
               <strong>{failed && <span aria-hidden="true">✕ </span>}{reviewer.label}</strong>
-              {failed ? (
-                <span className="muted">failed, took no part</span>
+              {kept ? (
+                <>
+                  <StanceBadge stance={kept.stance} />
+                  <ConfidenceMeter confidence={kept.confidence} />
+                  <span className="muted">{kept.round === 0 ? "reported it" : `round ${kept.round}`}, then failed</span>
+                </>
+              ) : failed ? (
+                <span className="muted">failed, couldn't continue</span>
               ) : position ? (
                 <>
                   <StanceBadge stance={position.stance} />

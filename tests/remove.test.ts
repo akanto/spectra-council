@@ -101,8 +101,8 @@ describe("reviewer-removed", () => {
 
   test("the verdict names a failed reviewer, but not one removed before it", () => {
     const review = deliberatingWithFailedR2();
-    expect(verdictSummary(review)).toContain("failed and took no part");
-    expect(verdictSummary(reduce(review, { type: "reviewer-removed", reviewerId: "r2", at: 20 }))).not.toContain("took no part");
+    expect(verdictSummary(review)).toContain("failed and couldn't continue");
+    expect(verdictSummary(reduce(review, { type: "reviewer-removed", reviewerId: "r2", at: 20 }))).not.toContain("couldn't continue");
   });
 });
 
@@ -147,9 +147,30 @@ describe("after a removal", () => {
       { type: "argued", reviewerId: "r2", at: 21, argument: { findingId: "F1", stance: "challenges", confidence: "high", text: "Not a leak after all.", evidence: [] } },
     ]);
     expect(settle(review, review.findings[0]!)).toMatchObject({ status: "withdrawn", rationale: "Claude withdrew it." });
-    // With every reporter removed, the finding stands on the others' stances.
+    // With every reporter removed, the finding stands on the others' stances: with nobody backing it, nothing settles it.
     review = play(review, [finish("r2", "failed"), { type: "reviewer-removed", reviewerId: "r2", at: 22 }]);
-    expect(settle(review, review.findings[0]!).status).not.toBe("withdrawn");
+    expect(settle(review, review.findings[0]!)).toBeNull();
+    review = play(review, [{ type: "argued", reviewerId: "r3", at: 23, argument: { findingId: "F1", stance: "supports", confidence: "high", text: "It leaks.", evidence: [] } }]);
+    expect(settle(review, review.findings[0]!)).toMatchObject({ status: "confirmed", rationale: "1 of 1 back it." });
+  });
+
+  test("a removed challenger's challenge neither stands nor counts as answered", () => {
+    const review = play(mixed(), [
+      { type: "finding-reported", reviewerId: "r1", at: 3, finding: finding("Alpha leak", "src/a.ts") },
+      finish("r1"),
+      finish("r2"),
+      finish("r3"),
+      { type: "deliberation-started", at: 11, rounds: 2 },
+      { type: "round-started", at: 12, round: 1 },
+      { type: "argued", reviewerId: "r2", at: 13, argument: { findingId: "F1", stance: "challenges", confidence: "high", text: "Not a leak.", evidence: [] } },
+      { type: "round-started", at: 14, round: 2 },
+      finish("r2", "failed"),
+    ]);
+    // Failed, the challenger's challenge still stands.
+    expect(settle(review, review.findings[0]!)).toMatchObject({ status: "disputed", dissenters: ["r2"] });
+    // Removed, it no longer counts; it wasn't answered either.
+    const removed = play(review, [{ type: "reviewer-removed", reviewerId: "r2", at: 20 }]);
+    expect(settle(removed, removed.findings[0]!)).toEqual({ status: "confirmed", rationale: "1 of 2 back it; Claude was removed, so its challenge no longer counts.", dissenters: [] });
   });
 });
 
@@ -190,7 +211,7 @@ describe("ReviewSession.remove", () => {
     expect(final.findings.map((each) => each.title).sort()).toEqual(["Alpha leak", "Gamma crash"]);
     expect(final.findings.every((each) => each.positions.every((position) => position.reviewerId !== "r2"))).toBe(true);
     expect(final.reviewers.filter((reviewer) => reviewer.enabled).map(({ id }) => id)).toEqual(["r1", "r3"]);
-    expect(final.verdict?.summary).not.toContain("took no part");
+    expect(final.verdict?.summary).not.toContain("couldn't continue");
   });
 
   test("a reviewer that didn't fail is refused", async () => {
@@ -258,7 +279,7 @@ describe("the remove action", () => {
     const review = canvas.item(id).data;
     expect(review.phase).toBe("complete");
     expect(review.findings.map((each) => each.title)).toEqual(["alpha finding"]);
-    expect(review.verdict?.summary).not.toContain("took no part");
+    expect(review.verdict?.summary).not.toContain("couldn't continue");
   });
 
   test("on an ended review it changes the stored item; a reviewer that didn't fail throws the reason", async () => {
@@ -268,7 +289,7 @@ describe("the remove action", () => {
     const ended = canvas.item(id).data;
     expect(ended.phase).toBe("complete");
     expect(ended.reviewers[1]).toMatchObject({ status: "failed", enabled: true });
-    expect(ended.verdict?.summary).toContain("failed and took no part");
+    expect(ended.verdict?.summary).toContain("failed and couldn't continue");
 
     await expect(host.action!(canvas.item(id), { kind: "remove", reviewerId: "r1" }, context)).rejects.toThrow("hasn't failed");
     await host.action!(canvas.item(id), { kind: "remove", reviewerId: "r2" }, context);

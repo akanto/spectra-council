@@ -83,7 +83,7 @@ export function describeReview(review: Review): string {
 
 /** What each finding status means, in a sentence, for a tooltip or legend. */
 export const STATUS_MEANINGS: Record<Finding["status"], string> = {
-  reported: "Reported; the council hasn't settled it yet.",
+  reported: "Reported; the council hasn't settled it: not yet, or nobody backs it.",
   agreed: "Agreed: every reviewer who weighed in backs it, and nobody challenged it.",
   confirmed: "Confirmed: most back it, and every challenge to it was answered.",
   disputed: "Disputed: a challenge still stands. Your ruling decides it.",

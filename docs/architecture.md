@@ -46,7 +46,10 @@ the engine keeps a reviewer's most severe ones past it (`findings-capped`). The 
 review can run (`plannedTurns`). Each round emits `round-started`, then one `argued` per reviewer (backs, challenges or
 is unsure about a finding, with evidence). Reporters answer challenges with `argued` too. Then `synthesis-started`
 and one `finding-resolved` per finding (`agreed`, `confirmed`, `disputed` or `withdrawn`), and `concluded` with the
-verdict line. A disputed finding's resolution keeps each dissenter's reason (`dissent`: the first sentence of their latest
+verdict line. A reviewer that fails during the deliberation keeps its last stances (`countsIn`): its standing challenge
+stays a dissent, and only a challenger who comes round to back a finding answers its challenge. A finding nobody backs
+(its reporters removed, or failed before arguing, and no one else backing it) gets no `finding-resolved`: it stays
+`reported`, and the verdict counts it as unsettled. A disputed finding's resolution keeps each dissenter's reason (`dissent`: the first sentence of their latest
 challenge, `firstSentence`), which the view and the hand-off lead the finding with. `deliberation-started` opens the phase. The settlement rules live in `settle`, and `verdictSummary`
 writes the verdict. Stored reviews from the earlier format are upgraded on read (`upgradeReview`).
 

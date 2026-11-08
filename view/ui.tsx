@@ -1,5 +1,6 @@
 /** Small pieces the views share: status marks, badges, times, and the logo. */
 import { createContext, useEffect, useState } from "react";
+import { countsIn } from "../core/deliberation.ts";
 import { recheckLine, STATUS_MEANINGS } from "../core/describe.ts";
 import type { Finding, FindingStatus, FixState, Phase, Review, ReviewerStatus } from "../core/model.ts";
 import type { Confidence, Severity, Stance } from "../core/schemas.ts";
@@ -185,10 +186,11 @@ export function Positions({ review, finding }: { review: Review; finding: Findin
       {seated.map((reviewer, index) => {
         const position = finding.positions.find((each) => each.reviewerId === reviewer.id);
         const failed = reviewer.status === "failed";
+        const stance = position ? `${position.stance === "supports" ? "supports" : position.stance === "challenges" ? "challenges" : "is uncertain"}, ${position.confidence} confidence, ${position.round === 0 ? "reported it" : `round ${position.round}`}` : "";
         const text = failed
-          ? `${reviewer.label} failed and took no part`
+          ? `${reviewer.label} failed and couldn't continue${position && countsIn(review, reviewer) ? `; its last stance counts: ${stance}` : ""}`
           : position
-            ? `${reviewer.label}: ${position.stance === "supports" ? "supports" : position.stance === "challenges" ? "challenges" : "is uncertain"}, ${position.confidence} confidence, ${position.round === 0 ? "reported it" : `round ${position.round}`}`
+            ? `${reviewer.label}: ${stance}`
             : `${reviewer.label}: no position yet`;
         const tag = unique ? short[index] : `${reviewer.label.slice(0, 1)}${index + 1}`;
         return (
@@ -219,7 +221,8 @@ export function VerdictBanner({ review }: { review: Review }) {
   }
   if (!review.verdict) return null;
   const recheck = recheckLine(review);
-  const statuses: FindingStatus[] = ["confirmed", "agreed", "disputed", "withdrawn"];
+  // "reported" counts the findings the synthesis left unsettled (or, without a deliberation, every finding).
+  const statuses: FindingStatus[] = ["confirmed", "agreed", "disputed", "withdrawn", "reported"];
   return (
     <section className="verdict">
       <h3>Verdict</h3>
