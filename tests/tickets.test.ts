@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Review } from "../core/model.ts";
 import { newReview, reduce, type ReviewEvent } from "../core/review.ts";
 import type { FindingInput } from "../core/schemas.ts";
-import { askPrompt, BEADS_PRIORITY, ticketsPrompt, unticketed, waitingTickets } from "../core/tickets.ts";
+import { askFixerPrompt, askPrompt, BEADS_PRIORITY, ticketsPrompt, unticketed, waitingTickets } from "../core/tickets.ts";
 import { beadsWorkspace, createCouncilHost } from "../hosts/mirador/host.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
 
@@ -74,6 +74,21 @@ describe("asks in the review", () => {
     ]);
   });
 
+  test("an ask sent to the fixer profile waits for its conversation, then records how it ended", () => {
+    let review = reduce(concluded(), { type: "asked", at: 10, text: "File them", findingIds: ["F1", "F2"] });
+    review = reduce(review, { type: "asked", at: 11, text: "Fix them", findingIds: ["F1", "F2"], profile: " codex " });
+    expect(review.asks![0]!.fixer).toBeUndefined();
+    expect(review.asks![1]!.fixer).toEqual({ profile: "codex", conversationId: null, endedAt: null, problem: null });
+    expect(() => reduce(review, { type: "ask-delegated", at: 12, ask: 0, conversationId: "c1" })).toThrow("was sent to a fixer profile");
+    expect(() => reduce(review, { type: "ask-answered", at: 12, ask: 1, problem: null })).toThrow("no fixer conversation");
+    review = reduce(review, { type: "ask-delegated", at: 12, ask: 1, conversationId: "c1" });
+    expect(review.asks![1]!.fixer!.conversationId).toBe("c1");
+    expect(() => reduce(review, { type: "ask-delegated", at: 12, ask: 1, conversationId: "c2" })).toThrow("started already");
+    review = reduce(review, { type: "ask-answered", at: 13, ask: 1, problem: "It failed." });
+    expect(review.asks![1]!.fixer).toEqual({ profile: "codex", conversationId: "c1", endedAt: 13, problem: "It failed." });
+    expect(review.asks![0]).toEqual({ text: "File them", findingIds: ["F1", "F2"], at: 10 });
+  });
+
   test("an empty ask, or one about findings not accepted, is refused", () => {
     expect(() => reduce(concluded(), { type: "asked", at: 10, text: " ", findingIds: ["F1"] })).toThrow("Say what");
     expect(() => reduce(concluded(), { type: "asked", at: 10, text: "Go", findingIds: ["F3"] })).toThrow("F3 isn't accepted");
@@ -121,6 +136,19 @@ describe("the prompts", () => {
     expect(prompt).toContain("/repo/h.md");
     expect(prompt).toContain('council_mark_fixed with review "rev1"');
   });
+
+  test("ask to the fixer: titled, the user's words and the findings asked about, reported as JSON", () => {
+    const review = reduce(concluded(), { type: "asked", at: 10, text: "File a ticket for each", findingIds: ["F1", "F2"], profile: "codex" });
+    const prompt = askFixerPrompt(review, 0, "/repo/h.md");
+    expect(prompt.split("\n")[0]).toBe("Spectra Council rev1 · Ask about F2, F1");
+    expect(prompt).toContain("> File a ticket for each");
+    expect(prompt.indexOf("- F2 (critical")).toBeLessThan(prompt.indexOf("- F1 (low"));
+    expect(prompt).not.toContain("F3");
+    expect(prompt).toContain("/repo/h.md");
+    expect(prompt).toContain('"tickets": [');
+    expect(prompt).not.toContain("council_mark_fixed");
+    expect(() => askFixerPrompt(review, 1, "/repo/h.md")).toThrow("no ask 1");
+  });
 });
 
 describe("the host", () => {
@@ -158,7 +186,7 @@ describe("the host", () => {
     await clock.settle();
     const review = () => canvas.item(id).data;
     for (const finding of review().findings) await act({ kind: "rule", findingId: finding.id, decision: "accepted" });
-    return { target, host, canvas, context, act, review, written };
+    return { target, host, canvas, context, act, review, written, clock };
   }
 
   test("tickets write the hand-off, mark the findings, prompt the agent, and council_mark_ticketed records each", async () => {
@@ -192,5 +220,77 @@ describe("the host", () => {
     expect(review().asks?.map(({ text }) => text)).toEqual(["Open a PR per finding"]);
     expect(canvas.prompts.at(-1)).toContain("> Open a PR per finding");
     await expect(act({ kind: "ask", text: "   " })).rejects.toThrow();
+  });
+
+  test("an ask to the fixer profile goes there through council_delegate_fix, and its JSON report is applied", async () => {
+    const { host, canvas, context, act, review } = await completed(false);
+    await expect(act({ kind: "ask", text: "Fix and file", toFixer: true })).rejects.toThrow("No Spectra Council fixer");
+    expect(review().asks ?? []).toEqual([]);
+    canvas.settings.fixer = "codex";
+    await act({ kind: "ask", text: "Fix and file", toFixer: true });
+    expect(review().asks![0]!.fixer).toEqual({ profile: "codex", conversationId: null, endedAt: null, problem: null });
+    expect(canvas.prompts.at(-1)).toContain("council_delegate_fix (review rev1)");
+    expect(canvas.prompts.at(-1)).not.toContain("> Fix and file");
+
+    const said = await host.tools.council_delegate_fix!.run({}, context);
+    expect(said).toContain("Started a conversation on codex with the user's ask");
+    expect(canvas.started).toHaveLength(1);
+    expect(canvas.started[0]!.prompt).toContain("> Fix and file");
+    expect(review().asks![0]!.fixer!.conversationId).toBe("conversation-fixer-1");
+    await expect((async () => host.tools.council_delegate_fix!.run({}, context))()).rejects.toThrow("Nothing of review rev1 waits");
+
+    const [first, second] = review().findings.map(({ id }) => id);
+    const text = "Done.\n```json\n" + JSON.stringify({ fixed: [{ finding: first, summary: "Fixed it", files: ["a.ts"] }, { finding: "F99", summary: "x" }], tickets: [{ finding: second, ticket: "proj-9" }] }) + "\n```";
+    await host.replied!({ id: "conversation-fixer-1", profile: "codex" }, { ended: "finished", text }, context);
+    expect(review().findings[0]!.fix).toMatchObject({ state: "fixed", summary: "Fixed it", files: ["a.ts"] });
+    expect(review().findings[1]!.ticket?.id).toBe("proj-9");
+    expect(review().asks![0]!.fixer).toMatchObject({ endedAt: expect.any(Number), problem: null });
+  });
+
+  test("a fixer's reply to an ask that comes during a re-check is recorded, and a refused part says so", async () => {
+    const { host, canvas, context, act, review, clock } = await completed(false);
+    const [first, second] = review().findings.map(({ id }) => id);
+    await act({ kind: "ask", text: "Fix the first" });
+    await host.tools.council_mark_fixed!.run({ finding: first!, summary: "done", files: [] }, context);
+    canvas.settings.fixer = "codex";
+    await act({ kind: "ask", text: "Fix the second", toFixer: true });
+    await host.tools.council_delegate_fix!.run({}, context);
+    await act({ kind: "verify" });
+    await clock.step();
+    expect(review().phase).toBe("verification");
+    const text = "```json\n" + JSON.stringify({ fixed: [{ finding: second, summary: "by codex" }, { finding: first, summary: "again" }] }) + "\n```";
+    await host.replied!({ id: "conversation-fixer-1", profile: "codex" }, { ended: "finished", text }, context);
+    await clock.runAll();
+    await clock.settle();
+    expect(review().phase).toBe("complete");
+    expect(review().findings.find((it) => it.id === second)!.fix).toMatchObject({ state: "fixed", summary: "by codex" });
+    expect(review().asks!.at(-1)!.fixer!.problem).toContain(`${first}'s fix is being re-checked`);
+  });
+
+  test("a new ask for the fixer replaces one never started, and a waiting ask isn't forgotten behind fixes", async () => {
+    const { host, canvas, context, act, review } = await completed(false);
+    canvas.settings.fixer = "codex";
+    await act({ kind: "ask", text: "OLD ask", toFixer: true });
+    await act({ kind: "ask", text: "NEW ask", toFixer: true });
+    expect(review().asks![0]!.fixer).toMatchObject({ conversationId: null, problem: "Never started; a later ask replaced it." });
+    await act({ kind: "fix" });
+    const said = await host.tools.council_delegate_fix!.run({}, context);
+    expect(said).toContain("the user's ask");
+    expect(said).toContain("again");
+    await host.tools.council_delegate_fix!.run({}, context);
+    expect(canvas.started).toHaveLength(2);
+    expect(canvas.started[1]!.prompt).toContain("> NEW ask");
+    expect(canvas.started[1]!.prompt).not.toContain("OLD ask");
+    expect(review().asks![1]!.fixer!.conversationId).toBe("conversation-fixer-2");
+  });
+
+  test("an ask's fixer conversation that ends without a report says so on the ask", async () => {
+    const { host, canvas, context, act, review } = await completed(false);
+    canvas.settings.fixer = "codex";
+    await act({ kind: "ask", text: "Fix them", toFixer: true });
+    await host.tools.council_delegate_fix!.run({}, context);
+    await host.replied!({ id: "conversation-fixer-1", profile: "codex" }, { ended: "finished", text: "All done, trust me." }, context);
+    expect(review().asks![0]!.fixer!.problem).toContain("ended without the JSON report");
+    expect(review().findings.every((finding) => !finding.fix)).toBe(true);
   });
 });

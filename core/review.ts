@@ -21,6 +21,7 @@ import {
   type Activity,
   type ActivityKind,
   type Argument,
+  type Ask,
   type CoReport,
   type Decision,
   type Dissent,
@@ -116,8 +117,15 @@ export type ReviewEvent =
   | { type: "tickets-requested"; at: number; findingIds: string[] }
   /** The agent filed a beads issue for an accepted finding, under this id. */
   | { type: "ticketed"; at: number; findingId: string; ticket: string }
-  /** The user asked the agent, in their own words, to do something about these accepted findings. */
-  | { type: "asked"; at: number; text: string; findingIds: string[] }
+  /**
+   * The user asked the agent, in their own words, to do something about these accepted findings: this conversation's,
+   * or, with `profile`, the fixer profile's in a conversation of its own.
+   */
+  | { type: "asked"; at: number; text: string; findingIds: string[]; profile?: string }
+  /** A conversation was started on the fixer's profile for the ask at this index of `asks`. */
+  | { type: "ask-delegated"; at: number; ask: number; conversationId: string }
+  /** The fixer's conversation for the ask at this index ended its turn: with a usable report, or with this problem. */
+  | { type: "ask-answered"; at: number; ask: number; problem: string | null }
   /** These reviewers re-check these fixed findings. */
   | { type: "verification-started"; at: number; findingIds: string[]; reviewerIds: string[] }
   /** Each finding checked in this round is verified, or reopened if any check reopened it. */
@@ -127,6 +135,8 @@ export type ReviewEvent =
   | { type: "interrupted"; at: number }
   /** The host's agent was told how the review ended. */
   | { type: "agent-heard"; at: number };
+
+const withAsk = (review: Review, index: number, ask: Ask): Review => ({ ...review, asks: (review.asks ?? []).map((each, at) => (at === index ? ask : each)) });
 
 /** Whether the user asked the agent about this finding in their own words (an `asked` event). */
 const askedAbout = (review: Review, findingId: string) => (review.asks ?? []).some((ask) => ask.findingIds.includes(findingId));
@@ -483,7 +493,8 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       const finding = findingOf(review, event.findingId);
       if (!finding.fix) {
         // Only a finding the user asked the agent about in their own words, accepted, may be fixed without a hand-off.
-        if (review.phase !== "complete" || finding.ruling?.decision !== "accepted" || !askedAbout(review, finding.id)) throw new ReviewError(`${finding.id} wasn't handed off for fixing.`);
+        // During a re-check too: the fixer's reply to an ask may come while one runs; the finding isn't being re-checked.
+        if (finding.ruling?.decision !== "accepted" || !askedAbout(review, finding.id)) throw new ReviewError(`${finding.id} wasn't handed off for fixing.`);
         const fix = { state: "fixed" as const, handedOffAt: event.at, fixer: null, problem: null, summary: event.summary, files: event.files, fixedAt: event.at, checks: [] };
         return updateFinding(review, finding.id, (it) => ({ ...it, fix }));
       }
@@ -503,7 +514,8 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       };
     }
     case "ticketed": {
-      if (review.phase !== "complete") throw new ReviewError(`A ticket is recorded once the review is complete; it is ${review.phase}.`);
+      // During a re-check too: the agent or a fixer may report one while it runs.
+      if (review.phase !== "complete" && review.phase !== "verification") throw new ReviewError(`A ticket is recorded once the review is complete; it is ${review.phase}.`);
       const finding = findingOf(review, event.findingId);
       const ticket = event.ticket.trim();
       if (!ticket) throw new ReviewError("A ticket needs its issue id.");
@@ -517,7 +529,24 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (!text) throw new ReviewError("Say what to ask the agent.");
       if (event.findingIds.length === 0) throw new ReviewError("Accept at least one finding before asking about them.");
       for (const id of event.findingIds) if (findingOf(review, id).ruling?.decision !== "accepted") throw new ReviewError(`${id} isn't accepted.`);
-      return { ...review, asks: [...(review.asks ?? []), { text, findingIds: event.findingIds, at: event.at }] };
+      const profile = event.profile?.trim();
+      const fixer = profile ? { fixer: { profile, conversationId: null, endedAt: null, problem: null } } : {};
+      // A new ask for the fixer replaces one never started (its profile was wrong, or the agent didn't start it).
+      const asks = (review.asks ?? []).map((ask) =>
+        profile && ask.fixer && ask.fixer.conversationId === null && ask.fixer.endedAt === null ? { ...ask, fixer: { ...ask.fixer, endedAt: event.at, problem: "Never started; a later ask replaced it." } } : ask,
+      );
+      return { ...review, asks: [...asks, { text, findingIds: event.findingIds, at: event.at, ...fixer }] };
+    }
+    case "ask-delegated": {
+      const ask = review.asks?.[event.ask];
+      if (!ask?.fixer) throw new ReviewError(`No ask ${event.ask} was sent to a fixer profile.`);
+      if (ask.fixer.conversationId !== null) throw new ReviewError(`Ask ${event.ask} was started already.`);
+      return withAsk(review, event.ask, { ...ask, fixer: { ...ask.fixer, conversationId: event.conversationId } });
+    }
+    case "ask-answered": {
+      const ask = review.asks?.[event.ask];
+      if (!ask?.fixer?.conversationId) throw new ReviewError(`Ask ${event.ask} has no fixer conversation.`);
+      return withAsk(review, event.ask, { ...ask, fixer: { ...ask.fixer, endedAt: event.at, problem: event.problem } });
     }
     case "verification-started": {
       if (review.phase !== "complete") throw new ReviewError(`A verification starts from a complete review; it is ${review.phase}.`);

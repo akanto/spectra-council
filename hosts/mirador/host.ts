@@ -14,14 +14,14 @@ import { describeReview, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
 import { acceptedFindings, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
-import { isFinished, isResumable, isRunning, seatedReviewers, type ModelInfo, type Review } from "../../core/model.ts";
+import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
 import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
-import { askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
+import { askFixerPrompt, askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
 import { miradorRecords, noRecords, type MiradorRecords } from "./records.ts";
 
@@ -148,6 +148,8 @@ export function createCouncilHost({
 }: HostOptions = {}): CanvasHost<Review> {
   /** The reviews running in this process, by item id; one missing for a running review was cut short by a restart. */
   const sessions = new Map<string, ReviewSession>();
+  /** The items a fixer conversation is being started for (council_delegate_fix awaits Mirador). */
+  const delegating = new Set<string>();
   /**
    * The latest tool call's context, by conversation: only a tool may start a conversation, and Mirador's tool context
    * stays usable after the tool returned, so reviewers' conversations start through it (docs/mirador-api.md). Lost on a
@@ -344,12 +346,28 @@ export function createCouncilHost({
     return next;
   }
 
-  function applyTo(item: PluginItem<Review>, context: CanvasPluginContext<Review>, event: ReviewEvent) {
-    return context.change(item.id, { data: reduceOrSay(settled(item), event) });
-  }
-
   /** The item as it is now: an action's snapshot goes stale across an await, while the agent records fixes and tickets. */
   const fresh = (item: PluginItem<Review>, context: CanvasPluginContext<Review>) => context.items().find((each) => each.id === item.id) ?? item;
+
+  /** The review as it stands: a running session's own (the stored one lags behind it), else the stored one. */
+  const current = (item: PluginItem<Review>, context: CanvasPluginContext<Review>): Review => sessions.get(item.id)?.review ?? settled(fresh(item, context));
+
+  /**
+   * Applies an event to the review as it stands and returns the review after it. A running session owns its review and
+   * writes it as it goes, so the event goes through the session; written to the item directly, its next write would drop
+   * it. Every change from outside the engine comes through here.
+   */
+  function applyTo(item: PluginItem<Review>, context: CanvasPluginContext<Review>, event: ReviewEvent): Review {
+    const session = sessions.get(item.id);
+    if (!session) return context.change(item.id, { data: reduceOrSay(settled(fresh(item, context)), event) }).data;
+    try {
+      session.apply(event);
+    } catch (error) {
+      if (error instanceof ReviewError) throw new Error(error.message);
+      throw error;
+    }
+    return session.review;
+  }
 
   /** The review a tool means: by id, else the conversation's newest. */
   function itemFor(context: CanvasPluginContext<Review>, wanted: string | undefined) {
@@ -424,22 +442,22 @@ export function createCouncilHost({
 
   /** Writes the hand-off of the accepted findings and records it; returns the review with it. */
   async function writeHandoff(item: PluginItem<Review>, context: CanvasPluginContext<Review>): Promise<Review> {
-    const review = settled(fresh(item, context));
+    const review = current(item, context);
     const accepted = acceptedFindings(review).sort(bySeverity);
     if (accepted.length === 0) throw new Error("Accept at least one finding before writing the hand-off.");
     const path = await handoffPath(review);
     const event: ReviewEvent = { type: "handoff-written", at: clock.now(), path, findingIds: accepted.map(({ id }) => id) };
     await writeFile(path, handoffMarkdown(reduceOrSay(review, event)));
     // Recorded on the review as it is now: the agent may have reported a fix or a ticket while the file was written.
-    return context.change(item.id, { data: reduceOrSay(settled(fresh(item, context)), event) }).data;
+    return applyTo(item, context, event);
   }
 
   /** The review with a hand-off of exactly its accepted findings: the one written, or a new one if it is missing or stale. */
   async function currentHandoff(item: PluginItem<Review>, context: CanvasPluginContext<Review>): Promise<Review> {
-    const review = settled(fresh(item, context));
+    const review = current(item, context);
     const accepted = acceptedFindings(review).map(({ id }) => id);
-    const current = review.handoff && review.handoff.findingIds.length === accepted.length && accepted.every((id) => review.handoff!.findingIds.includes(id));
-    return current ? review : writeHandoff(item, context);
+    const upToDate = review.handoff && review.handoff.findingIds.length === accepted.length && accepted.every((id) => review.handoff!.findingIds.includes(id));
+    return upToDate ? review : writeHandoff(item, context);
   }
 
   /** The folder a review's beads workspace is looked for from: the target's, or the folder of a target document. */
@@ -456,16 +474,28 @@ export function createCouncilHost({
     const fresher = unticketed(review);
     const ids = (fresher.length > 0 ? fresher : waitingTickets(review)).map(({ id }) => id);
     if (ids.length === 0) throw new Error("Every accepted finding that isn't fixed has a ticket already.");
-    const next = context.change(item.id, { data: reduceOrSay(review, { type: "tickets-requested", at: clock.now(), findingIds: ids }) }).data;
+    const next = applyTo(item, context, { type: "tickets-requested", at: clock.now(), findingIds: ids });
     await context.prompt(ticketsPrompt(next, ids, review.handoff!.path, workspace), { afterTurn: true });
     return null;
   }
 
-  /** Sends the user's own instruction about the accepted findings to the conversation's agent, with the hand-off. */
-  async function ask(item: PluginItem<Review>, context: CanvasActionContext<Review>, text: string) {
+  /**
+   * Sends the user's own instruction about the accepted findings, with the hand-off, to the conversation's agent, or, to
+   * the fixer profile: the agent is asked to start that conversation, since only a tool may.
+   */
+  async function ask(item: PluginItem<Review>, context: CanvasActionContext<Review>, text: string, toFixer: boolean) {
+    const fixer = toFixer ? context.profileSetting(FIXER_SETTING) || null : null;
+    if (toFixer && !fixer) throw new Error("No Spectra Council fixer profile is chosen for this conversation; pick one in the conversation header.");
     const review = await currentHandoff(item, context);
     const ids = acceptedFindings(review).map(({ id }) => id);
-    const next = context.change(item.id, { data: reduceOrSay(review, { type: "asked", at: clock.now(), text, findingIds: ids }) }).data;
+    const next = applyTo(item, context, { type: "asked", at: clock.now(), text, findingIds: ids, ...(fixer ? { profile: fixer } : {}) });
+    if (fixer) {
+      await context.prompt(
+        `The user sent their own ask about the accepted findings of Spectra Council review ${next.id} to the "${fixer}" profile. Call council_delegate_fix (review ${next.id}) to start that conversation; don't do what it asks yourself.`,
+        { afterTurn: true },
+      );
+      return null;
+    }
     await context.prompt(askPrompt(next, text, review.handoff!.path), { afterTurn: true });
     return null;
   }
@@ -478,7 +508,7 @@ export function createCouncilHost({
     if (toFix.length === 0) throw new Error("Every accepted finding is fixed already.");
     const ids = toFix.sort(bySeverity).map(({ id }) => id);
     const fixer = context.profileSetting(FIXER_SETTING) || null;
-    context.change(item.id, { data: reduceOrSay(review, { type: "fix-requested", at: clock.now(), findingIds: ids, ...(fixer ? { profile: fixer } : {}) }) });
+    applyTo(item, context, { type: "fix-requested", at: clock.now(), findingIds: ids, ...(fixer ? { profile: fixer } : {}) });
     if (fixer) {
       // Only a tool may start a conversation, so the agent is asked to call the one that does.
       await context.prompt(
@@ -500,6 +530,17 @@ export function createCouncilHost({
       { afterTurn: true },
     );
     return null;
+  }
+
+  /** Starts the fixer profile's conversation for the findings handed to it; says so, and whether an ask waits too. */
+  async function delegateFixes(item: PluginItem<Review>, context: CanvasToolContext<Review>, review: Review, waiting: Finding[], askWaits: boolean): Promise<string> {
+    const profile = waiting[0]!.fix!.fixer!.profile;
+    const ids = waiting.filter((finding) => finding.fix!.fixer!.profile === profile).sort(bySeverity).map(({ id }) => id);
+    const started = await context.startConversation({ profile, prompt: fixerPrompt(review, ids, review.handoff!.path) });
+    applyTo(item, context, { type: "fix-delegated", at: clock.now(), findingIds: ids, profile: started.profile, conversationId: started.id });
+    const said = `Started a conversation on ${started.profile} to fix ${ids.join(", ")} of review ${review.id}. The canvas shows each finding as fixed when it reports back.`;
+    const more = waiting.length > ids.length || askWaits;
+    return more ? `${said} More waits for a fixer profile (${askWaits ? "the user's ask" : "findings for another profile"}): call council_delegate_fix (review ${review.id}) again.` : `${said} There is nothing more for you to do.`;
   }
 
   /** Asks the agent to open a new review with an ended one's setup: only a tool may publish an item. */
@@ -594,26 +635,36 @@ export function createCouncilHost({
         run(input, context) {
           const parsed = statusInput.safeParse(input);
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
-          return describeReview(settled(itemFor(context, parsed.data.review)));
+          return describeReview(current(itemFor(context, parsed.data.review), context));
         },
       },
       council_delegate_fix: {
         description:
-          "Hand a Spectra Council review's findings that wait for a fixer profile (the user picked one and pressed Ask agent to fix) to that profile: starts a conversation on it with the hand-off. Its findings show as fixed when it reports back; you don't fix them yourself.",
+          "Hand a Spectra Council review's work that waits for a fixer profile to that profile: the findings the user handed it to fix (Ask … to fix), or the user's own ask they sent it. Starts a conversation on it with the hand-off; the canvas shows what it fixed when it reports back. You don't do that work yourself.",
         input: jsonSchema(delegateInput),
         async run(input, context) {
           const parsed = delegateInput.safeParse(input);
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
           const item = itemFor(context, parsed.data.review);
-          const review = settled(item);
+          const review = current(item, context);
           if (!review.handoff) throw new Error(`Review ${review.id} has no hand-off yet; the user writes it in the canvas.`);
           const waiting = review.findings.filter((finding) => finding.fix?.fixer && finding.fix.fixer.conversationId === null && (finding.fix.state === "handed-off" || finding.fix.state === "reopened"));
-          if (waiting.length === 0) throw new Error(`No finding of review ${review.id} waits for a fixer profile; the user picks one and presses Ask agent to fix.`);
-          const profile = waiting[0]!.fix!.fixer!.profile;
-          const ids = waiting.filter((finding) => finding.fix!.fixer!.profile === profile).sort(bySeverity).map(({ id }) => id);
-          const started = await context.startConversation({ profile, prompt: fixerPrompt(review, ids, review.handoff.path) });
-          applyTo(item, context, { type: "fix-delegated", at: clock.now(), findingIds: ids, profile: started.profile, conversationId: started.id });
-          return `Started a conversation on ${started.profile} to fix ${ids.join(", ")} of review ${review.id}. The canvas shows each finding as fixed when it reports back; there is nothing more for you to do.`;
+          const asked = (review.asks ?? []).findIndex((ask) => ask.fixer && ask.fixer.conversationId === null && ask.fixer.endedAt === null);
+          if (waiting.length === 0 && asked < 0) throw new Error(`Nothing of review ${review.id} waits for a fixer profile; the user picks one in the conversation header and hands findings or an ask to it.`);
+          // Two calls at once would both start a conversation for the same work.
+          if (delegating.has(item.id)) throw new Error(`A fixer conversation for review ${review.id} is being started; call council_delegate_fix again once it has.`);
+          delegating.add(item.id);
+          try {
+            if (waiting.length === 0) {
+              const { profile } = review.asks![asked]!.fixer!;
+              const started = await context.startConversation({ profile, prompt: askFixerPrompt(review, asked, review.handoff.path) });
+              applyTo(item, context, { type: "ask-delegated", at: clock.now(), ask: asked, conversationId: started.id });
+              return `Started a conversation on ${started.profile} with the user's ask about review ${review.id}. The canvas shows what it fixed or filed when it reports back; there is nothing more for you to do.`;
+            }
+            return await delegateFixes(item, context, review, waiting, asked >= 0);
+          } finally {
+            delegating.delete(item.id);
+          }
         },
       },
       council_mark_fixed: {
@@ -625,7 +676,7 @@ export function createCouncilHost({
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
           const { review: wanted, finding, summary, files } = parsed.data;
           const item = itemFor(context, wanted);
-          const next = applyTo(item, context, { type: "fix-reported", at: clock.now(), findingId: finding, summary, files }).data;
+          const next = applyTo(item, context, { type: "fix-reported", at: clock.now(), findingId: finding, summary, files });
           const open = next.findings.filter((each) => each.fix && (each.fix.state === "handed-off" || each.fix.state === "reopened")).map(({ id }) => id);
           return `Marked ${finding} fixed in review ${next.id}.${open.length > 0 ? ` Still to fix: ${open.join(", ")}.` : " Every handed-off finding is fixed; the user can have the council re-check them."}`;
         },
@@ -639,7 +690,7 @@ export function createCouncilHost({
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
           const { review: wanted, finding, ticket } = parsed.data;
           const item = itemFor(context, wanted);
-          const next = applyTo(item, context, { type: "ticketed", at: clock.now(), findingId: finding, ticket }).data;
+          const next = applyTo(item, context, { type: "ticketed", at: clock.now(), findingId: finding, ticket });
           const open = next.findings.filter((each) => each.ticket && !each.ticket.id).map(({ id }) => id);
           return `Recorded ${ticket} for ${finding} in review ${next.id}.${open.length > 0 ? ` Still to file: ${open.join(", ")}.` : ""}`;
         },
@@ -661,7 +712,7 @@ export function createCouncilHost({
         case "rule": {
           const { findingId, decision, note } = parsed.data;
           const before = settled(item).findings.find((finding) => finding.id === findingId);
-          const after = applyTo(item, context, { type: "ruled", at: clock.now(), findingId, decision, note }).data;
+          const after = applyTo(item, context, { type: "ruled", at: clock.now(), findingId, decision, note });
           const ticket = before?.ticket?.id;
           if (ticket && decision !== "accepted" && before?.ruling?.decision === "accepted") {
             await context.prompt(
@@ -690,15 +741,7 @@ export function createCouncilHost({
           return null;
         }
         case "remove": {
-          // A running review's session owns it; an ended one changes in place.
-          const session = sessions.get(item.id);
-          try {
-            if (session) session.remove(parsed.data.reviewerId);
-            else applyTo(item, context, { type: "reviewer-removed", reviewerId: parsed.data.reviewerId, at: clock.now() });
-          } catch (error) {
-            if (error instanceof ReviewError) throw new Error(error.message);
-            throw error;
-          }
+          applyTo(item, context, { type: "reviewer-removed", reviewerId: parsed.data.reviewerId, at: clock.now() });
           return null;
         }
         case "resume":
@@ -711,7 +754,7 @@ export function createCouncilHost({
         case "tickets":
           return requestTickets(item, context);
         case "ask":
-          return ask(item, context, parsed.data.text);
+          return ask(item, context, parsed.data.text, parsed.data.toFixer ?? false);
         case "beads":
           return { workspace: await beadsFor(settled(item)) };
         case "verify":
@@ -750,21 +793,47 @@ export function createCouncilHost({
         });
         return;
       }
+      const ended = reply.ended === "stopped" ? "was stopped" : "failed";
       for (const item of councilItems(context)) {
-        const review = item.data;
+        const review = current(item, context);
+        const askIndex = (review.asks ?? []).findIndex((ask) => ask.fixer?.conversationId === started.id);
         const mine = review.findings.filter((finding) => finding.fix?.fixer?.conversationId === started.id);
-        if (mine.length === 0) continue;
+        if (askIndex < 0 && mine.length === 0) continue;
         const at = clock.now();
-        const ids = new Set(mine.map(({ id }) => id));
         const report = reply.ended === "finished" ? parseFixerReport(reply.text) : null;
-        let next = settled(item);
+        // A re-check may be running: the events go through its session, like the agent's own reports.
+        const refused: string[] = [];
         const apply = (event: ReviewEvent) => {
           try {
-            next = reduce(next, event);
+            applyTo(item, context, event);
           } catch (error) {
             console.error(`spectra-council: a fixer report for review ${review.id} was refused:`, error);
+            refused.push(error instanceof Error ? error.message : String(error));
           }
         };
+        if (askIndex >= 0) {
+          // The user's own ask: what it reports about the findings asked about counts; the user said what to do.
+          const about = new Set(review.asks![askIndex]!.findingIds);
+          // A finding another fixer conversation is working on is that one's to report on.
+          const elsewhere = (id: string) => {
+            const fixer = review.findings.find((finding) => finding.id === id)?.fix?.fixer;
+            return !!fixer?.conversationId && fixer.conversationId !== started.id;
+          };
+          for (const fixed of report?.fixed ?? []) if (about.has(fixed.finding)) apply({ type: "fix-reported", at, findingId: fixed.finding, summary: fixed.summary, files: fixed.files });
+          for (const failed of report?.notFixed ?? []) if (about.has(failed.finding) && !elsewhere(failed.finding)) apply({ type: "fix-failed", at, findingIds: [failed.finding], reason: `${started.profile}: ${failed.reason}` });
+          for (const filed of report?.tickets ?? []) if (about.has(filed.finding)) apply({ type: "ticketed", at, findingId: filed.finding, ticket: filed.ticket });
+          const problem =
+            reply.ended !== "finished"
+              ? `${started.profile}'s conversation ${ended} before it reported.`
+              : !report
+                ? `${started.profile} ended without the JSON report; read its conversation to see what it did.`
+                : refused.length > 0
+                  ? `Part of ${started.profile}'s report wasn't recorded: ${refused.join(" ")}`
+                  : null;
+          apply({ type: "ask-answered", at, ask: askIndex, problem });
+          continue;
+        }
+        const ids = new Set(mine.map(({ id }) => id));
         const heard = new Set<string>();
         for (const fixed of report?.fixed ?? []) {
           if (!ids.has(fixed.finding)) continue;
@@ -780,13 +849,12 @@ export function createCouncilHost({
         if (silent.length > 0) {
           const reason =
             reply.ended !== "finished"
-              ? `${started.profile}'s conversation ${reply.ended === "stopped" ? "was stopped" : "failed"} before it reported.`
+              ? `${started.profile}'s conversation ${ended} before it reported.`
               : report
                 ? `${started.profile} didn't report on it.`
                 : `${started.profile} ended without the JSON report; read its conversation to see what it changed.`;
           apply({ type: "fix-failed", at, findingIds: silent, reason });
         }
-        context.change(item.id, { data: next });
       }
     },
     /** A review that ended since the agent last heard: it hears with the user's next message, once. */
@@ -798,7 +866,7 @@ export function createCouncilHost({
         heard: () => {
           for (const { id } of ended) {
             const latest = context.items().find((item) => item.id === id);
-            if (latest) context.change(id, { data: reduce(upgradeReview(latest.data), { type: "agent-heard", at: clock.now() }) });
+            if (latest) applyTo(latest, context, { type: "agent-heard", at: clock.now() });
           }
         },
       };

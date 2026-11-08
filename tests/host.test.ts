@@ -406,7 +406,44 @@ describe("the Mirador host", () => {
       expect(env.review().findings.filter((it) => it.fix).every((it) => it.fix!.state === "fixed")).toBe(true);
     });
 
+    test("a fix reported while a re-check runs survives it", async () => {
+      const env = await completed();
+      const [checked, other] = standing(env.review()).map(({ id }) => id);
+      for (const findingId of [checked!, other!]) await env.act({ kind: "rule", findingId, decision: "accepted" });
+      await env.act({ kind: "fix" });
+      await env.host.tools.council_mark_fixed!.run({ finding: checked!, summary: "done", files: [] }, env.context);
+      await env.act({ kind: "verify" });
+      await env.clock.step();
+      expect(env.review().phase).toBe("verification");
+      const answer = await env.host.tools.council_mark_fixed!.run({ finding: other!, summary: "later", files: ["src/b.ts"] }, env.context);
+      expect(answer).toContain(`Marked ${other} fixed`);
+      await env.clock.runAll();
+      await env.clock.settle();
+      expect(env.review().phase).toBe("complete");
+      expect(env.review().findings.find((it) => it.id === other)!.fix).toMatchObject({ state: "fixed", summary: "later", files: ["src/b.ts"] });
+      expect(env.review().findings.find((it) => it.id === checked)!.fix!.checks.length).toBeGreaterThan(0);
+    });
+
     describe("a fixer profile", () => {
+      test("a fixer's reply that comes while a re-check runs survives it", async () => {
+        const env = await completed();
+        env.canvas.settings.fixer = "codex";
+        const [checked, other] = standing(env.review()).map(({ id }) => id);
+        for (const findingId of [checked!, other!]) await env.act({ kind: "rule", findingId, decision: "accepted" });
+        await env.act({ kind: "fix" });
+        await env.host.tools.council_mark_fixed!.run({ finding: checked!, summary: "done", files: [] }, env.context);
+        await env.host.tools.council_delegate_fix!.run({}, env.context);
+        await env.act({ kind: "verify" });
+        await env.clock.step();
+        expect(env.review().phase).toBe("verification");
+        const text = "Done.\n```json\n" + JSON.stringify({ fixed: [{ finding: other, summary: "by codex", files: ["src/c.ts"] }] }) + "\n```";
+        await env.host.replied!({ id: "conversation-fixer-1", profile: "codex" }, { ended: "finished", text }, env.context);
+        await env.clock.runAll();
+        await env.clock.settle();
+        expect(env.review().phase).toBe("complete");
+        expect(env.review().findings.find((it) => it.id === other)!.fix).toMatchObject({ state: "fixed", summary: "by codex" });
+      });
+
       async function delegated() {
         const env = await completed();
         env.canvas.settings.fixer = "codex";

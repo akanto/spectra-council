@@ -53,7 +53,7 @@ describe("parseFixerReport", () => {
 
   test("it reads a report from the end of a message", () => {
     const report = parseFixerReport(`Done.\n\n${block({ fixed: [{ finding: "F1", summary: "Fixed", files: ["a.ts"] }], notFixed: [{ finding: "F2", reason: "Hard" }] })}`);
-    expect(report).toEqual({ fixed: [{ finding: "F1", summary: "Fixed", files: ["a.ts"] }], notFixed: [{ finding: "F2", reason: "Hard" }] });
+    expect(report).toEqual({ fixed: [{ finding: "F1", summary: "Fixed", files: ["a.ts"] }], notFixed: [{ finding: "F2", reason: "Hard" }], tickets: [] });
   });
 
   test("it takes the last valid block", () => {
@@ -81,8 +81,12 @@ describe("parseFixerReport", () => {
     expect(parseFixerReport(block({ fixed: 3 }))).toBeNull();
   });
 
+  test("it reads the beads issues filed on an ask", () => {
+    expect(parseFixerReport(block({ tickets: [{ finding: "F2", ticket: "proj-1x2" }] }))!.tickets).toEqual([{ finding: "F2", ticket: "proj-1x2" }]);
+  });
+
   test("it defaults missing arrays", () => {
-    expect(parseFixerReport(block({}))).toEqual({ fixed: [], notFixed: [] });
-    expect(parseFixerReport(block({ fixed: [{ finding: "F1", summary: "s" }] }))).toEqual({ fixed: [{ finding: "F1", summary: "s", files: [] }], notFixed: [] });
+    expect(parseFixerReport(block({}))).toEqual({ fixed: [], notFixed: [], tickets: [] });
+    expect(parseFixerReport(block({ fixed: [{ finding: "F1", summary: "s" }] }))).toEqual({ fixed: [{ finding: "F1", summary: "s", files: [] }], notFixed: [], tickets: [] });
   });
 });

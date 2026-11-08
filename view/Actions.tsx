@@ -1,6 +1,6 @@
 /** After the verdict: the proposed fix, the user's ruling, the fix's progress and the action plan that drives the hand-off. */
 import { useContext, useEffect, useRef, useState } from "react";
-import { isRunning, isRulable, type Finding, type Review } from "../core/model.ts";
+import { isRunning, isRulable, type Ask, type Finding, type Review } from "../core/model.ts";
 import type { Decision, ViewAction } from "../core/schemas.ts";
 import { ASK_MAX } from "../core/schemas.ts";
 import { unticketed, waitingTickets } from "../core/tickets.ts";
@@ -221,8 +221,20 @@ export function RulingControl({ review, finding, act, busy, openPath, next }: { 
   );
 }
 
-/** A box to ask the agent for something in the user's own words about the accepted findings. */
-function AskForm({ act, off, last, asks }: { act: Act; off: boolean; last: string | undefined; asks: number }) {
+/** Where the last ask went, and, sent to the fixer profile, how far its conversation got. */
+function askStatus(ask: Ask): string {
+  if (!ask.fixer) return "Last asked:";
+  const { profile, conversationId, endedAt, problem } = ask.fixer;
+  if (problem) return `Asked ${profile} · ${problem} ·`;
+  if (endedAt !== null) return `Asked ${profile} · answered ·`;
+  return `Asked ${profile} · ${conversationId ? "working" : "starting"}… ·`;
+}
+
+/**
+ * A box to ask for something in the user's own words about the accepted findings: of this conversation's agent, or,
+ * with a fixer profile chosen, of that profile in a conversation of its own.
+ */
+function AskForm({ act, off, last, asks, fixer }: { act: Act; off: boolean; last: Ask | undefined; asks: number; fixer: string | null }) {
   const [text, setText] = useState("");
   // How many asks the review had when this one was sent: the box clears once the review records another, and keeps the
   // text if the host refused it.
@@ -234,10 +246,10 @@ function AskForm({ act, off, last, asks }: { act: Act; off: boolean; last: strin
     }
   }, [asks, sentAt]);
   const trimmed = text.trim();
-  const submit = () => {
+  const submit = (toFixer = false) => {
     if (!trimmed || off) return;
     setSentAt(asks);
-    act({ kind: "ask", text: trimmed });
+    act({ kind: "ask", text: trimmed, ...(toFixer ? { toFixer } : {}) });
   };
   return (
     <form
@@ -262,12 +274,27 @@ function AskForm({ act, off, last, asks }: { act: Act; off: boolean; last: strin
             }
           }}
         />
-        <button type="submit" disabled={!trimmed || off}>
-          Send
-        </button>
+        <div className="ask-send">
+          <button type="submit" disabled={!trimmed || off}>
+            Send
+          </button>
+          {fixer && (
+            <button type="button" disabled={!trimmed || off} onClick={() => submit(true)}>
+              Send to {fixer}
+            </button>
+          )}
+        </div>
       </div>
-      <p className="hint">Goes to this conversation's agent with the accepted findings and the hand-off.</p>
-      {last && <p className="hint ask-last">Last asked: “{last.length > 140 ? `${last.slice(0, 140)}…` : last}”</p>}
+      <p className="hint">
+        {fixer
+          ? `Send goes to this conversation's agent, Send to ${fixer} to a conversation of its own; either way with the accepted findings and the hand-off.`
+          : "Goes to this conversation's agent with the accepted findings and the hand-off."}
+      </p>
+      {last && (
+        <p className="hint ask-last">
+          {askStatus(last)} “{last.text.length > 140 ? `${last.text.slice(0, 140)}…` : last.text}”
+        </p>
+      )}
     </form>
   );
 }
@@ -298,7 +325,7 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
   const ticketed = standing.filter((finding) => finding.ticket && finding.ticket.id !== null).length;
   const ticketWaiting = waitingTickets(review).length;
   const hasTickets = standing.some((finding) => finding.ticket);
-  const lastAsk = review.asks?.[review.asks.length - 1]?.text;
+  const lastAsk = review.asks?.at(-1);
   const who = fixer ?? "agent";
   // The one accent-filled button follows the next step; nothing is primary while the user still has to rule.
   const next: "verify" | "fix" | null = unruled > 0 ? null : fixed > 0 ? "verify" : toHand + reopened > 0 ? "fix" : null;
@@ -393,7 +420,7 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
           )}
         </div>
       )}
-      {!compact && accepted.length > 0 && review.phase === "complete" && <AskForm act={act} off={off} last={lastAsk} asks={review.asks?.length ?? 0} />}
+      {!compact && accepted.length > 0 && review.phase === "complete" && <AskForm act={act} off={off} last={lastAsk} asks={review.asks?.length ?? 0} fixer={fixer} />}
       {!compact && (accepted.length > 0 || hasFixes) && (
         <p className="hint">
           {fixer

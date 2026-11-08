@@ -69,7 +69,8 @@ there:
    the review), and report each id with `council_mark_ticketed`; the finding shows its ticket. The button shows when the
    target, or a folder above it, has a beads workspace (`.beads` with bd's `config.yaml` or `metadata.json`). The box under the buttons sends your own instruction
    ("fix only the security ones and add tests", "open a PR per finding") to the agent, with the accepted findings and
-   the hand-off.
+   the hand-off. With a fixer profile chosen, *Send to pi glm* sends it to that profile instead, through
+   `council_delegate_fix`: its conversation ends with the same JSON report, plus any beads issues it filed.
 
 When the deliberation ends, a verdict banner shows at the top of the review with a one-line verdict. The agent hears
 about the review with your next message, and `council_status` gives it every finding and its status. Reviews are canvas items, so Mirador keeps them across restarts. A review that was running

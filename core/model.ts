@@ -188,6 +188,19 @@ export interface Ask {
   text: string;
   findingIds: string[];
   at: number;
+  /** Sent to the fixer profile in a conversation of its own, rather than this conversation's agent; absent if not. */
+  fixer?: AskFixer;
+}
+
+/** An ask sent to the fixer profile: its conversation, once started, and how it ended. */
+export interface AskFixer {
+  profile: string;
+  /** Null until the conversation's agent starts it (council_delegate_fix). */
+  conversationId: string | null;
+  /** When the fixer's conversation ended its turn; null while it waits or works. */
+  endedAt: number | null;
+  /** Why its reply couldn't be used (it failed, was stopped, or had no JSON report); null otherwise. */
+  problem: string | null;
 }
 
 /** The hand-off document: the accepted findings, how the council got there and the proposed fixes, written to a file. */

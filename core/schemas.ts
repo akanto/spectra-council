@@ -177,7 +177,8 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   /** Ask the conversation's agent to file a beads issue for each accepted finding without one, by the hand-off. */
   z.object({ kind: z.literal("tickets") }),
   /** Send the user's own instruction about the accepted findings to the conversation's agent, with the hand-off. */
-  z.object({ kind: z.literal("ask"), text: z.string().trim().min(1).max(ASK_MAX) }),
+  /** `toFixer`: to the conversation's chosen Spectra Council fixer profile instead of its own agent. */
+  z.object({ kind: z.literal("ask"), text: z.string().trim().min(1).max(ASK_MAX), toFixer: z.boolean().optional() }),
   /** Where the review's beads workspace is: resolves to `{ workspace: string | null }`, null when the target has none. */
   z.object({ kind: z.literal("beads") }),
   /** Re-check the fixed findings in a verification round. */

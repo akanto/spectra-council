@@ -1863,6 +1863,12 @@ button.md-path {
   resize: vertical;
 }
 
+.ask-send {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .ask-last {
   font-style: italic;
 }

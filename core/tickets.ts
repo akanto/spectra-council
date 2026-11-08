@@ -3,7 +3,9 @@
  * each (for repos that track their work in beads), or whatever the user wrote in their own words. Pure: the host
  * sends the prompts and the agent reports back through tools.
  */
+import { idsInTitle, turnTitle } from "./agent-turns.ts";
 import { bySeverity } from "./describe.ts";
+import { ASK_REPORT_EXAMPLE } from "./fixer.ts";
 import type { Finding, Review } from "./model.ts";
 import type { Severity } from "./schemas.ts";
 
@@ -47,18 +49,43 @@ export function ticketsPrompt(review: Review, ids: string[], handoffPath: string
   ].join("\n\n");
 }
 
+const quote = (text: string) =>
+  text
+    .trim()
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+
+const handoffLine = (handoffPath: string) =>
+  `The hand-off at ${handoffPath} has, for each one, what's wrong, the evidence, how the council reached its conclusion (including any dissent) and the proposed fix with how to verify it.`;
+
 /** Sends the user's own instruction about the accepted findings, with the findings and the hand-off, to the agent. */
 export function askPrompt(review: Review, text: string, handoffPath: string): string {
-  const findings = acceptedOf(review);
   return [
     `The user asks about the accepted findings of Spectra Council review ${review.id}, in their own words:`,
-    text
-      .trim()
-      .split("\n")
-      .map((line) => `> ${line}`)
-      .join("\n"),
-    `The accepted findings, most severe first:\n${list(findings)}`,
-    `The hand-off at ${handoffPath} has, for each one, what's wrong, the evidence, how the council reached its conclusion (including any dissent) and the proposed fix with how to verify it. council_status has the whole review.`,
+    quote(text),
+    `The accepted findings, most severe first:\n${list(acceptedOf(review))}`,
+    `${handoffLine(handoffPath)} council_status has the whole review.`,
     `Do what the user asks, only for these findings. If you fix one, call council_mark_fixed with review "${review.id}", the finding id, what you changed and the files; if you file a beads issue for one, call council_mark_ticketed with review "${review.id}", the finding id and the issue id.`,
+  ].join("\n\n");
+}
+
+/**
+ * The first message of the fixer profile's conversation for the user's own ask (`asks[index]`): the same instruction,
+ * reported back in a JSON block, since that conversation can't reach the review's canvas.
+ */
+export function askFixerPrompt(review: Review, index: number, handoffPath: string): string {
+  const ask = review.asks?.[index];
+  if (!ask) throw new Error(`Review ${review.id} has no ask ${index}.`);
+  const findings = review.findings.filter((finding) => ask.findingIds.includes(finding.id)).sort(bySeverity);
+  return [
+    turnTitle(review, `Ask about ${idsInTitle(findings.map(({ id }) => id))}`),
+    `A Spectra Council review (${review.id}) of ${review.target} is complete. The user asks about its accepted findings, in their own words:`,
+    quote(ask.text),
+    `The accepted findings, most severe first:\n${list(findings)}`,
+    handoffLine(handoffPath),
+    `Do what the user asks, only for these findings; leave the ones the hand-off lists under "Not to fix" alone. If you file beads issues, check first that each isn't filed already (bd search --desc-contains "review ${review.id}, finding <id>").`,
+    `You can't report to the review directly. When you are done, end your final message with this JSON block: each finding you fixed under "fixed", each you were asked to fix and didn't under "notFixed", each beads issue you filed under "tickets"; leave out what the user didn't ask for.`,
+    ASK_REPORT_EXAMPLE,
   ].join("\n\n");
 }

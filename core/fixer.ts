@@ -14,6 +14,8 @@ export const fixerReportSchema = z.object({
     .array(z.object({ finding: z.string().min(1), summary: z.string().min(1), files: z.array(z.string().min(1)).default([]) }))
     .default([]),
   notFixed: z.array(z.object({ finding: z.string().min(1), reason: z.string().min(1) })).default([]),
+  /** Beads issues filed for findings: only read for the user's own ask, which may ask for them. */
+  tickets: z.array(z.object({ finding: z.string().min(1), ticket: z.string().min(1) })).default([]),
 });
 
 export type FixerReport = z.infer<typeof fixerReportSchema>;
@@ -22,6 +24,15 @@ const EXAMPLE = `\`\`\`json
 {
   "fixed": [{ "finding": "F4", "summary": "What you changed, in a sentence.", "files": ["src/cache.ts"] }],
   "notFixed": [{ "finding": "F7", "reason": "Why not, in a sentence." }]
+}
+\`\`\``;
+
+/** How the fixer reports on the user's own ask: fixes, findings it left, and beads issues it filed. */
+export const ASK_REPORT_EXAMPLE = `\`\`\`json
+{
+  "fixed": [{ "finding": "F4", "summary": "What you changed, in a sentence.", "files": ["src/cache.ts"] }],
+  "notFixed": [{ "finding": "F7", "reason": "Why not, in a sentence." }],
+  "tickets": [{ "finding": "F2", "ticket": "the beads issue id" }]
 }
 \`\`\``;
 

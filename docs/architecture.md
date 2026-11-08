@@ -60,7 +60,11 @@ counts only if the user asked about that finding, so a report meant for another 
 agent the accepted findings, and `fix-reported` records each fix from `council_mark_fixed`. With a fixer profile chosen
 (the plugin's profile setting `fixer`), the agent calls `council_delegate_fix`, which starts a conversation on that
 profile (`fix-delegated`); only a tool may start one. That conversation can't reach the review's canvas, so it ends its
-reply with a JSON report (`core/fixer.ts`), which `replied` turns into `fix-reported` and `fix-failed`. `verification-started` opens
+reply with a JSON report (`core/fixer.ts`), which `replied` turns into `fix-reported` and `fix-failed`. The user's own
+ask can go to the fixer profile the same way: `asked` with a `profile` waits for `council_delegate_fix`
+(`ask-delegated`), and that conversation's report adds `tickets` (`ticketed`) and ends the ask (`ask-answered`). Every
+change from outside the engine goes through `applyTo` in the host, which hands it to the running session when there is
+one (a re-check): the session holds the review and writes it as it goes, so a direct write would be lost. `verification-started` opens
 the phase, where `ReviewerRunner.verify` has each reporter and backer check a fix (`fix-checked`), and
 `verification-ended` closes it with each fix verified or reopened.
 

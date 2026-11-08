@@ -216,6 +216,14 @@ export class ReviewSession {
     this.#dispatch({ type: "reviewer-removed", reviewerId, at: this.#clock.now() });
   }
 
+  /**
+   * Applies an event from outside the run, such as a fix the agent reports or a fixer's reply during a re-check: the
+   * session holds the review while it runs, so a change written past it would be lost with its next write.
+   */
+  apply(event: ReviewEvent) {
+    this.#dispatch(event);
+  }
+
   /** Whatever is left from where the review is: the independent reviews still to do, the deliberation, the verdict. */
   async #onwards(): Promise<Review> {
     const profile = PROFILES[this.#review.profile];
