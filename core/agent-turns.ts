@@ -19,9 +19,19 @@ const schemaOf = (schema: z.ZodType) => JSON.stringify(z.toJSONSchema(schema), n
 
 const bullets = (items: string[]) => items.map((item) => `- ${item}`).join("\n");
 
+/** Finding ids as a title shows them: the first three, then how many more. */
+export const idsInTitle = (ids: string[]) => (ids.length <= 3 ? ids.join(", ") : `${ids.slice(0, 3).join(", ")} +${ids.length - 3}`);
+
+/**
+ * The first line of every prompt the council sends, which Mirador takes for the conversation's title (its first 60
+ * characters): the review, then the task, then who does it, so a cut drops the least telling part.
+ */
+export const turnTitle = (review: Pick<Review, "id">, task: string, who?: string) => ["Spectra Council " + review.id, task, ...(who ? [who] : [])].join(" · ");
+
 /** The common start of every turn: who the reviewer is, the rules, the profile's brief and the user's instructions. */
-function header({ review, reviewer, profile }: ReviewerJob): string {
+function header({ review, reviewer, profile }: ReviewerJob, task: string): string {
   const parts = [
+    turnTitle(review, task, reviewer.label),
     `You are reviewer ${reviewer.id}, one independent reviewer on a Spectra Council review of this target: ${review.target}`,
     "The target may be a folder or one file. Evidence paths are relative to the target folder (for a file target, the folder holding it).",
     "You are read-only: read and search the target, but don't change any file, and don't run commands that write or install anything.",
@@ -79,7 +89,7 @@ export function reviewPrompt(job: ReviewerJob): string {
       },
     ],
   };
-  return [header(job), task, ending("your findings", '{ "findings": [ ... ] }', "finding", findingInputSchema, example)].join("\n\n");
+  return [header(job, "Review"), task, ending("your findings", '{ "findings": [ ... ] }', "finding", findingInputSchema, example)].join("\n\n");
 }
 
 export function groupingPrompt(job: ReviewerJob): string {
@@ -94,7 +104,7 @@ export function groupingPrompt(job: ReviewerJob): string {
     groups: [{ findingIds: [first?.id ?? "F1", second?.id ?? "F2"], reason: "Both describe the missing null check on parse()'s result in src/server.ts; checking it fixes both." }],
   };
   return [
-    header(job),
+    header(job, "Grouping duplicates"),
     task,
     `Findings:\n${review.findings.map((finding) => findingText(finding, review)).join("\n\n")}`,
     ending("your groups", '{ "groups": [ ... ] }', "group", duplicateGroupInputSchema, example),
@@ -132,7 +142,7 @@ export function deliberationPrompt(job: DeliberationJob): string {
     ],
   };
   return [
-    header(job),
+    header(job, `Deliberation ${round}/${rounds}`),
     task,
     `Findings:\n${findingBlocks.join("\n\n")}`,
     `Arguments so far:\n${review.arguments.length === 0 ? "none" : review.arguments.map(argumentText).join("\n")}`,
@@ -167,7 +177,7 @@ export function proposalPrompt(job: ProposalJob): string {
       },
     ],
   };
-  return [header(job), task, `Findings:\n${blocks.join("\n\n")}`, ending("your proposals", '{ "proposals": [ ... ] }', "proposal", proposalInputSchema, example)].join("\n\n");
+  return [header(job, `Proposals ${idsInTitle(job.findingIds)}`), task, `Findings:\n${blocks.join("\n\n")}`, ending("your proposals", '{ "proposals": [ ... ] }', "proposal", proposalInputSchema, example)].join("\n\n");
 }
 
 export function verificationPrompt(job: VerificationJob): string {
@@ -192,7 +202,7 @@ export function verificationPrompt(job: VerificationJob): string {
       },
     ],
   };
-  return [header(job), task, `Fixed findings:\n${blocks.join("\n\n")}`, ending("your checks", '{ "checks": [ ... ] }', "check", fixCheckInputSchema, example)].join("\n\n");
+  return [header(job, `Re-check${job.pass > 1 ? ` ${job.pass}` : ""} ${idsInTitle(job.findingIds)}`), task, `Fixed findings:\n${blocks.join("\n\n")}`, ending("your checks", '{ "checks": [ ... ] }', "check", fixCheckInputSchema, example)].join("\n\n");
 }
 
 const REPLY_LIMIT = 20_000;
@@ -203,7 +213,10 @@ const REPLY_LIMIT = 20_000;
  */
 export function repairPrompt(original: string, reply: string, problem: string): string {
   const kept = reply.length > REPLY_LIMIT ? `[...earlier part left out...]\n${reply.slice(-REPLY_LIMIT)}` : reply;
+  // The original task's title, marked as the retry it is.
+  const title = original.split("\n", 1)[0] ?? "";
   return [
+    `Retry · ${title}`,
     "You are a reviewer on a Spectra Council review. In an earlier conversation you were given the task below and answered it, but your answer could not be read by the program that collects it.",
     `The task you were given:\n<task>\n${original}\n</task>`,
     `Your previous reply:\n<previous-reply>\n${kept}\n</previous-reply>`,

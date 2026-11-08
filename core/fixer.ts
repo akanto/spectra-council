@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import type { Review } from "./model.ts";
+import { idsInTitle, turnTitle } from "./agent-turns.ts";
 import { lastJson } from "./replies.ts";
 
 /** What the fixer ends its final message with, inside a ```json fence. */
@@ -32,6 +33,7 @@ export function fixerPrompt(review: Review, findingIds: string[], handoffPath: s
     return `- ${id}: ${finding?.title ?? "?"}${reopened}`;
   });
   return [
+    turnTitle(review, `Fix ${idsInTitle(findingIds)}`),
     `A Spectra Council review (${review.id}) of ${review.target} handed these findings to you to fix, most severe first:`,
     titles.join("\n"),
     `Read the hand-off first: ${handoffPath}. For each finding it has the evidence, how the council reached its conclusion (with any dissent), and the proposed fix with how to verify it. Treat the proposed fix as a starting point and check it against the code. Fix only these findings; leave the ones the hand-off lists under "Not to fix" alone.`,
