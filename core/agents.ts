@@ -34,6 +34,15 @@ export const PROFILE_PREFIX = "profile:";
 /** Whether an agent id names a Mirador profile rather than a mock persona. */
 export const isProfileAgent = (id: string) => id.startsWith(PROFILE_PREFIX) && id.length > PROFILE_PREFIX.length;
 
+/** A seat for a Mirador profile not named yet ("Add reviewer" once every known profile is seated): it can't start. */
+export const UNNAMED_PROFILE = PROFILE_PREFIX;
+
+/** Whether an agent id names one of the deterministic mock personas. */
+export const isMockAgent = (id: string) => agentById(id) !== undefined;
+
+/** Whether an agent id can run: a named Mirador profile or a known mock persona. */
+export const isRunnableAgent = (id: string) => isProfileAgent(id) || isMockAgent(id);
+
 /** The agent id of the Mirador profile of that name. */
 export const profileAgent = (name: string) => `${PROFILE_PREFIX}${name.trim()}`;
 
@@ -43,7 +52,7 @@ export const profileName = (id: string) => id.slice(PROFILE_PREFIX.length);
 /** Who runs a council with these seats: mocks only, Mirador profiles only, or both. */
 export function runnerKindOf(seats: { agent: string; enabled: boolean }[]): RunnerKind {
   const seated = seats.filter((seat) => seat.enabled);
-  const profiles = seated.filter((seat) => isProfileAgent(seat.agent)).length;
+  const profiles = seated.filter((seat) => isProfileAgent(seat.agent) || seat.agent === UNNAMED_PROFILE).length;
   return profiles === 0 ? "mock" : profiles === seated.length ? "mirador" : "mixed";
 }
 
@@ -51,6 +60,7 @@ export function runnerKindOf(seats: { agent: string; enabled: boolean }[]): Runn
 export function agentLabel(id: string): string {
   const known = agentById(id);
   if (known) return known.label;
+  if (id === UNNAMED_PROFILE) return "Unnamed profile";
   return isProfileAgent(id) ? profileName(id) : id;
 }
 

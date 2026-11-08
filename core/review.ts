@@ -10,7 +10,7 @@
  * (handoff-written), the agent is asked to fix them (fix-requested) and reports each fix (fix-reported), and a
  * verification round has reviewers re-check the fixes (verification-started → fix-checked → verification-ended).
  */
-import { agentLabel, runnerKindOf, withLabels } from "./agents.ts";
+import { agentLabel, isRunnableAgent, runnerKindOf, withLabels } from "./agents.ts";
 import { DEPTH_PRESETS, depthOf, type DepthChoice, type Knobs } from "./depth.ts";
 import {
   MAX_ACTIVITY,
@@ -342,6 +342,8 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "started": {
       if (review.phase !== "setup") throw new ReviewError(`The review can't start: it is ${review.phase}.`);
       if (seatedReviewers(review).length === 0) throw new ReviewError("Seat at least one reviewer before starting the review.");
+      const unnamed = review.reviewers.flatMap((reviewer, index) => (reviewer.enabled && !isRunnableAgent(reviewer.agent) ? [index + 1] : []));
+      if (unnamed.length > 0) throw new ReviewError(`Name the Mirador profile for reviewer ${unnamed.join(", ")} before starting the review.`);
       return {
         ...review,
         phase: "independent-review",

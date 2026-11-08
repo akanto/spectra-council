@@ -1,6 +1,6 @@
 /** The review's setup: what it reviews (set by the agent), profile, depth, the council's seats and instructions; Start review hands it to the host. */
 import { useEffect, useRef, useState } from "react";
-import { MOCK_AGENTS, isProfileAgent, modelLabel, profileAgent, profileName, type ProfileInfo } from "../core/agents.ts";
+import { MOCK_AGENTS, UNNAMED_PROFILE, isMockAgent, isProfileAgent, modelLabel, profileAgent, profileName, type ProfileInfo } from "../core/agents.ts";
 import type { Review, Reviewer } from "../core/model.ts";
 import { DEPTH_TITLES, MAX_FINDINGS_RANGE, ROUNDS_RANGE, knobsText, plannedTurns } from "../core/depth.ts";
 import { PROFILES } from "../core/profiles.ts";
@@ -140,6 +140,7 @@ function SeatCard({
   reviewer,
   profiles,
   canRemove,
+  offerMocks,
   other,
   setOther,
   setAgent,
@@ -150,6 +151,8 @@ function SeatCard({
   reviewer: Reviewer | undefined;
   profiles: ProfileInfo[];
   canRemove: boolean;
+  /** Whether the mock personas are on offer: only in a demo, a review the agent opened with mock seats. */
+  offerMocks: boolean;
   /** "Other profile…" is chosen: a name is typed rather than picked. */
   other: boolean;
   setOther(other: boolean): void;
@@ -171,7 +174,7 @@ function SeatCard({
     // A name from the list shows as that option; any other shows as its own.
     setOther(false);
   };
-  const showOther = other;
+  const showOther = other || seat.agent === UNNAMED_PROFILE;
   const mock = MOCK_AGENTS.find((agent) => agent.id === seat.agent);
   const info = profiles.find((profile) => profile.name === saved);
   const model = reviewer?.model ?? info?.model ?? null;
@@ -213,13 +216,15 @@ function SeatCard({
           </optgroup>
         )}
         {isProfile && !listed && !showOther && <option value={seat.agent}>{saved}</option>}
-        <optgroup label="Mock reviewers (demo)">
-          {MOCK_AGENTS.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.label} (mock)
-            </option>
-          ))}
-        </optgroup>
+        {offerMocks && (
+          <optgroup label="Mock reviewers (demo)">
+            {MOCK_AGENTS.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.label} (mock)
+              </option>
+            ))}
+          </optgroup>
+        )}
         <option value={OTHER}>Other profile{"\u2026"}</option>
       </select>
       {showOther && (
@@ -271,6 +276,9 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
     setDraft((sent) => (sent && sent.map((seat) => seat.agent).join("\n") === storedKey ? null : sent));
   }, [storedKey]);
   const seats = draft ?? stored;
+  // Mocks are a demo, offered only when the review was opened with one seated (the agent seats them only when asked);
+  // latched, so switching a demo's seats to profiles doesn't take them away mid-setup.
+  const [offerMocks] = useState(() => stored.some((seat) => isMockAgent(seat.agent)));
   const count = seats.length;
   const knobs = { deliberationRounds: setup.deliberationRounds, maxFindings: setup.maxFindings };
   const turns = count > 0 ? plannedTurns(count, knobs, seats.some((seat) => isProfileAgent(seat.agent))) : null;
@@ -291,11 +299,12 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
   const add = () => {
     const taken = new Set(seats.map((seat) => seat.agent));
     const next = profiles.find((profile) => !taken.has(profileAgent(profile.name)));
-    const agent = next ? profileAgent(next.name) : (MOCK_AGENTS.find((each) => !taken.has(each.id)) ?? MOCK_AGENTS[0]!).id;
+    // Never a mock by itself: with every known profile seated, the new seat waits for a profile's name.
+    const agent = next ? profileAgent(next.name) : UNNAMED_PROFILE;
     send([...seats, { agent, enabled: true }]);
   };
   // A seat switched to "Other profile…" keeps its old agent until a profile is named: it mustn't start as that.
-  const unnamed = others.filter((at) => seats[at] && !isProfileAgent(seats[at]!.agent)).map((at) => at + 1);
+  const unnamed = seats.flatMap((seat, at) => (seat.agent === UNNAMED_PROFILE || (others.includes(at) && !isProfileAgent(seat.agent)) ? [at + 1] : []));
 
   return (
     <div className="setup">
@@ -377,6 +386,7 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
               reviewer={seatedReviewers[index]?.agent === seat.agent ? seatedReviewers[index] : undefined}
               profiles={profiles}
               canRemove={count > 1}
+              offerMocks={offerMocks || isMockAgent(seat.agent)}
               other={others.includes(index)}
               setOther={(other) => setOther(index, other)}
               setAgent={setAgent}
