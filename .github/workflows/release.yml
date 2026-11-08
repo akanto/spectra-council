@@ -1,0 +1,57 @@
+# Runs when a version tag (v*) is pushed, normally by `bun run release <version>` then
+# `git push origin main v<version>`. It checks that the tag matches the version in package.json and plugin.json, runs
+# the same gates as ci.yml, then builds the view and publishes a GitHub release with generated notes and a tarball of
+# plugin.json and dist/view.js. Mirador's plugin store installs at the tag and runs plugin.json's `build`, so the
+# tarball is a convenience copy.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tag matches package.json and plugin.json
+        run: |
+          for f in package.json plugin.json; do
+            v="v$(jq -r .version "$f")"
+            if [ "$v" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::$f has version $v but the tag is $GITHUB_REF_NAME. Delete the tag and cut the release again with bun run release."
+              exit 1
+            fi
+          done
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: ci
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Pack the tarball
+        run: tar -czf "spectra-council-${GITHUB_REF_NAME#v}.tar.gz" plugin.json dist/view.js
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A prerelease (v0.3.0-rc.1) is marked so; otherwise GitHub marks the release latest by its version, so a
+          # backported patch doesn't take that place.
+          kind=""
+          case "$GITHUB_REF_NAME" in *-*) kind="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" "spectra-council-${GITHUB_REF_NAME#v}.tar.gz" \
+            --title "Spectra Council ${GITHUB_REF_NAME#v}" --generate-notes $kind

@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["core", "hosts", "view", "tests", "scripts"]
+  "include": ["core", "hosts", "view", "tests", "scripts", "e2e"]
 }

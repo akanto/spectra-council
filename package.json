@@ -7,7 +7,10 @@
     "build": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test tests",
-    "harness": "bun run build && bun scripts/harness.ts"
+    "harness": "bun run build && bun scripts/harness.ts",
+    "e2e": "bun run build && bun test e2e",
+    "release": "bun scripts/release.ts",
+    "api-compat": "bun scripts/api-compat.ts"
   },
   "dependencies": {
     "react": "19",

@@ -2,6 +2,8 @@ node_modules/
 dist/
 .harness/
 .spectra-council/
+.mirador/
+compat/tsconfig.local.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/

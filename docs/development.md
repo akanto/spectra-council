@@ -21,7 +21,18 @@ bun test tests                        # reducer, mock reviewers, engine and Mira
 bun run build                         # dist/view.js; SPECTRA_MINIFY=0 for a readable bundle
 bun run harness [target]              # the view against a stand-in for Mirador: http://127.0.0.1:4830 (?theme=dark)
 bun scripts/screenshots.ts            # with the harness running: a review in Chrome, screenshots in .harness/
+bun run e2e                           # build, then a mock review in Chrome and in WebKit framed as Mirador frames it
+bun run api-compat                    # hosts/mirador/api.ts against Mirador's plugin API types
 ```
+
+`bun run e2e` needs Chrome, and WebKit (`bunx playwright-core install webkit`) with Mirador's
+`shared/canvas-document.ts` for the framed run: the installed app's, or `MIRADOR_CANVAS`. A setup that can't run is
+skipped. Screenshots go to `.harness/e2e/`. `bun run api-compat` reads Mirador's `shared/` from `MIRADOR_SHARED`,
+`.mirador/shared` or the installed app, and passes with a note when there is none.
+
+CI (`.github/workflows/ci.yml`) runs the typecheck, tests and build, the API check and the e2e on macOS, against
+Mirador at the tag `MIRADOR_REF` pins (sparse checkout into `.mirador/`). Bumping that pin is how the plugin moves to a
+newer Mirador.
 
 ## Using it in Mirador
 
@@ -84,3 +95,17 @@ A seat can be a real agent on one of your Mirador profiles, not a mock:
 | `tests/` | Bun tests | |
 
 A standalone desktop app would go in a new folder under `hosts/`, with its own `CouncilBridge` and runner.
+
+## Releasing
+
+```bash
+bun run release 0.2.0           # on a clean main: sets the version in package.json and plugin.json,
+                                # commits "Release v0.2.0" and tags v0.2.0
+git push --atomic origin main v0.2.0     # the script prints this and does not push
+```
+
+The tag starts `.github/workflows/release.yml`. It checks that the tag equals `v` plus the version in `package.json` and
+in `plugin.json`, runs `ci.yml`, builds the view and publishes a GitHub release with generated notes and a
+`spectra-council-0.2.0.tar.gz` holding `plugin.json` and `dist/view.js`. A tag whose version doesn't match fails in the
+first job, before anything is published. Mirador's plugin store installs at the tag and runs `build`, so the tarball is
+a convenience copy.
