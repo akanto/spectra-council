@@ -29,6 +29,15 @@ const acceptedOf = (review: Review): Finding[] => review.findings.filter((findin
 
 const list = (findings: Finding[]) => findings.map((finding) => `- ${finding.id} (${finding.severity}, beads priority ${BEADS_PRIORITY[finding.severity]}): ${finding.title.replace(/\s+/g, " ").trim()}`).join("\n");
 
+/**
+ * The hand-off as an issue names it: relative to the beads workspace, as the issues are shared with it (a public repo's
+ * beads are public), and an absolute path would give away the user's home folder.
+ */
+export function handoffRef(handoffPath: string, workspace: string): string {
+  const root = workspace.replace(/\/+$/, "");
+  return root && handoffPath.startsWith(`${root}/`) ? handoffPath.slice(root.length + 1) : handoffPath;
+}
+
 /** Asks the agent to file one beads issue per finding in `ids`, by the hand-off, and report each id back. */
 export function ticketsPrompt(review: Review, ids: string[], handoffPath: string, workspace: string): string {
   const findings = review.findings.filter((finding) => ids.includes(finding.id)).sort(bySeverity);
@@ -41,7 +50,7 @@ export function ticketsPrompt(review: Review, ids: string[], handoffPath: string
       "- --title: the finding's title;",
       "- --type=bug, or --type=task where it is not a defect;",
       "- --priority: the beads priority given above (from the severity);",
-      "- --description: what's wrong and the failure scenario, the evidence as path:line, and a final line \"From Spectra Council review " + review.id + ", finding <id> (hand-off: " + handoffPath + ")\";",
+      "- --description: what's wrong and the failure scenario, the evidence as path:line, and a final line \"From Spectra Council review " + review.id + ", finding <id> (hand-off: " + handoffRef(handoffPath, workspace) + ")\"; no absolute paths in the issue, as its text is shared with the repository;",
       "- --design: the proposed fix, its steps and how to verify it, where the council proposed one.",
     ].join("\n"),
     `Before filing each, check it isn't filed already: bd search --desc-contains "review ${review.id}, finding <id>" (and bd search for its title). If it is, report that issue's id instead of filing a new one.`,

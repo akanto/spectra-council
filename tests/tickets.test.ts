@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Review } from "../core/model.ts";
 import { newReview, reduce, type ReviewEvent } from "../core/review.ts";
 import type { FindingInput } from "../core/schemas.ts";
-import { askFixerPrompt, askPrompt, BEADS_PRIORITY, ticketsPrompt, unticketed, waitingTickets } from "../core/tickets.ts";
+import { askFixerPrompt, askPrompt, BEADS_PRIORITY, handoffRef, ticketsPrompt, unticketed, waitingTickets } from "../core/tickets.ts";
 import { beadsWorkspace, createCouncilHost } from "../hosts/mirador/host.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
 
@@ -121,11 +121,17 @@ describe("the prompts", () => {
     expect(prompt).toContain("beads workspace at /repo");
     expect(prompt.indexOf("- F2 (critical, beads priority 0)")).toBeLessThan(prompt.indexOf("- F1 (low, beads priority 3)"));
     expect(prompt).not.toContain("F3");
-    expect(prompt).toContain("From Spectra Council review rev1, finding <id>");
+    expect(prompt).toContain("From Spectra Council review rev1, finding <id> (hand-off: .spectra-council/review-rev1.md)");
     expect(prompt).toContain('council_mark_ticketed with review "rev1"');
     expect(prompt).toContain('bd search --desc-contains "review rev1, finding <id>"');
     expect(prompt).toContain("Don't fix them now");
     expect(BEADS_PRIORITY.info).toBe(4);
+  });
+
+  test("tickets: the hand-off is named relative to the beads workspace, an outside one as it is", () => {
+    expect(handoffRef("/home/u/repo/.spectra-council/review-x.md", "/home/u/repo")).toBe(".spectra-council/review-x.md");
+    expect(handoffRef("/home/u/repo/sub/.spectra-council/review-x.md", "/home/u/repo/")).toBe("sub/.spectra-council/review-x.md");
+    expect(handoffRef("/home/u/repo-two/.spectra-council/review-x.md", "/home/u/repo")).toBe("/home/u/repo-two/.spectra-council/review-x.md");
   });
 
   test("ask: the user's words quoted, with the accepted findings and the hand-off", () => {
