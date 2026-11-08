@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { Review } from "./model.ts";
 import { idsInTitle, turnTitle } from "./agent-turns.ts";
 import { lastJson } from "./replies.ts";
+import { ticketIdSchema } from "./schemas.ts";
 
 /** What the fixer ends its final message with, inside a ```json fence. */
 export const fixerReportSchema = z.object({
@@ -15,7 +16,16 @@ export const fixerReportSchema = z.object({
     .default([]),
   notFixed: z.array(z.object({ finding: z.string().min(1), reason: z.string().min(1) })).default([]),
   /** Beads issues filed for findings: only read for the user's own ask, which may ask for them. */
-  tickets: z.array(z.object({ finding: z.string().min(1), ticket: z.string().min(1) })).default([]),
+  tickets: z
+    .array(z.unknown())
+    .default([])
+    .transform((entries) =>
+      // One malformed or unsafe ticket id drops just that entry: the report's fixes must still count.
+      entries.flatMap((entry) => {
+        const parsed = z.object({ finding: z.string().min(1), ticket: ticketIdSchema }).safeParse(entry);
+        return parsed.success ? [parsed.data] : [];
+      }),
+    ),
 });
 
 export type FixerReport = z.infer<typeof fixerReportSchema>;
@@ -32,7 +42,7 @@ export const ASK_REPORT_EXAMPLE = `\`\`\`json
 {
   "fixed": [{ "finding": "F4", "summary": "What you changed, in a sentence.", "files": ["src/cache.ts"] }],
   "notFixed": [{ "finding": "F7", "reason": "Why not, in a sentence." }],
-  "tickets": [{ "finding": "F2", "ticket": "the beads issue id" }]
+  "tickets": [{ "finding": "F2", "ticket": "proj-a1b" }]
 }
 \`\`\``;
 

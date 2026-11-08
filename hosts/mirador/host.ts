@@ -19,7 +19,7 @@ import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
-import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
+import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ticketIdSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
 import { askFixerPrompt, askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
@@ -88,7 +88,7 @@ const markFixedInput = z.object({
 const markTicketedInput = z.object({
   review: z.string().min(1).optional().describe("The review's id; default: this conversation's newest review."),
   finding: z.string().min(1).describe('The finding you filed an issue for, e.g. "F4".'),
-  ticket: z.string().min(1).describe('The beads issue\'s id, e.g. "myrepo-a1b".'),
+  ticket: ticketIdSchema.describe('The beads issue\'s id, e.g. "myrepo-a1b".'),
 });
 
 const isFile = (path: string) => stat(path).then((it) => it.isFile(), () => false);

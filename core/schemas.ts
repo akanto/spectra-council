@@ -5,6 +5,15 @@
  */
 import { z } from "zod";
 
+/**
+ * A beads issue id (myrepo-a1b, proj-a1b.1): it ends up in prompts for the main agent, so no whitespace, newlines or
+ * shell and prompt syntax.
+ */
+export const ticketIdSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "not a beads issue id (letters, digits, '.', '_' and '-', at most 64)");
+
 export const PROFILE_IDS = ["general", "code", "architecture", "security", "scientific"] as const;
 export const DEPTHS = ["quick", "standard", "deep"] as const;
 export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;

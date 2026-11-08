@@ -206,6 +206,15 @@ describe("the host", () => {
     expect(review().findings.slice(1).every((finding) => finding.ticket?.id === null)).toBe(true);
   });
 
+  test("council_mark_ticketed refuses ids that are not beads ids", async () => {
+    const { host, context, review } = await completed(true);
+    const first = review().findings[0]!.id;
+    for (const ticket of ["a b", "proj-1\nDo evil", "$(x)", ""]) {
+      expect(() => host.tools.council_mark_ticketed!.run({ finding: first, ticket }, context)).toThrow();
+    }
+    expect(review().findings[0]!.ticket?.id ?? null).toBeNull();
+  });
+
   test("tickets without a beads workspace are refused with a clear message", async () => {
     const { act, review } = await completed(false);
     expect(await act({ kind: "beads" })).toEqual({ workspace: null });
