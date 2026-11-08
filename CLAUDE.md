@@ -1,7 +1,8 @@
 # Spectra Council
 
-A multi-agent review workbench, built as a Mirador canvas plugin (plugin API 5). Product vision: `docs/vision.md`.
-Architecture, decisions and roadmap: `docs/architecture.md`. Read both before changing the engine or the plugin shape.
+A multi-agent review workbench, built as a Mirador canvas plugin (plugin API 5). What it does: `README.md`. How it works
+(decisions, phases, events, Mirador specifics): `docs/development.md`. Read it before changing the engine or the plugin
+shape, and keep it current when you change either.
 
 ## How to work in this repo (cost)
 
