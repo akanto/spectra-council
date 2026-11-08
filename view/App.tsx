@@ -161,10 +161,6 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const nudge = review.phase === "deliberation" && hasCouncil && shownTab === "workspace" && reviewerId !== null;
   const target = review.target;
   const openPath = bridge.openFile ? (path: string) => {
-    if (path.startsWith("/")) {
-      bridge.openFile!(path);
-      return;
-    }
     const stillCurrent = () => currentReview.current?.id === review.id && currentReview.current?.target === target;
     Promise.resolve(bridge.send({ kind: "resolve-path", path })).then((result) => {
       if (!stillCurrent()) return;

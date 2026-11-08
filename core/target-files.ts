@@ -2,8 +2,8 @@
  * The files of a review target, relative to it: a git repository's tracked and unignored files, else a walk of the folder
  * that skips what is usually generated; a single file is itself. Uses Bun, which every host of the engine runs on.
  */
-import { stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const MAX_FILES = 5000;
 
@@ -48,10 +48,36 @@ export async function listTargetFiles(target: string): Promise<string[]> {
   return files.filter((file) => !SKIPPED.test(file) && !NOT_REVIEWED.test(file)).slice(0, MAX_FILES).sort();
 }
 
-/** Resolve source links using the target's actual filesystem kind, never its extension. */
+/** The real path of `path`, or of its nearest existing ancestor with the missing tail put back. */
+async function realOrNearest(path: string): Promise<string> {
+  let existing = path;
+  let tail = "";
+  for (;;) {
+    try {
+      return join(await realpath(existing), tail);
+    } catch {
+      const parent = dirname(existing);
+      if (parent === existing) return path;
+      tail = tail ? join(basename(existing), tail) : basename(existing);
+      existing = parent;
+    }
+  }
+}
+
+/**
+ * Resolve a source link against the target's actual filesystem kind, never its extension. The result must stay inside
+ * the target (its folder, or the folder of a single-file target), symlinks included: reviewer output is untrusted, so
+ * `../x`, `/etc/passwd` and links pointing out are rejected. Absolute paths are accepted only when they are inside.
+ */
 export async function resolveTargetPath(target: string, path: string): Promise<string> {
-  if (isAbsolute(path)) return path;
   const kind = await targetKind(target);
   if (!kind) throw new Error(`Cannot resolve source path: review target ${target} is unavailable.`);
-  return resolve(kind === "file" ? dirname(target) : target, path);
+  const base = kind === "file" ? dirname(target) : target;
+  const realBase = await realpath(base);
+  const candidate = resolve(base, path);
+  const inside = relative(realBase, await realOrNearest(candidate));
+  if (inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+    throw new Error(`Cannot open source path ${path}: it is outside the review target.`);
+  }
+  return candidate;
 }

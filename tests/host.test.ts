@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review } from "../core/model.ts";
@@ -51,8 +51,18 @@ describe("the Mirador host", () => {
     }
     for (const dir of [folder, folder + "/"]) expect(await resolve(dir, "nested/source.ts")).toEqual({ path: join(folder, "nested/source.ts") });
     const missing = join(target, "missing");
-    expect(await resolve(missing, "/absolute/source.ts")).toEqual({ path: "/absolute/source.ts" });
+    await expect(resolve(missing, "/absolute/source.ts")).rejects.toThrow("unavailable");
     await expect(resolve(missing, "source.ts")).rejects.toThrow("unavailable");
+    expect(await resolve(folder, join(folder, "report.md"))).toEqual({ path: join(folder, "report.md") });
+    expect(await resolve(join(folder, "report.md"), join(folder, "other.ts"))).toEqual({ path: join(folder, "other.ts") });
+    const outside = await mkdtemp(join(tmpdir(), "spectra-outside-"));
+    await writeFile(join(outside, "secret.txt"), "x");
+    await symlink(outside, join(folder, "link"));
+    for (const reviewTarget of [folder, join(folder, "report.md")]) {
+      for (const path of ["/absolute/outside.ts", join(outside, "secret.txt"), "../outside.ts", "nested/../../outside.ts", "link/secret.txt", "link"]) {
+        await expect(resolve(reviewTarget, path)).rejects.toThrow("outside the review target");
+      }
+    }
     expect(canvas.items[0]).toEqual(initial);
   });
 

@@ -80,6 +80,12 @@ describe("parseInline", () => {
     expect(parseInline("a ** b")).toEqual([{ kind: "text", text: "a ** b" }]);
   });
   test("code keeps ** and F1", () => expect(parseInline("`**F1**`")).toEqual([{ kind: "code", text: "**F1**" }]));
+  test("references that leave the project are plain text, not paths", () => {
+    for (const text of ["../../.env:1", "src/../../x.ts:2", "/etc/passwd:1"]) {
+      expect(parseInline(text).some((part) => part.kind === "path")).toBe(false);
+      expect(parseInline(`\`${text}\``).some((part) => part.kind === "path")).toBe(false);
+    }
+  });
   test("code with file:line is a path", () => expect(parseInline("`src/a.ts:3`")).toEqual([{ kind: "path", path: "src/a.ts", line: 3, text: "src/a.ts:3" }]));
   test("file:line with range and trailing period", () => {
     expect(parseInline("see core/api.ts:42-50.")).toEqual([

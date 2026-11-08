@@ -23,7 +23,7 @@ const BARE_FILES = new Set(["Makefile", "Dockerfile", "Containerfile", "Gemfile"
 
 /** A relative path to a file: `name.ext` (ext starts with a letter), a dotfile like `.env`, or a known bare file name. */
 function isPathLike(path: string): boolean {
-  if (path.length === 0 || path.length > CODE_MAX || path.startsWith("/") || path.endsWith("/") || path.includes("//")) return false;
+  if (path.length === 0 || path.length > CODE_MAX || path.startsWith("/") || path.split("/").includes("..") || path.endsWith("/") || path.includes("//")) return false;
   const last = path.slice(path.lastIndexOf("/") + 1);
   if (BARE_FILES.has(last)) return true;
   const dot = last.lastIndexOf(".");
