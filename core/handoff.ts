@@ -2,6 +2,7 @@
  * The hand-off document: what the council concluded and how, for the accepted findings, with the proposed fixes, so an
  * agent (or a person) can act on it without the canvas. Pure Markdown from a review; the host decides where it goes.
  */
+import { knobsText } from "./depth.ts";
 import { bySeverity } from "./describe.ts";
 import { argumentsOn, type Argument, type Finding, type Review } from "./model.ts";
 import type { Evidence } from "./schemas.ts";
@@ -38,7 +39,7 @@ export function handoffMarkdown(review: Review): string {
 
   out.push(`# Spectra Council hand-off: review ${review.id}`, "");
   out.push(`- Target: \`${review.target}\``);
-  out.push(`- Profile: ${review.profile}; depth: ${review.depth}`);
+  out.push(`- Profile: ${review.profile}; depth: ${review.depth} (${knobsText(review)})`);
   out.push(`- Council: ${plural(seated.length, "reviewer")} (${seated.map((reviewer) => reviewer.label).join(", ")}), ${plural(review.rounds, "deliberation round")}`);
   if (review.verdict) out.push(`- Date: ${isoDate(review.verdict.at)}`);
   if (review.runner === "mock") out.push("- Note: the reviewers in this review are deterministic mocks, not real agents; the findings are illustrative.");

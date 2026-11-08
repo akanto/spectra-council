@@ -41,7 +41,16 @@ export function ActivityLine({ activity, openPath, time }: { activity: Activity;
   );
 }
 
-function SeatPanel({ reviewer, findings, argued, now, open, expanded, retry, busy }: { reviewer: Reviewer; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean; retry: (() => void) | null; busy: boolean }) {
+/** Whether the user can take a reviewer off the council: once it failed, after the start. */
+export const removable = (review: Review, reviewer: Reviewer) => review.phase !== "setup" && reviewer.enabled && reviewer.status === "failed";
+
+/** What Remove does to a failed reviewer, for its tooltip: its findings go too while nobody has weighed them. */
+export function removeHint(review: Review, reviewer: Reviewer) {
+  const unweighed = review.phase === "independent-review" || (review.phase === "interrupted" && review.interruptedPhase === "independent-review");
+  return `Take ${reviewer.label} off the council: its panel and positions go${unweighed ? ", and its findings so far" : ""}`;
+}
+
+function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, retry, remove, busy }: { review: Review; reviewer: Reviewer; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean; retry: (() => void) | null; remove: (() => void) | null; busy: boolean }) {
   const recent = reviewer.activity.filter((activity) => activity.kind !== "status").slice(-3);
   return (
     <div className="seat-cell">
@@ -77,10 +86,19 @@ function SeatPanel({ reviewer, findings, argued, now, open, expanded, retry, bus
         <span className="muted">{elapsed(reviewer.startedAt, reviewer.endedAt, now) ?? ""}</span>
       </span>
     </button>
-    {retry && (
-      <button className="seat-retry" onClick={retry} disabled={busy}>
-        Retry {reviewer.label}
-      </button>
+    {(retry || remove) && (
+      <span className="seat-actions">
+        {retry && (
+          <button onClick={retry} disabled={busy}>
+            Retry {reviewer.label}
+          </button>
+        )}
+        {remove && (
+          <button onClick={remove} disabled={busy} title={removeHint(review, reviewer)}>
+            Remove
+          </button>
+        )}
+      </span>
     )}
     </div>
   );
@@ -173,7 +191,7 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
       <ActionPlan review={review} act={act} busy={busy} openCouncil={openCouncil} compact {...(openPath ? { openPath } : {})} />
       <div className={cx("seat-grid", `seats-${seated.length}`)}>
         {seated.map((reviewer) => (
-          <SeatPanel key={reviewer.id} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} retry={review.phase === "independent-review" && reviewer.status === "failed" ? () => act({ kind: "retry", reviewerId: reviewer.id }) : null} busy={busy} />
+          <SeatPanel key={reviewer.id} review={review} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} retry={review.phase === "independent-review" && reviewer.status === "failed" ? () => act({ kind: "retry", reviewerId: reviewer.id }) : null} remove={removable(review, reviewer) ? () => act({ kind: "remove", reviewerId: reviewer.id }) : null} busy={busy} />
         ))}
       </div>
       <section className="findings-summary">

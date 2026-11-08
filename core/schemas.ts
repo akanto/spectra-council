@@ -21,6 +21,10 @@ export const severitySchema = z.enum(SEVERITIES);
 export const confidenceSchema = z.enum(CONFIDENCES);
 export const stanceSchema = z.enum(STANCES);
 export const decisionSchema = z.enum(DECISIONS);
+/** Deliberation rounds, 1 to 6 (core/depth.ts ROUNDS_RANGE). */
+export const roundsSchema = z.number().int().min(1).max(6);
+/** The most findings one reviewer reports, 1 to 20 (core/depth.ts MAX_FINDINGS_RANGE). */
+export const maxFindingsSchema = z.number().int().min(1).max(20);
 
 export type ProfileId = z.infer<typeof profileIdSchema>;
 export type Depth = z.infer<typeof depthSchema>;
@@ -89,6 +93,17 @@ export const fixCheckInputSchema = z.object({
 
 export type FixCheckInput = z.infer<typeof fixCheckInputSchema>;
 
+/**
+ * Findings that report the same problem, as an agent grouped them by meaning after the independent review: they merge
+ * into one.
+ */
+export const duplicateGroupInputSchema = z.object({
+  findingIds: z.array(z.string().min(1)).min(2).describe('The findings that report the same problem, e.g. ["F2", "F7"].'),
+  reason: z.string().min(1).describe("Why they are the same problem, in a sentence: the shared root cause, or the one change that fixes them all."),
+});
+
+export type DuplicateGroupInput = z.infer<typeof duplicateGroupInputSchema>;
+
 /** One seat at the council: the agent in it. `enabled` is false only in reviews from before seats could be removed. */
 export const seatSchema = z.object({
   agent: z.string().min(1).describe('A mock persona\'s id (mock-claude, …), or "profile:" and a Mirador profile\'s name, e.g. "profile:pi home".'),
@@ -101,7 +116,11 @@ export const setupSchema = z.object({
   target: z.string().min(1).describe("The absolute path of the repository, folder or document to review."),
   profile: profileIdSchema.default("general"),
   depth: depthSchema.default("standard"),
-  seats: z.array(seatSchema).min(1).max(MAX_SEATS),
+  /** Overrides the depth preset's rounds. */
+  deliberationRounds: roundsSchema.optional(),
+  /** Overrides the depth preset's most findings per reviewer. */
+  maxFindings: maxFindingsSchema.optional(),
+  seats: z.array(seatSchema).max(MAX_SEATS),
   instructions: z.string().default(""),
 });
 
@@ -112,7 +131,10 @@ export const setupPatchSchema = z
   .object({
     target: z.string().min(1),
     profile: profileIdSchema,
+    /** A preset: sets both knobs to its values (a knob in the same patch wins). */
     depth: depthSchema,
+    deliberationRounds: roundsSchema,
+    maxFindings: maxFindingsSchema,
     seats: z.array(seatSchema).min(1).max(MAX_SEATS),
     instructions: z.string(),
   })
@@ -131,6 +153,8 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("handoff") }),
   /** Run a reviewer that failed in the independent review again, while the review runs. */
   z.object({ kind: z.literal("retry"), reviewerId: z.string().min(1) }),
+  /** Take a failed reviewer off the council: its panel and its positions go (and, during the independent review, its findings). */
+  z.object({ kind: z.literal("remove"), reviewerId: z.string().min(1) }),
   /** Go on with a review a restart of the host cut short, from the phase it was in. */
   z.object({ kind: z.literal("resume") }),
   /** Ask the conversation's agent to open a new review with this one's setup, for a review that ended. */
@@ -158,6 +182,7 @@ export const reviewReplySchema = z.object({ findings: z.array(z.unknown()) });
 export const deliberationReplySchema = z.object({ arguments: z.array(z.unknown()) });
 export const proposalReplySchema = z.object({ proposals: z.array(z.unknown()) });
 export const verificationReplySchema = z.object({ checks: z.array(z.unknown()) });
+export const groupingReplySchema = z.object({ groups: z.array(z.unknown()) });
 
 /** A Zod error in one line per problem, for whoever sent the bad input. */
 export const problemsOf = (error: z.ZodError) =>

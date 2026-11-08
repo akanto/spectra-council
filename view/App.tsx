@@ -1,7 +1,8 @@
 /** The Spectra Council view: setup, then the live workspace and the findings, around one review the host hands in. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isFinished, isRunning, seatedReviewers, type Review } from "../core/model.ts";
-import { DEPTH_LABELS, PROFILES } from "../core/profiles.ts";
+import { DEPTH_TITLES } from "../core/depth.ts";
+import { PROFILES } from "../core/profiles.ts";
 import type { SetupPatch, ViewAction } from "../core/schemas.ts";
 import type { CouncilBridge } from "./bridge.ts";
 import { Deliberation } from "./Deliberation.tsx";
@@ -54,6 +55,11 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   useEffect(() => {
     if (!running) setConfirmStop(false);
   }, [running]);
+  // A reviewer taken off the council has no panel to show any more.
+  const openedGone = reviewerId !== null && review !== null && !review.reviewers.some((reviewer) => reviewer.id === reviewerId && reviewer.enabled);
+  useEffect(() => {
+    if (openedGone) setReviewerId(null);
+  }, [openedGone]);
   const now = useNow(review !== null && isRunning(review));
   const phase = review?.phase;
   // Who fixes: asked once the review is complete, again when the window regains focus (the header setting may have changed) and after each fix.
@@ -158,12 +164,14 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
         <span className="chip static">
           {failed > 0 ? `${seated - failed} of ${seated} reviewers · ${failed} failed` : `${seated} reviewer${seated === 1 ? "" : "s"}`}
         </span>
-        <span className="chip static">{DEPTH_LABELS[review.depth].title} depth</span>
+        <span className="chip static" title={`${review.deliberationRounds} deliberation round${review.deliberationRounds === 1 ? "" : "s"}, at most ${review.maxFindings} finding${review.maxFindings === 1 ? "" : "s"} per reviewer`}>
+          {DEPTH_TITLES[review.depth]} depth · ≤{review.maxFindings} findings each
+        </span>
         {hasCouncil && (
           <span className="chip static">{review.phase === "deliberation" ? `Round ${review.round} of ${review.rounds}` : `${review.rounds} round${review.rounds === 1 ? "" : "s"}`}</span>
         )}
         {review.verifications > 0 && <span className="chip static">Re-check {review.verifications}</span>}
-        {review.runner === "mock" && (
+        {review.runner === "mock" && seated > 0 && (
           <span className="chip static mock" title="Deterministic mock reviewers: their findings are illustrative, not an analysis of your files.">
             Mock reviewers
           </span>

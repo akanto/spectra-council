@@ -61,7 +61,7 @@ async function drive({ clock, canvas, context }: Env, host: Env["host"], reply =
 describe("resuming after a restart", () => {
   test("a mock review resumes on a new host and runs to completion", async () => {
     const first = boot();
-    await first.host.tools.council_open!.run({ target }, first.context);
+    await first.host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, first.context);
     const id = first.canvas.items[0]!.id;
     await first.host.action!(first.canvas.item(id), { kind: "configure", patch: { depth: "quick" } }, first.context);
     await first.host.action!(first.canvas.item(id), { kind: "start" }, first.context);
@@ -84,7 +84,7 @@ describe("resuming after a restart", () => {
 
   test("a review that isn't interrupted can't be resumed", async () => {
     const { host, canvas, context, clock } = boot();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     // In setup, resume is the same as start, which is fine; a finished review is not.
     await host.action!(canvas.items[0]!, { kind: "start" }, context);
     await host.action!(canvas.items[0]!, { kind: "stop" }, context);
@@ -167,7 +167,7 @@ describe("retrying a reviewer", () => {
 
   test("a review that isn't running refuses a retry", async () => {
     const { host, canvas, context, clock } = boot();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const id = canvas.items[0]!.id;
     await expect(host.action!(canvas.item(id), { kind: "retry", reviewerId: "r1" }, context)).rejects.toThrow("isn't running");
     await host.action!(canvas.item(id), { kind: "start" }, context);
@@ -179,7 +179,7 @@ describe("retrying a reviewer", () => {
 
   test("a running review refuses a retry of a reviewer that didn't fail", async () => {
     const { host, canvas, context, clock } = boot();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const id = canvas.items[0]!.id;
     await host.action!(canvas.item(id), { kind: "start" }, context);
     await clock.step();

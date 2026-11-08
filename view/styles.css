@@ -1683,8 +1683,10 @@ main[role="tabpanel"] {
   flex: 1;
 }
 
-.seat-retry {
-  align-self: flex-start;
+.seat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .detail-actions {
@@ -1728,4 +1730,24 @@ main[role="tabpanel"] {
   align-items: center;
   gap: 8px;
   margin-top: 8px;
+}
+
+.knobs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.knob {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.9em;
+  color: var(--muted);
+}
+
+.knob input {
+  width: 110px;
+  color: var(--text);
 }

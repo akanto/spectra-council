@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
-import { ROUNDS, settle, verdictSummary } from "../core/deliberation.ts";
+import { settle, verdictSummary } from "../core/deliberation.ts";
 import { REVIEW_FORMAT, type Finding, type Review } from "../core/model.ts";
 import { newReview, reduce, upgradeReview } from "../core/review.ts";
 import type { ArgumentInput, FindingInput, Stance } from "../core/schemas.ts";
@@ -14,7 +14,7 @@ function council(severity: FindingInput["severity"] = "medium"): Review {
   for (const reviewerId of ["r1", "r2", "r3"]) review = reduce(review, { type: "reviewer-started", reviewerId, at: 2 });
   review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 3, finding: { ...finding, severity } });
   for (const reviewerId of ["r1", "r2", "r3"]) review = reduce(review, { type: "reviewer-finished", reviewerId, at: 4, outcome: "completed" });
-  review = reduce(review, { type: "deliberation-started", at: 5, rounds: ROUNDS.standard });
+  review = reduce(review, { type: "deliberation-started", at: 5, rounds: 3 });
   return reduce(review, { type: "round-started", at: 6, round: 1 });
 }
 

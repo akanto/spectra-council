@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import { MOCK_AGENTS, isProfileAgent, modelLabel, profileAgent, profileName, type ProfileInfo } from "../core/agents.ts";
 import type { Review, Reviewer } from "../core/model.ts";
-import { DEPTH_LABELS, PROFILES } from "../core/profiles.ts";
+import { DEPTH_TITLES, MAX_FINDINGS_RANGE, ROUNDS_RANGE, knobsText, plannedTurns } from "../core/depth.ts";
+import { PROFILES } from "../core/profiles.ts";
 import { setupOf } from "../core/review.ts";
 import { DEPTHS, MAX_SEATS, PROFILE_IDS, type Seat, type SetupPatch } from "../core/schemas.ts";
 import type { CouncilBridge } from "./bridge.ts";
@@ -29,6 +30,68 @@ function useDraft(value: string, commit: (text: string) => void) {
     },
     onBlur: () => flush(draft),
   };
+}
+
+/**
+ * A whole-number input. What is typed is sent once the typing pauses (or on blur or Enter), clamped to the range, so
+ * "12" goes as 12, not as 1 then 12. An invalid entry shows the review's value again on blur. It stays enabled while an
+ * action is in flight: disabling it would drop the focus mid-number.
+ */
+function KnobInput({ id, label, value, min, max, commit }: { id: string; label: string; value: number; min: number; max: number; commit(value: number): void }) {
+  const [text, setText] = useState(String(value));
+  const input = useRef<HTMLInputElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The value last sent, so a quick change back to the review's (still stale) value is sent too.
+  const sent = useRef(value);
+  useEffect(() => {
+    sent.current = value;
+    if (document.activeElement !== input.current) setText(String(value));
+  }, [value]);
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+  const flush = (raw: string) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isInteger(n)) return null;
+    const clamped = Math.min(max, Math.max(min, n));
+    if (clamped !== sent.current) {
+      sent.current = clamped;
+      commit(clamped);
+    }
+    return clamped;
+  };
+  return (
+    <label className="knob" htmlFor={id}>
+      <span>{label}</span>
+      <input
+        id={id}
+        type="number"
+        inputMode="numeric"
+        min={min}
+        max={max}
+        step={1}
+        value={text}
+        ref={input}
+        onChange={(event) => {
+          const raw = event.target.value;
+          setText(raw);
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => flush(raw), 500);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") flush(text);
+        }}
+        onBlur={() => {
+          const kept = flush(text);
+          setText(String(kept ?? sent.current));
+        }}
+      />
+    </label>
+  );
 }
 
 /** The last part of a path: the project's folder, or the document's file name. */
@@ -179,6 +242,9 @@ function SeatCard({
 }
 
 /** Roving tabindex for a radiogroup: arrows move to and choose the neighbouring option (wrapping), Home and End the ends. */
+/** The depth radiogroup's options: the presets, then Custom (which sends nothing: the knobs set it). */
+const DEPTH_CHOICES = [...DEPTHS, "custom"] as const;
+
 function radioKeys<T>(options: readonly T[], chosen: T, choose: (option: T) => void) {
   return (event: React.KeyboardEvent<HTMLElement>) => {
     const last = options.length - 1;
@@ -206,6 +272,8 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
   }, [storedKey]);
   const seats = draft ?? stored;
   const count = seats.length;
+  const knobs = { deliberationRounds: setup.deliberationRounds, maxFindings: setup.maxFindings };
+  const turns = count > 0 ? plannedTurns(count, knobs, seats.some((seat) => isProfileAgent(seat.agent))) : null;
   const seatedReviewers = review.reviewers.filter((reviewer) => reviewer.enabled);
   /** The positions of seats in "Other profile…" mode. */
   const [others, setOthers] = useState<number[]>([]);
@@ -254,14 +322,46 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
 
       <section className="field">
         <span className="field-label">Depth</span>
-        <div className="segmented" role="radiogroup" aria-label="Depth" onKeyDown={radioKeys(DEPTHS, setup.depth, (depth) => configure({ depth }))}>
+        <div className="segmented" role="radiogroup" aria-label="Depth" onKeyDown={radioKeys(DEPTH_CHOICES, setup.depth, (depth) => depth !== "custom" && configure({ depth }))}>
           {DEPTHS.map((depth) => (
-            <button key={depth} role="radio" tabIndex={setup.depth === depth ? 0 : -1} aria-checked={setup.depth === depth} className={cx(setup.depth === depth && "chosen")} onClick={() => configure({ depth })} title={DEPTH_LABELS[depth].blurb}>
-              {DEPTH_LABELS[depth].title}
+            <button key={depth} role="radio" tabIndex={setup.depth === depth ? 0 : -1} aria-checked={setup.depth === depth} className={cx(setup.depth === depth && "chosen")} onClick={() => configure({ depth })}>
+              {DEPTH_TITLES[depth]}
             </button>
           ))}
+          <button
+            type="button"
+            role="radio"
+            tabIndex={setup.depth === "custom" ? 0 : -1}
+            aria-checked={setup.depth === "custom"}
+            className={cx(setup.depth === "custom" && "chosen")}
+            onClick={() => document.getElementById("knob-rounds")?.focus()}
+            title="Set the numbers below to something other than a preset"
+          >
+            {DEPTH_TITLES.custom}
+          </button>
         </div>
-        <p className="hint">{DEPTH_LABELS[setup.depth].blurb}</p>
+        <div className="knobs">
+          <KnobInput id="knob-rounds" label="Deliberation rounds" value={setup.deliberationRounds} min={ROUNDS_RANGE.min} max={ROUNDS_RANGE.max} commit={(deliberationRounds) => configure({ deliberationRounds })} />
+          <KnobInput id="knob-findings" label="Max findings per reviewer" value={setup.maxFindings} min={MAX_FINDINGS_RANGE.min} max={MAX_FINDINGS_RANGE.max} commit={(maxFindings) => configure({ maxFindings })} />
+        </div>
+        <p className="hint">
+          {DEPTH_TITLES[setup.depth]}: {knobsText(knobs)}.
+        </p>
+        {turns && (
+          <p className="hint">
+            {count < 2
+              ? `Up to ${turns.total} agent turn${turns.total === 1 ? "" : "s"}: ${turns.review} review (no deliberation with one reviewer).`
+              : `Up to ${turns.total} agent turns: ${[
+                  [turns.review, "review"],
+                  [turns.grouping, "grouping"],
+                  [turns.rounds, "in rounds"],
+                  [turns.proposals, "fix proposal"],
+                ]
+                  .filter(([n]) => (n as number) > 0)
+                  .map(([n, what]) => (what === "grouping" || what === "in rounds" ? `${n} ${what}` : `${n} ${what}${n === 1 ? "" : "s"}`))
+                  .join(", ")}. Not counted: retries, re-asking after an unreadable reply (up to one more per turn), and fix re-checks.`}
+          </p>
+        )}
       </section>
 
       <section className="field">

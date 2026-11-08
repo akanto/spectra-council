@@ -50,6 +50,22 @@ async function drive({ clock, canvas, context }: ReturnType<typeof setup>, host:
 }
 
 describe("profile seats", () => {
+  test("council_open without agents and no known profile seats nobody; profiles seated before are offered first", async () => {
+    const { host, canvas, context } = setup();
+    expect(await host.tools.council_open!.run({ target }, context)).toContain("with no reviewer seated yet");
+    expect(canvas.items[0]!.data.reviewers).toEqual([]);
+    expect(canvas.items[0]!.data.runner).toBe("mock");
+    canvas.storage.set(PROFILES_KEY, ["gamma"]);
+    await host.tools.council_open!.run({ target }, context);
+    expect(canvas.items[1]!.data.reviewers.map((reviewer) => reviewer.agent)).toEqual(["profile:gamma"]);
+  });
+
+  test("council_open seats mocks only when named", async () => {
+    const { host, canvas, context } = setup();
+    await host.tools.council_open!.run({ target, agents: ["mock-claude"] }, context);
+    expect(canvas.items[0]!.data.reviewers.map((reviewer) => reviewer.agent)).toEqual(["mock-claude"]);
+  });
+
   test("council_open seats profiles and mocks, and the runner kind follows the seats", async () => {
     const { host, canvas, context } = setup();
     const answer = await host.tools.council_open!.run({ target, agents: ["profile:alpha", "mock-codex"] }, context);
@@ -102,7 +118,7 @@ describe("profile seats", () => {
 
   test("a mock council starts without asking the agent", async () => {
     const { host, canvas, context, options } = setup();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const restarted = createCouncilHost(options);
     await restarted.action!(canvas.items[0]!, { kind: "start" }, context);
     expect(canvas.prompts).toEqual([]);
@@ -138,6 +154,14 @@ describe("models from Mirador's records", () => {
     await host.action!(canvas.items[0]!, { kind: "configure", patch: { seats: [{ agent: "profile:beta", enabled: true }, { agent: "profile:alpha", enabled: true }] } }, context);
     expect(canvas.items[0]!.data.reviewers.map((reviewer) => reviewer.label)).toEqual(["beta", "Opus 5.5"]);
     expect(await host.action!(canvas.items[0]!, { kind: "profiles" }, context)).toEqual({ profiles: records.profiles() });
+  });
+
+  test("council_open without agents seats the user's first two profiles, never mocks", async () => {
+    const { host, canvas, context } = withRecords();
+    const answer = await host.tools.council_open!.run({ target }, context);
+    expect(canvas.items[0]!.data.reviewers.map((reviewer) => reviewer.agent)).toEqual(["profile:alpha", "profile:beta"]);
+    expect(canvas.items[0]!.data.runner).toBe("mirador");
+    expect(answer).toContain("seating Opus 5.5 (alpha profile), beta (beta profile)");
   });
 
   test("a running seat is named by the model its conversation runs on", async () => {

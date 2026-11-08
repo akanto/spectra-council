@@ -4,12 +4,14 @@
  * the user stops it. Knows nothing of hosts or views: the host hands in a runner, a clock and a listener, and draws or
  * stores each new review the listener gets.
  */
-import { checkersOf, ROUNDS, settle, verdictSummary } from "./deliberation.ts";
-import { duplicateGroups } from "./duplicates.ts";
+import { checkersOf, settle, verdictSummary } from "./deliberation.ts";
+import { overLimit } from "./depth.ts";
+import { isProfileAgent } from "./agents.ts";
+import { currentFinding, duplicateGroups, keeperOf } from "./duplicates.ts";
 import { isRunning, isStanding, reportersOf, seatedReviewers, type Finding, type ModelInfo, type Review, type Reviewer } from "./model.ts";
 import { PROFILES, type ReviewProfile } from "./profiles.ts";
 import { reduce, type ReviewEvent, type ReviewerEvent } from "./review.ts";
-import { argumentInputSchema, findingInputSchema, fixCheckInputSchema, problemsOf, proposalInputSchema } from "./schemas.ts";
+import { argumentInputSchema, duplicateGroupInputSchema, findingInputSchema, fixCheckInputSchema, problemsOf, proposalInputSchema } from "./schemas.ts";
 
 /** How long the synthesis takes over each finding, so the user sees the verdicts come in. */
 export const SYNTHESIS_PAUSE_MS = 400;
@@ -63,6 +65,8 @@ export type Report =
   | { type: "argued"; argument: unknown }
   | { type: "fix-proposed"; proposal: unknown }
   | { type: "fix-checked"; check: unknown }
+  /** Findings the reviewer judges the same problem, in the grouping turn; they merge into one. */
+  | { type: "duplicates-grouped"; group: unknown }
   /** The model the reviewer's conversation runs on, once the host can tell. */
   | { type: "model-seen"; model: ModelInfo };
 
@@ -97,6 +101,12 @@ export interface ReviewerRunner {
   propose(job: ProposalJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
   /** Re-checks the fixes of the given findings, reporting one "fix-checked" each. */
   verify(job: VerificationJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /**
+   * The grouping turn, before the first round: compares every finding in `job.review` and reports one
+   * "duplicates-grouped" for each set that reports the same problem. Only a real agent is asked (a mock can't judge
+   * meaning); a runner without it skips the turn.
+   */
+  group?(job: ReviewerJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
 }
 
 /** How an agent's turn in a conversation ended: its last message, if it said anything in words. */
@@ -135,6 +145,10 @@ export function routeByAgent(byAgent: (agent: string) => ReviewerRunner): Review
     deliberate: (job, report, signal) => byAgent(job.reviewer.agent).deliberate(job, report, signal),
     propose: (job, report, signal) => byAgent(job.reviewer.agent).propose(job, report, signal),
     verify: (job, report, signal) => byAgent(job.reviewer.agent).verify(job, report, signal),
+    group: async (job, report, signal) => {
+      const runner = byAgent(job.reviewer.agent);
+      if (runner.group) await runner.group(job, report, signal);
+    },
   };
 }
 
@@ -194,6 +208,14 @@ export class ReviewSession {
     this.#startReviewing({ review: this.#review, reviewer, profile: PROFILES[this.#review.profile] });
   }
 
+  /**
+   * Takes a failed reviewer off the council: its panel and positions go, and during the independent review its findings.
+   * Works on a running review and on one that ended.
+   */
+  remove(reviewerId: string) {
+    this.#dispatch({ type: "reviewer-removed", reviewerId, at: this.#clock.now() });
+  }
+
   /** Whatever is left from where the review is: the independent reviews still to do, the deliberation, the verdict. */
   async #onwards(): Promise<Review> {
     const profile = PROFILES[this.#review.profile];
@@ -202,6 +224,12 @@ export class ReviewSession {
       for (const reviewer of seatedReviewers(now).filter((each) => each.status === "waiting")) this.#startReviewing({ review: now, reviewer, profile });
       while (this.#reviewing.size > 0) await Promise.all([...this.#reviewing]);
       if (!isRunning(this.#review)) return this.#review;
+      // Each review is capped as it ends; this catches one that ended before a limit it didn't know (a resumed review
+      // stored before there were limits).
+      for (const reviewer of seatedReviewers(this.#review)) {
+        const dropped = overLimit(this.#review, reviewer.id);
+        if (dropped.length > 0) this.#dispatch({ type: "findings-capped", reviewerId: reviewer.id, at: this.#clock.now(), findingIds: dropped });
+      }
       for (const group of duplicateGroups(this.#review)) this.#dispatch({ type: "findings-merged", at: this.#clock.now(), ...group });
       const finished = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "completed");
       if (finished.length < 2 || this.#review.findings.length === 0) return this.#conclude();
@@ -223,7 +251,8 @@ export class ReviewSession {
   /** The rounds (from where they got to, on a resumed review) and the synthesis; false when the review was stopped on the way. */
   async #deliberate(profile: ReviewProfile): Promise<boolean> {
     const signal = this.#abort.signal;
-    if (this.#review.phase !== "deliberation") this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds: ROUNDS[this.#review.depth] });
+    if (this.#review.phase !== "deliberation") this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds: this.#review.deliberationRounds });
+    if (this.#review.round === 0 && !this.#review.duplicatesChecked) await this.#group(profile);
     const rounds = this.#review.rounds;
     for (let round = this.#review.round + 1; round <= rounds; round++) {
       if (signal.aborted) return false;
@@ -258,6 +287,22 @@ export class ReviewSession {
       }),
     );
     return !signal.aborted;
+  }
+
+  /**
+   * The grouping turn: the first real agent in the deliberation groups the findings by meaning, and each group merges.
+   * Skipped with fewer than two findings or no real agent at the council; a failed turn shows in that agent's activity
+   * and the deliberation goes on with the findings as they are.
+   */
+  async #group(profile: ReviewProfile) {
+    const signal = this.#abort.signal;
+    const review = this.#review;
+    const runner = this.#runner;
+    if (!runner.group || review.findings.length < 2) return;
+    const grouper = seatedReviewers(review).find((reviewer) => reviewer.status === "deliberating" && isProfileAgent(reviewer.agent));
+    if (!grouper) return;
+    await this.#aside(grouper.id, "grouping duplicate findings", () => runner.group!({ review, reviewer: grouper, profile }, this.#reporter(grouper.id), signal));
+    if (!signal.aborted) this.#dispatch({ type: "duplicates-checked", at: this.#clock.now() });
   }
 
   /**
@@ -332,6 +377,21 @@ export class ReviewSession {
           this.#dispatch({ type: "fix-proposed", reviewerId, at: at(), proposal: parsed.data });
           return;
         }
+        case "duplicates-grouped": {
+          const parsed = duplicateGroupInputSchema.safeParse(report.group);
+          if (!parsed.success) return rejected("group", problemsOf(parsed.error));
+          const review = this.#review;
+          if (review.phase !== "deliberation" || review.round !== 0) return rejected("group", "findings are grouped before the first round");
+          const missing = parsed.data.findingIds.filter((id) => !currentFinding(review, id));
+          if (missing.length > 0) return rejected("group", `there is no finding ${missing.join(", ")}`);
+          // Ids merged earlier name the finding they went into; a group already merged into one finding is left alone.
+          const group = [...new Set(parsed.data.findingIds.map((id) => currentFinding(review, id)!))];
+          if (group.length < 2) return;
+          const keeper = keeperOf(review, group);
+          const merged = group.filter((finding) => finding !== keeper).map(({ id }) => id);
+          this.#dispatch({ type: "findings-merged", at: at(), into: keeper.id, merged, by: reviewerId, reason: parsed.data.reason });
+          return;
+        }
         case "fix-checked": {
           const parsed = fixCheckInputSchema.safeParse(report.check);
           if (!parsed.success) return rejected("fix check", problemsOf(parsed.error));
@@ -361,7 +421,16 @@ export class ReviewSession {
   async #runReviewer(job: ReviewerJob) {
     const reviewerId = job.reviewer.id;
     this.#dispatch({ type: "reviewer-started", reviewerId, at: this.#clock.now() });
-    await this.#attempt(reviewerId, () => this.#runner.run(job, this.#reporter(reviewerId), this.#abort.signal), true);
+    await this.#attempt(
+      reviewerId,
+      async () => {
+        await this.#runner.run(job, this.#reporter(reviewerId), this.#abort.signal);
+        // Past the limit, only the most severe count.
+        const dropped = overLimit(this.#review, reviewerId);
+        if (dropped.length > 0 && !this.#abort.signal.aborted) this.#dispatch({ type: "findings-capped", reviewerId, at: this.#clock.now(), findingIds: dropped });
+      },
+      true,
+    );
   }
 
   async #deliberateOne(job: DeliberationJob) {

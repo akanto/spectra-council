@@ -2,14 +2,14 @@
  * Runs a seat with a real agent: each turn is a fresh conversation on the seat's Mirador profile. The prompt (see
  * agent-turns.ts) asks for the reply as a ```json block; the runner reads it and reports each item to the session, which
  * validates it. A turn that takes too long, ends badly or lacks the block fails the seat (or logs an error, for the
- * proposal and verification turns).
+ * grouping, proposal and verification turns).
  */
 import type { z } from "zod";
-import { deliberationPrompt, proposalPrompt, repairPrompt, reviewPrompt, verificationPrompt } from "./agent-turns.ts";
+import { deliberationPrompt, groupingPrompt, proposalPrompt, repairPrompt, reviewPrompt, verificationPrompt } from "./agent-turns.ts";
 import { profileName } from "./agents.ts";
 import { TURN_LIMIT_MS, type AgentReply, type Clock, type Conversations, type DeliberationJob, type ProposalJob, type Report, type ReviewerJob, type ReviewerRunner, type VerificationJob } from "./engine.ts";
 import { jsonProblem, lastJson } from "./replies.ts";
-import { deliberationReplySchema, proposalReplySchema, reviewReplySchema, verificationReplySchema } from "./schemas.ts";
+import { deliberationReplySchema, groupingReplySchema, proposalReplySchema, reviewReplySchema, verificationReplySchema } from "./schemas.ts";
 
 type Reporter = (report: Report) => void;
 
@@ -40,6 +40,13 @@ export class AgentRunner implements ReviewerRunner {
     return this.#turn(job, report, signal, "to review", reviewPrompt(job), reviewReplySchema, ({ findings }) => {
       for (const finding of findings) report({ type: "finding-reported", finding });
       return plural(findings.length, "finding");
+    });
+  }
+
+  group(job: ReviewerJob, report: Reporter, signal: AbortSignal) {
+    return this.#turn(job, report, signal, "to group duplicate findings", groupingPrompt(job), groupingReplySchema, ({ groups }) => {
+      for (const group of groups) report({ type: "duplicates-grouped", group });
+      return plural(groups.length, "group");
     });
   }
 

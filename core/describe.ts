@@ -1,4 +1,5 @@
 /** A review in words, for an agent: what the host's tools answer, and what it hears when a review ends. */
+import { knobsText } from "./depth.ts";
 import { argumentsOn, isFinished, seatedReviewers, type Finding, type Review } from "./model.ts";
 import { PROFILES } from "./profiles.ts";
 import { SEVERITIES } from "./schemas.ts";
@@ -46,8 +47,8 @@ export function outcomeOf(review: Review): string | undefined {
 export function describeReview(review: Review): string {
   const reviewers = seatedReviewers(review);
   const lines = [
-    `Spectra Council review ${review.id} of ${review.target}: ${PROFILES[review.profile].title} profile, ${review.depth} depth, ${PHASE_WORDS[review.phase]}.`,
-    review.runner === "mock"
+    `Spectra Council review ${review.id} of ${review.target}: ${PROFILES[review.profile].title} profile, ${review.depth} depth (${knobsText(review)}), ${PHASE_WORDS[review.phase]}.`,
+    review.runner === "mock" && reviewers.length > 0
       ? "Its reviewers are deterministic mocks: their findings are illustrative, not an analysis of the files."
       : review.runner === "mixed"
         ? "Some of its reviewers are deterministic mocks: their findings are illustrative, not an analysis of the files."
@@ -64,7 +65,7 @@ export function describeReview(review: Review): string {
     lines.push(
       `- ${finding.id} [${finding.severity}, ${finding.confidence} confidence, ${finding.status}] ${finding.title} — by ${label(finding.reviewerId)}; ${finding.category}; at ${evidenceText(finding)}. ${finding.summary}${finding.recommendation ? ` Fix: ${finding.recommendation}` : ""}`,
     );
-    if (finding.alsoReported.length > 0) lines.push(`  Also reported by: ${finding.alsoReported.map((report) => `${label(report.reviewerId)} as ${report.findingId} ("${report.title}")`).join(", ")}`);
+    if (finding.alsoReported.length > 0) lines.push(`  Also reported by: ${finding.alsoReported.map((report) => `${label(report.reviewerId)} as ${report.findingId} ("${report.title}")${report.mergedBy ? `, merged by ${label(report.mergedBy)}${report.reason ? `: ${report.reason}` : ""}` : ""}`).join(", ")}`);
     if (finding.resolution) lines.push(`  Council: ${finding.resolution.rationale}`);
     if (finding.proposal) lines.push(`  Proposed fix (by ${label(finding.proposal.drafterId)}): ${finding.proposal.summary} Steps: ${finding.proposal.steps.join(" / ")}. Verify: ${finding.proposal.verification}`);
     if (finding.ruling) lines.push(`  User ruling: ${finding.ruling.decision}${finding.ruling.note ? ` (${finding.ruling.note})` : ""}`);

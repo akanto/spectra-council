@@ -54,7 +54,7 @@ export function agentLabel(id: string): string {
   return isProfileAgent(id) ? profileName(id) : id;
 }
 
-/** The seats a new review starts with: two, the first two agents. */
+/** Two mock seats, the first two agents: for tests and demos (council_open seats the user's profiles by default). */
 export function defaultSeats(agents: AgentInfo[] = MOCK_AGENTS): Seat[] {
   return Array.from({ length: 2 }, (_, index) => ({ agent: agents[index % agents.length]!.id, enabled: true }));
 }

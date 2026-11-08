@@ -1,7 +1,9 @@
 /**
  * Findings that report the same problem. After the independent review the engine merges the clear cases
- * (`duplicateGroups`): the same title, or the same kind of problem at the same place. Looser matches, which an argument
- * points out ("the same as F6"), are only linked for the user (`possibleDuplicates`).
+ * (`duplicateGroups`): the same title, or the same kind of problem at the same place. Then, with a real agent at the
+ * council, one agent groups the rest by meaning (the grouping turn; `keeperOf` and `currentFinding` turn its groups into
+ * merges). Looser matches, which an argument points out ("the same as F6"), are only linked for the user
+ * (`possibleDuplicates`).
  */
 import type { Finding, Review } from "./model.ts";
 import { SEVERITIES } from "./schemas.ts";
@@ -41,6 +43,16 @@ export function sameProblem(a: Finding, b: Finding): boolean {
 
 const severityRank = (finding: Finding) => SEVERITIES.indexOf(finding.severity);
 
+/** The finding a group of duplicates merges into: the most severe, the earliest reported among equals. */
+export function keeperOf(review: Review, group: Finding[]): Finding {
+  const order = (finding: Finding) => review.findings.indexOf(finding);
+  return group.reduce((best, each) => (severityRank(each) < severityRank(best) || (severityRank(each) === severityRank(best) && order(each) < order(best)) ? each : best));
+}
+
+/** The finding an id names now: the finding itself, or the one its report was merged into; undefined for neither. */
+export const currentFinding = (review: Review, id: string): Finding | undefined =>
+  review.findings.find((finding) => finding.id === id) ?? review.findings.find((finding) => finding.alsoReported.some((report) => report.findingId === id));
+
 /**
  * The findings to merge: groups of two or more that report the same problem (linked through `sameProblem`, so A~B and
  * B~C group all three). Each group keeps its most severe finding, the earliest among equals; the others merge into it.
@@ -57,7 +69,7 @@ export function duplicateGroups(review: Review): { into: string; merged: string[
   return [...members.values()]
     .filter((list) => list.length > 1)
     .map((list) => {
-      const keeper = list.reduce((best, each) => (severityRank(each) < severityRank(best) ? each : best));
+      const keeper = keeperOf(review, list);
       return { into: keeper.id, merged: list.filter((each) => each !== keeper).map(({ id }) => id) };
     });
 }

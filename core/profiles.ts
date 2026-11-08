@@ -3,7 +3,7 @@
  * setup, and the categories are the ones its findings are expected to use. Kept as code rather than YAML so the engine
  * carries no parser and the types check them.
  */
-import type { Depth, ProfileId } from "./schemas.ts";
+import type { ProfileId } from "./schemas.ts";
 
 export interface ReviewProfile {
   id: ProfileId;
@@ -63,8 +63,4 @@ export const PROFILES: Record<ProfileId, ReviewProfile> = {
   },
 };
 
-export const DEPTH_LABELS: Record<Depth, { title: string; blurb: string }> = {
-  quick: { title: "Quick", blurb: "A first pass over the most important files." },
-  standard: { title: "Standard", blurb: "A thorough review of the main paths." },
-  deep: { title: "Deep", blurb: "Everything, including edge cases and history." },
-};
+

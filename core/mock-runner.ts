@@ -6,7 +6,7 @@
  */
 import type { Clock, DeliberationJob, ProposalJob, Report, ReviewerJob, ReviewerRunner, VerificationJob } from "./engine.ts";
 import { argumentsOn, reportersOf, type Argument, type Finding } from "./model.ts";
-import type { ProfileId, Depth, Evidence, FindingInput, FixCheckInput, ProposalInput, Severity, Confidence, Stance } from "./schemas.ts";
+import type { ProfileId, Evidence, FindingInput, FixCheckInput, ProposalInput, Severity, Confidence, Stance } from "./schemas.ts";
 
 /** Lists a review target's files, relative to it, for a mock to pick from. */
 export type FileLister = (target: string) => Promise<string[]>;
@@ -38,11 +38,11 @@ const PERSONAS: Record<string, Persona> = {
 
 const DEFAULT_PERSONA: Persona = { pace: 1, prefers: /./, findingBias: 0, habit: "Checking the details" };
 
-const DEPTH_PLAN: Record<Depth, { reads: number; findings: number }> = {
-  quick: { reads: 4, findings: 2 },
-  standard: { reads: 8, findings: 3 },
-  deep: { reads: 14, findings: 5 },
-};
+/**
+ * How much a mock does, sized from the review's limit: it reports about half as many findings as allowed (the presets
+ * give 2, 3 and 5, as before) and reads about 1.4 files per finding allowed (4, 8 and 14).
+ */
+const planOf = (maxFindings: number) => ({ reads: Math.max(2, Math.round(maxFindings * 1.4)), findings: Math.ceil(maxFindings / 2) });
 
 interface Template {
   title: string;
@@ -143,7 +143,7 @@ export function mockScript(job: Pick<ReviewerJob, "review" | "reviewer" | "profi
   const { review, reviewer, profile } = job;
   const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
   const next = random(hash(`${reviewer.agent}|${review.profile}|${review.depth}|${files.length}`));
-  const plan = DEPTH_PLAN[review.depth];
+  const plan = planOf(review.maxFindings);
   const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
   const steps: MockStep[] = [];
   const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
@@ -152,7 +152,7 @@ export function mockScript(job: Pick<ReviewerJob, "review" | "reviewer" | "profi
 
   const reads = readingOrder(files, persona, plan.reads);
   const pool = [...TEMPLATES[review.profile]];
-  const findingCount = Math.max(1, Math.min(pool.length, plan.findings + persona.findingBias));
+  const findingCount = Math.max(1, Math.min(pool.length, review.maxFindings, plan.findings + persona.findingBias));
   // Which reads a finding follows: spread over the review, not the first read unless it is the only one.
   const first = reads.length > 1 ? 1 : 0;
   const span = reads.length - first;

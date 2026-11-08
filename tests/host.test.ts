@@ -51,7 +51,7 @@ describe("the Mirador host", () => {
 
   test("the view configures and starts a review, which runs to completion and is noted for the agent once", async () => {
     const { host, canvas, context, clock } = setup();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const id = canvas.items[0]!.id;
     await host.action!(canvas.item(id), { kind: "configure", patch: { depth: "quick" } }, context);
     expect(canvas.item(id).data.depth).toBe("quick");
@@ -83,7 +83,7 @@ describe("the Mirador host", () => {
 
   test("stop from the view stops a running review", async () => {
     const { host, canvas, context, clock } = setup();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const id = canvas.items[0]!.id;
     await host.action!(canvas.item(id), { kind: "start" }, context);
     for (let i = 0; i < 3; i++) await clock.step();
@@ -95,7 +95,7 @@ describe("the Mirador host", () => {
 
   test("a review left running by an earlier Mirador shows as interrupted", async () => {
     const { host, canvas, context, clock } = setup();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const id = canvas.items[0]!.id;
     await host.action!(canvas.item(id), { kind: "start" }, context);
     await clock.step();
@@ -110,7 +110,7 @@ describe("the Mirador host", () => {
 
   test("bad actions and a second start are refused with a reason", async () => {
     const { host, canvas, context } = setup();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const id = canvas.items[0]!.id;
     await expect(host.action!(canvas.item(id), { kind: "dance" }, context)).rejects.toThrow("Unknown action");
     await host.action!(canvas.item(id), { kind: "configure", patch: { seats: Array.from({ length: 4 }, () => ({ agent: "mock-qwen", enabled: false })) } }, context);
@@ -119,7 +119,7 @@ describe("the Mirador host", () => {
 
   test("a review stored in format 1 is read fine and upgraded", async () => {
     const { host, canvas, context } = setup();
-    await host.tools.council_open!.run({ target }, context);
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const { arguments: _a, round: _r, rounds: _rs, verdict: _v, ...rest } = canvas.items[0]!.data;
     const stored = {
       ...rest,
@@ -130,7 +130,7 @@ describe("the Mirador host", () => {
     canvas.items[0] = { ...canvas.items[0]!, data: stored };
 
     const listed = host.items.council!.listed!(canvas.items[0]!);
-    expect(listed).toMatchObject({ format: 6, arguments: [], round: 0, rounds: 0, verdict: null });
+    expect(listed).toMatchObject({ format: 8, arguments: [], round: 0, rounds: 0, verdict: null });
     expect(listed).toMatchObject({ handoff: null, verifications: 0 });
     expect(listed.findings[0]).toMatchObject({ positions: [], resolution: null, proposal: null, ruling: null, fix: null });
     expect(await host.tools.council_status!.run({}, context)).toContain("Old");
@@ -185,7 +185,7 @@ describe("the Mirador host", () => {
     test("the hand-off of a target document goes next to it", async () => {
       const doc = join(target, "README.md");
       const env = setup();
-      await env.host.tools.council_open!.run({ target: doc }, env.context);
+      await env.host.tools.council_open!.run({ target: doc, agents: ["mock-claude", "mock-codex"] }, env.context);
       const id = env.canvas.items[0]!.id;
       await env.host.action!(env.canvas.item(id), { kind: "start" }, env.context);
       await env.clock.runAll();
@@ -275,7 +275,7 @@ describe("the Mirador host", () => {
 
     test("council_mark_fixed before the review is complete is refused", async () => {
       const { host, canvas, context, clock } = setup();
-      await host.tools.council_open!.run({ target }, context);
+      await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
       await expect(asyncRun(() => host.tools.council_mark_fixed!.run({ finding: "F1", summary: "x", files: [] }, context))).rejects.toThrow();
       await host.action!(canvas.items[0]!, { kind: "start" }, context);
       await clock.step();
@@ -465,7 +465,7 @@ describe("the Mirador host", () => {
       const old = { ...rest, format: 2, findings: review().findings.map(({ proposal: _p, ruling: _r, fix: _f, ...finding }) => finding) } as unknown as Review;
       canvas.items[canvas.items.findIndex((it) => it.id === id)] = { ...canvas.item(id), data: old };
       const listed = host.items.council!.listed!(canvas.item(id));
-      expect(listed).toMatchObject({ format: 6, handoff: null, verifications: 0, phase: "complete" });
+      expect(listed).toMatchObject({ format: 8, handoff: null, verifications: 0, phase: "complete" });
       expect(await host.tools.council_status!.run({}, context)).toContain(review().id);
     });
   });

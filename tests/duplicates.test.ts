@@ -193,15 +193,15 @@ describe("findings-merged", () => {
     expect(review.findingsIssued).toBe(2);
   });
 
-  test("refused while a reviewer is still reviewing, outside the independent review, or for a bad merge", () => {
+  test("refused while a reviewer is still reviewing, after the first round started, or for a bad merge", () => {
     const running = reviewed([["r1", input()], ["r2", input()]], false);
     expect(() => reduce(running, { type: "findings-merged", at: 30, into: "F1", merged: ["F2"] })).toThrow(ReviewError);
     const done = reviewed([["r1", input()], ["r2", input()]]);
     expect(() => reduce(done, { type: "findings-merged", at: 30, into: "F1", merged: ["F1"] })).toThrow(ReviewError);
     expect(() => reduce(done, { type: "findings-merged", at: 30, into: "F1", merged: [] })).toThrow(ReviewError);
     expect(() => reduce(done, { type: "findings-merged", at: 30, into: "F1", merged: ["F9"] })).toThrow("no finding F9");
-    const deliberating = reduce(done, { type: "deliberation-started", at: 31, rounds: 1 });
-    expect(() => reduce(deliberating, { type: "findings-merged", at: 32, into: "F1", merged: ["F2"] })).toThrow(ReviewError);
+    const deliberating = reduce(reduce(done, { type: "deliberation-started", at: 31, rounds: 1 }), { type: "round-started", at: 32, round: 1 });
+    expect(() => reduce(deliberating, { type: "findings-merged", at: 33, into: "F1", merged: ["F2"] })).toThrow(ReviewError);
   });
 
   test("on deliberation-started, every co-reporter supports at round 0 alongside the reporter", () => {

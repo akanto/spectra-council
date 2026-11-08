@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import { seatDetail } from "../core/agents.ts";
 import { reportersOf, type Review } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
-import { ActivityLine, FindingRow } from "./Workspace.tsx";
+import { ActivityLine, FindingRow, removable, removeHint } from "./Workspace.tsx";
 import { elapsed, StatusMark, statusWord } from "./ui.tsx";
 
 const clockTime = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -77,6 +77,11 @@ export function ReviewerDetail({
           {review.phase === "independent-review" && reviewer.status === "failed" && (
             <button onClick={() => act({ kind: "retry", reviewerId: reviewer.id })} disabled={busy}>
               Retry
+            </button>
+          )}
+          {removable(review, reviewer) && (
+            <button onClick={() => act({ kind: "remove", reviewerId: reviewer.id })} disabled={busy} title={removeHint(review, reviewer)}>
+              Remove
             </button>
           )}
           <button className="icon-button" onClick={close} aria-label="Close">

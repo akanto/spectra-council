@@ -281,7 +281,7 @@ const reporterLabel = (review: Review, id: string) => review.reviewers.find((eac
 export function AlsoMark({ review, finding }: { review: Review; finding: Finding }) {
   const n = finding.alsoReported.length;
   if (n === 0) return null;
-  const who = finding.alsoReported.map((report) => `${reporterLabel(review, report.reviewerId)} (${report.findingId})`).join(", ");
+  const who = finding.alsoReported.map((report) => `${reporterLabel(review, report.reviewerId)} (${report.findingId}${report.mergedBy ? `, merged by ${reporterLabel(review, report.mergedBy)}` : ""})`).join(", ");
   return (
     <span className="also-mark" title={`Also reported by ${who}`} aria-label={`Also reported by ${who}`}>
       +{n}
@@ -299,6 +299,13 @@ export function AlsoReported({ review, finding }: { review: Review; finding: Fin
         <span key={`${report.reviewerId}:${report.findingId}`}>
           {index > 0 && ", "}
           <strong>{reporterLabel(review, report.reviewerId)}</strong> ({report.findingId}, “{report.title}”)
+          {report.mergedBy && (
+            <span className="muted">
+              {" "}
+              — merged by {reporterLabel(review, report.mergedBy)}
+              {report.reason ? `: ${report.reason}` : ""}
+            </span>
+          )}
         </span>
       ))}
     </p>

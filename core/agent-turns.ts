@@ -1,6 +1,6 @@
 /**
- * The prompts a real agent gets, one per turn of a review: its independent review, a deliberation round, the fix
- * proposals and the re-check of fixes. Each stands on its own (the agent sees nothing else) and ends by asking for the
+ * The prompts a real agent gets, one per turn of a review: its independent review, the grouping of duplicate findings,
+ * a deliberation round, the fix proposals and the re-check of fixes. Each stands on its own (the agent sees nothing else) and ends by asking for the
  * reply as a ```json block, which agent-runner.ts reads. Pure: the same job gives the same prompt.
  */
 import { z } from "zod";
@@ -8,17 +8,12 @@ import type { DeliberationJob, ProposalJob, ReviewerJob, VerificationJob } from 
 import { reportersOf, type Argument, type Finding, type Review } from "./model.ts";
 import {
   argumentInputSchema,
+  duplicateGroupInputSchema,
   type Evidence,
   findingInputSchema,
   fixCheckInputSchema,
   proposalInputSchema,
 } from "./schemas.ts";
-
-const DEPTH_TEXT = {
-  quick: "Quick depth: report only the few most important problems; don't try to cover everything.",
-  standard: "Standard depth: review the main paths thoroughly.",
-  deep: "Deep depth: be thorough and cover more ground, including edge cases.",
-} as const;
 
 const schemaOf = (schema: z.ZodType) => JSON.stringify(z.toJSONSchema(schema), null, 2);
 
@@ -33,7 +28,6 @@ function header({ review, reviewer, profile }: ReviewerJob): string {
     `Review profile: ${profile.title}. ${profile.brief}`,
     `Focus on:\n${bullets(profile.focus)}`,
     `Categories for findings: ${profile.categories.join(", ")}.`,
-    DEPTH_TEXT[review.depth],
   ];
   const instructions = review.instructions.trim();
   if (instructions) parts.push(`The user's instructions:\n${instructions}`);
@@ -70,6 +64,7 @@ const findingsById = (review: Review, ids: string[]) => ids.flatMap((id) => revi
 export function reviewPrompt(job: ReviewerJob): string {
   const task = [
     "Your task: review the target on your own and report the problems that matter, each with evidence: a path (and a line where you can) and a short quote. Don't pad the list; an empty list is a valid answer if you find nothing worth reporting.",
+    `Report at most ${job.review.maxFindings} finding${job.review.maxFindings === 1 ? "" : "s"}, the most severe first. Past that limit only the most severe are kept.`,
   ].join("\n");
   const example = {
     findings: [
@@ -85,6 +80,25 @@ export function reviewPrompt(job: ReviewerJob): string {
     ],
   };
   return [header(job), task, ending("your findings", '{ "findings": [ ... ] }', "finding", findingInputSchema, example)].join("\n\n");
+}
+
+export function groupingPrompt(job: ReviewerJob): string {
+  const { review } = job;
+  const task = [
+    "The reviewers have each reviewed the target independently, and some of them may have found the same problem and reported it in their own words. Before the council deliberates, group the findings below that report the same problem, so each problem is weighed once.",
+    "Findings report the same problem when they have the same root cause: one change would fix them all. Check the target where the findings alone don't tell you. Don't group findings that are only alike in kind (two different missing checks), or that sit in different places and need different fixes.",
+    "List only groups of two or more findings; leave out findings that stand alone. Don't judge whether the findings are right: that is the deliberation's job. An empty list is fine if no two findings report the same problem.",
+  ].join("\n");
+  const [first, second] = review.findings;
+  const example = {
+    groups: [{ findingIds: [first?.id ?? "F1", second?.id ?? "F2"], reason: "Both describe the missing null check on parse()'s result in src/server.ts; checking it fixes both." }],
+  };
+  return [
+    header(job),
+    task,
+    `Findings:\n${review.findings.map((finding) => findingText(finding, review)).join("\n\n")}`,
+    ending("your groups", '{ "groups": [ ... ] }', "group", duplicateGroupInputSchema, example),
+  ].join("\n\n");
 }
 
 export function deliberationPrompt(job: DeliberationJob): string {

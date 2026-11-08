@@ -2,11 +2,12 @@
  * A review's state: what the workspace shows and what a host persists. It changes only through the events of review.ts,
  * so any host (Mirador's canvas, a standalone app) can store, replay and draw it the same way.
  */
-import type { Confidence, Decision, Depth, Evidence, ProfileId, Severity, Stance } from "./schemas.ts";
+import type { DepthChoice } from "./depth.ts";
+import type { Confidence, Decision, Evidence, ProfileId, Severity, Stance } from "./schemas.ts";
 
 export type { Decision, Stance };
 
-export const REVIEW_FORMAT = 6;
+export const REVIEW_FORMAT = 8;
 
 /**
  * Where a review is: set up, reviewed independently, deliberated in rounds, synthesised into a verdict, and ended. After
@@ -59,6 +60,7 @@ export interface Reviewer {
   label: string;
   /** The model a profile seat runs on, once the host could tell; null for a mock. */
   model: ModelInfo | null;
+  /** False for a seat that takes no part: one the user removed after it failed, or an unseated seat of an older review. */
   enabled: boolean;
   status: ReviewerStatus;
   /** What it is doing now, in a few words. */
@@ -127,6 +129,10 @@ export interface CoReport {
   title: string;
   severity: Severity;
   evidence: Evidence[];
+  /** The reviewer whose grouping turn merged it, when an agent judged it the same problem; absent for a rule's merge. */
+  mergedBy?: string;
+  /** Why that reviewer judged it the same problem. */
+  reason?: string;
 }
 
 export interface Finding {
@@ -248,7 +254,12 @@ export interface Review {
   id: string;
   target: string;
   profile: ProfileId;
-  depth: Depth;
+  /** The preset the knobs match, or "custom". */
+  depth: DepthChoice;
+  /** How many rounds the deliberation will have (`rounds` below is set from it when the deliberation starts). */
+  deliberationRounds: number;
+  /** The most findings one reviewer may report; the engine drops the least severe past it. */
+  maxFindings: number;
   instructions: string;
   runner: RunnerKind;
   phase: Phase;
@@ -276,6 +287,11 @@ export interface Review {
   findingsIssued: number;
   /** The phase a review was in when a restart cut it short, for resuming it there; null otherwise. */
   interruptedPhase: ResumablePhase | null;
+  /**
+   * Whether an agent has grouped the findings by meaning, in the grouping turn at the start of the deliberation; a
+   * resumed review doesn't ask again.
+   */
+  duplicatesChecked: boolean;
 }
 
 /** The phases a review cut short by a restart can resume in. (A cut-short re-check just ends; it can be run again.) */

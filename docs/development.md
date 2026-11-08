@@ -28,7 +28,7 @@ bun scripts/screenshots.ts            # with the harness running: a review in Ch
 Ask the agent for a council review. It opens one in the canvas with `council_open`, and you set it up and start it
 there:
 
-1. **Setup**: the profile (General, Code, Architecture, Security, Scientific), the depth (Quick, Standard, Deep), who sits
+1. **Setup**: the profile (General, Code, Architecture, Security, Scientific), the depth (Quick, Standard, Deep, or Custom: deliberation rounds and the most findings per reviewer), who sits
    in the four seats, and optional instructions. The target is the project the conversation works in. To review
    something narrower, like one document, ask the agent for that when it opens the review.
 2. **Workspace**: one panel per seat with the reviewer's status, current step and latest steps. Click a panel for its

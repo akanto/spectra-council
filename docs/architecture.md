@@ -38,8 +38,12 @@ sequenceDiagram
   A->>H: council_status
 ```
 
-After the independent reviews, the reviewers that finished deliberate (`core/deliberation.ts`). The round counts are
-quick 2, standard 3 and deep 4. Each round emits `round-started`, then one `argued` per reviewer (backs, challenges or
+After the independent reviews, the reviewers that finished deliberate (`core/deliberation.ts`) for the review's
+`deliberationRounds`. Two knobs size a review (`core/depth.ts`): deliberation rounds (1 to 6) and the most findings per
+reviewer (1 to 20). The depth presets fill them in (Quick 2 rounds and 3 findings, Standard 3 and 6, Deep 4 and 10);
+other values make the depth "custom". The reviewer's brief asks for at most that many findings, most severe first, and
+the engine keeps a reviewer's most severe ones past it (`findings-capped`). The setup shows the most agent turns the
+review can run (`plannedTurns`). Each round emits `round-started`, then one `argued` per reviewer (backs, challenges or
 is unsure about a finding, with evidence). Reporters answer challenges with `argued` too. Then `synthesis-started`
 and one `finding-resolved` per finding (`agreed`, `confirmed`, `disputed` or `withdrawn`), and `concluded` with the
 verdict line. `deliberation-started` opens the phase. The settlement rules live in `settle`, and `verdictSummary`
@@ -58,14 +62,15 @@ the phase, where `ReviewerRunner.verify` has each reporter and backer check a fi
 
 ## Milestone 2: real reviewers through Mirador
 
-- **Seats.** A seat is a mock persona or a Mirador profile. A profile seat's agent id is `profile:<name>`, and
+- **Seats.** A seat is a mock persona or a Mirador profile. `council_open` without `agents` seats the user's first two
+  profiles (none when it knows none); mocks sit only when the agent names them, for a demo. A profile seat's agent id is `profile:<name>`, and
   `agentLabel` shows the name. The setup picks profile seats by name, and offers the names seated before. Mocks and
   profiles can sit at one council: `routeByAgent` (core/engine.ts) sends each reviewer to the mock runner or the agent
   runner. `review.runner` is `"mock"`, `"mirador"` or `"mixed"`.
 - **Turns.** Each turn starts one fresh conversation per seat: the independent review, each deliberation round, the fix
   proposals and each re-check. Fresh conversations per round suit anonymous cross-review. Each prompt is self-contained
-  (core/agent-turns.ts): the target, a read-only rule, the profile's brief and focus, the depth, the user's
-  instructions, the turn's task, and the JSON reply shape with its schema and an example.
+  (core/agent-turns.ts): the target, a read-only rule, the profile's brief and focus, the finding limit (in the
+  review turn), the user's instructions, the turn's task, and the JSON reply shape with its schema and an example.
 - **Reporting.** The agent ends its final message with a JSON code block. The schemas are `reviewReplySchema`,
   `deliberationReplySchema`, `proposalReplySchema` and `verificationReplySchema` (core/schemas.ts), and `lastJson`
   (core/replies.ts) reads the block. `AgentRunner` (core/agent-runner.ts) reports each item, and the session validates
@@ -84,6 +89,10 @@ the phase, where `ReviewerRunner.verify` has each reporter and backer check a fi
   ignored.
 - **Retry.** A reviewer that fails in the independent review can be retried while the review runs
   (`reviewer-retried`, `ReviewSession.retry`): its findings so far are dropped and the review waits for it again.
+- **Remove.** A failed reviewer can be taken off the council at any time after the start (`reviewer-removed`,
+  `ReviewSession.remove`, or the stored review once it ended): it is unseated (`enabled: false`), its panel and
+  positions go, and it no longer counts in the synthesis or the verdict. During the independent review its findings go
+  too; later they stay on the record, as the council has weighed them.
 - **Resume after a restart.** A restart cuts a running review short (`interrupted` records the phase it was in). Resume
   (`resumed`, `ReviewSession.resume`) goes on in that phase and redoes only the work in flight: the unfinished
   reviewers' independent reviews, the current round, or the synthesis. A cut-short re-check just ends; it can be run
@@ -109,7 +118,11 @@ the phase, where `ReviewerRunner.verify` has each reporter and backer check a fi
    are done in milestone 2. Duplicate findings merge after the independent review (`findings-merged`,
    core/duplicates.ts) when they clearly report the same problem: the same title, or the same kind of problem at the
    same place with similar titles. The merged reports stay on the finding (`alsoReported`) and their reporters back it.
-   Looser matches are only linked in the view. Still to do: merging by meaning, with an agent turn.
+   Then, with a real agent at the council and two findings or more, the **grouping turn** opens the deliberation, before
+   round 1: the first profile seat in it groups the findings by meaning (`groupingPrompt`, `ReviewerRunner.group`), and
+   each group merges through `findings-merged` with the grouper as `by` and its `reason`, kept on the merged reports.
+   `duplicates-checked` marks the turn done, so a resumed review doesn't ask again. Mock councils skip it. Looser
+   matches are only linked in the view.
 5. **Advanced UI**: findings explorer, evidence viewer, report export. The deliberation timeline per finding is done.
 
 Then, if wanted, a standalone Electrobun app: `hosts/desktop/` with its own `CouncilBridge`, a direct-ACP runner, and

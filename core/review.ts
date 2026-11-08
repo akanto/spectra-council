@@ -11,6 +11,7 @@
  * verification round has reviewers re-check the fixes (verification-started → fix-checked → verification-ended).
  */
 import { agentLabel, runnerKindOf, withLabels } from "./agents.ts";
+import { DEPTH_PRESETS, depthOf, type DepthChoice, type Knobs } from "./depth.ts";
 import {
   MAX_ACTIVITY,
   REVIEW_FORMAT,
@@ -55,9 +56,24 @@ export type ReviewEvent =
   | { type: "reviewer-retried"; reviewerId: string; at: number }
   /**
    * After the independent review, findings that report the same problem merge: `merged` fold into `into`, which keeps
-   * their reports (`alsoReported`), the highest severity and all the evidence.
+   * their reports (`alsoReported`), the highest severity and all the evidence. A rule's merge comes before the
+   * deliberation; an agent's (`by`, the reviewer who grouped them, and its `reason`) in the grouping turn at its start,
+   * before round 1.
    */
-  | { type: "findings-merged"; at: number; into: string; merged: string[] }
+  | { type: "findings-merged"; at: number; into: string; merged: string[]; by?: string; reason?: string }
+  /**
+   * A reviewer's own review ended with more findings than the review allows (`maxFindings`): these, the least severe,
+   * are dropped.
+   */
+  | { type: "findings-capped"; reviewerId: string; at: number; findingIds: string[] }
+  /** The grouping turn at the start of the deliberation is over: an agent compared the findings by meaning. */
+  | { type: "duplicates-checked"; at: number }
+  /**
+   * The user takes a failed reviewer off the council: it takes no part from now on, and its positions go. During the
+   * independent review (or one a restart cut short) its findings go too, as nobody has weighed them yet; later they
+   * stay on the record.
+   */
+  | { type: "reviewer-removed"; reviewerId: string; at: number }
   /**
    * A review a restart cut short goes on in the phase it was in: the work in flight then is dropped (the unfinished
    * reviewers' findings, the current round's arguments, the synthesis so far), to be done again.
@@ -121,13 +137,21 @@ const reviewerOf = (seat: Seat, index: number): Reviewer => ({
   problem: null,
 });
 
+/** The knobs a setup asks for: its depth preset's, with any knob it sets itself. */
+const knobsOf = (setup: Pick<Setup, "depth" | "deliberationRounds" | "maxFindings">): Knobs => ({
+  deliberationRounds: setup.deliberationRounds ?? DEPTH_PRESETS[setup.depth].deliberationRounds,
+  maxFindings: setup.maxFindings ?? DEPTH_PRESETS[setup.depth].maxFindings,
+});
+
 export function newReview(id: string, setup: Setup, runner: RunnerKind, at: number): Review {
+  const knobs = knobsOf(setup);
   return {
     format: REVIEW_FORMAT,
     id,
     target: setup.target,
     profile: setup.profile,
-    depth: setup.depth,
+    depth: depthOf(knobs),
+    ...knobs,
     instructions: setup.instructions,
     runner,
     phase: "setup",
@@ -146,14 +170,16 @@ export function newReview(id: string, setup: Setup, runner: RunnerKind, at: numb
     agentHeardAt: null,
     findingsIssued: 0,
     interruptedPhase: null,
+    duplicatesChecked: false,
   };
 }
 
 /**
  * A review as stored by an earlier version, brought up to this one: format 1 had no deliberation, format 2 no rulings,
  * fixes or verification, format 3 no fixer on a fix, format 4 no model on a reviewer, format 5 no merged reports and no
- * phase to resume in. Hosts read stored reviews through
- * this before anything else touches them.
+ * phase to resume in, format 6 no grouping turn (a review past the independent review counts as checked, so a resumed
+ * one doesn't ask), format 7 no rounds or finding limit of its own (its depth preset's; a deliberation under way keeps
+ * its rounds). Hosts read stored reviews through this before anything else touches them.
  */
 export function upgradeReview(stored: Review): Review {
   if (stored.format === REVIEW_FORMAT) return stored;
@@ -184,14 +210,29 @@ export function upgradeReview(stored: Review): Review {
     verifications: old.verifications ?? 0,
     findingsIssued: (old as Partial<Review>).findingsIssued ?? Math.max(0, ...old.findings.map((finding) => Number(finding.id?.slice(1)) || 0)),
     interruptedPhase: (old as Partial<Review>).interruptedPhase ?? null,
+    ...upgradedKnobs(old as unknown as Review),
+    depth: depthOf(upgradedKnobs(old as unknown as Review)),
+    duplicatesChecked: (old as Partial<Review>).duplicatesChecked ?? !(old.phase === "setup" || old.phase === "independent-review" || (old as Partial<Review>).interruptedPhase === "independent-review"),
   };
 }
 
+/** A review stored before it had knobs gets its depth preset's; one that started deliberating keeps its rounds. */
+function upgradedKnobs(old: Review): Knobs {
+  if (typeof old.deliberationRounds === "number" && typeof old.maxFindings === "number") return { deliberationRounds: old.deliberationRounds, maxFindings: old.maxFindings };
+  const preset = DEPTH_PRESETS[old.depth === "custom" ? "standard" : (old.depth ?? "standard")];
+  return { deliberationRounds: old.rounds > 0 ? old.rounds : preset.deliberationRounds, maxFindings: preset.maxFindings };
+}
+
+/** The setup as the view edits it: a review's, with its depth (a preset or "custom") and both knobs. */
+export type SetupState = Omit<Setup, "depth" | "deliberationRounds" | "maxFindings"> & Knobs & { depth: DepthChoice };
+
 /** The setup a review was made with, as the view edits it. */
-export const setupOf = (review: Review): Setup => ({
+export const setupOf = (review: Review): SetupState => ({
   target: review.target,
   profile: review.profile,
   depth: review.depth,
+  deliberationRounds: review.deliberationRounds,
+  maxFindings: review.maxFindings,
   instructions: review.instructions,
   seats: review.reviewers.map(({ agent, enabled }) => ({ agent, enabled })),
 });
@@ -224,8 +265,11 @@ const deliberatingSay = (review: Review, current: string): Reviewer[] =>
   review.reviewers.map((reviewer) => (reviewer.enabled && reviewer.status === "deliberating" ? { ...reviewer, current } : reviewer));
 
 
-/** Each reviewer's position on a finding, from its latest argument; the reporter and co-reporters back it from round 0. */
-function positionsFrom(finding: Finding, args: Argument[], at: number): Position[] {
+/**
+ * Each seated reviewer's position on a finding, from its latest argument; the reporter and co-reporters back it from
+ * round 0. A reviewer the user removed has none.
+ */
+function positionsFrom(review: Review, finding: Finding, args: Argument[], at: number): Position[] {
   const positions = new Map<string, Position>();
   for (const reviewerId of [finding.reviewerId, ...finding.alsoReported.map((report) => report.reviewerId)]) {
     if (!positions.has(reviewerId)) positions.set(reviewerId, { reviewerId, stance: "supports", confidence: finding.confidence, round: 0, at });
@@ -235,7 +279,8 @@ function positionsFrom(finding: Finding, args: Argument[], at: number): Position
     positions.delete(argument.reviewerId);
     positions.set(argument.reviewerId, { reviewerId: argument.reviewerId, stance: argument.stance, confidence: argument.confidence, round: argument.round, at: argument.at });
   }
-  return [...positions.values()];
+  const seated = new Set(seatedReviewers(review).map(({ id }) => id));
+  return [...positions.values()].filter((position) => seated.has(position.reviewerId));
 }
 
 const findingOf = (review: Review, findingId: string): Finding => {
@@ -270,7 +315,13 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
   switch (event.type) {
     case "configured": {
       if (review.phase !== "setup") throw new ReviewError("The review has started; its setup can't change any more.");
-      const { seats, ...rest } = event.patch;
+      const { seats, depth, deliberationRounds, maxFindings, ...rest } = event.patch;
+      // A preset sets both knobs; a knob set in the same patch wins; the depth is then whichever preset they match.
+      const preset = depth === undefined ? undefined : DEPTH_PRESETS[depth];
+      const knobs: Knobs = {
+        deliberationRounds: deliberationRounds ?? preset?.deliberationRounds ?? review.deliberationRounds,
+        maxFindings: maxFindings ?? preset?.maxFindings ?? review.maxFindings,
+      };
       // A seat keeps the model seen for it while its agent stays the same.
       const reviewers = seats
         ? withLabels(
@@ -280,7 +331,7 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
             }),
           )
         : review.reviewers;
-      return { ...review, ...rest, reviewers, runner: runnerKindOf(reviewers) };
+      return { ...review, ...rest, ...knobs, depth: depthOf(knobs), reviewers, runner: runnerKindOf(reviewers) };
     }
     case "model-seen": {
       const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
@@ -310,7 +361,7 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
         round: 0,
         rounds: event.rounds,
         reviewers: review.reviewers.map((reviewer) => (reviewer.enabled && reviewer.status === "completed" ? { ...reviewer, status: "deliberating", current: "Reading the other findings" } : reviewer)),
-        findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(finding, [], event.at) })),
+        findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(review, finding, [], event.at) })),
       };
     }
     case "round-started": {
@@ -462,7 +513,8 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       return { ...retried, findings: review.findings.filter((finding) => finding.reviewerId !== reviewer.id) };
     }
     case "findings-merged": {
-      if (review.phase !== "independent-review") throw new ReviewError(`Findings are merged after the independent review; the review is ${review.phase}.`);
+      const grouping = review.phase === "deliberation" && review.round === 0;
+      if (review.phase !== "independent-review" && !grouping) throw new ReviewError(`Findings are merged after the independent review, before the first round; the review is ${review.phase}.`);
       if (seatedReviewers(review).some((reviewer) => reviewer.status === "waiting" || reviewer.status === "reviewing")) {
         throw new ReviewError("Findings can't merge while reviewers are still reviewing.");
       }
@@ -475,16 +527,51 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       for (const piece of merged.flatMap((finding) => finding.evidence)) {
         if (!seen.has(evidenceKey(piece))) (seen.add(evidenceKey(piece)), evidence.push(piece));
       }
+      const why = { ...(event.by === undefined ? {} : { mergedBy: event.by }), ...(event.reason === undefined ? {} : { reason: event.reason }) };
       const reports = merged.flatMap((finding): CoReport[] => [
-        { reviewerId: finding.reviewerId, findingId: finding.id, title: finding.title, severity: finding.severity, evidence: finding.evidence },
+        { reviewerId: finding.reviewerId, findingId: finding.id, title: finding.title, severity: finding.severity, evidence: finding.evidence, ...why },
         ...finding.alsoReported,
       ]);
       const gone = new Set(event.merged);
-      return {
+      const next: Review = {
         ...review,
-        findings: review.findings
-          .filter((finding) => !gone.has(finding.id))
-          .map((finding) => (finding.id === into.id ? { ...finding, severity, evidence, alsoReported: [...finding.alsoReported, ...reports] } : finding)),
+        findings: review.findings.filter((finding) => !gone.has(finding.id)).map((finding) => (finding.id === into.id ? { ...finding, severity, evidence, alsoReported: [...finding.alsoReported, ...reports] } : finding)),
+      };
+      // In the deliberation the co-reporters back the finding from round 0, as its reporter does.
+      const positioned = grouping ? updateFinding(next, into.id, (finding) => ({ ...finding, positions: positionsFrom(next, finding, [], event.at) })) : next;
+      const grouper = event.by === undefined ? undefined : review.reviewers.find(({ id }) => id === event.by);
+      if (!grouper || !isActive(grouper)) return positioned;
+      const text = `Merged ${event.merged.join(", ")} into ${into.id}${event.reason ? `: ${event.reason}` : ""}`;
+      return updateReviewer(positioned, grouper.id, (it) => withActivity(it, { at: event.at, kind: "finding", text }));
+    }
+    case "findings-capped": {
+      if (review.phase !== "independent-review") throw new ReviewError(`Findings are capped in the independent review; the review is ${review.phase}.`);
+      const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
+      if (!reviewer || !reviewer.enabled) throw new ReviewError(`No reviewer ${event.reviewerId} takes part in the review.`);
+      if (event.findingIds.length === 0) return review;
+      for (const id of event.findingIds) if (findingOf(review, id).reviewerId !== reviewer.id) throw new ReviewError(`${id} isn't ${reviewer.label}'s finding.`);
+      const gone = new Set(event.findingIds);
+      const text = `Kept its ${review.maxFindings} most severe finding${review.maxFindings === 1 ? "" : "s"}; dropped ${event.findingIds.join(", ")}`;
+      const capped = updateReviewer(review, reviewer.id, (it) => withActivity(it, { at: event.at, kind: "note", text }));
+      return { ...capped, findings: review.findings.filter((finding) => !gone.has(finding.id)) };
+    }
+    case "duplicates-checked": {
+      if (review.phase !== "deliberation" || review.round !== 0) throw new ReviewError(`Findings are grouped before the first round; the review is ${review.phase}.`);
+      return review.duplicatesChecked ? review : { ...review, duplicatesChecked: true };
+    }
+    case "reviewer-removed": {
+      if (review.phase === "setup") throw new ReviewError("Before the start, remove a seat in the setup.");
+      const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
+      if (!reviewer || !reviewer.enabled) throw new ReviewError(`No reviewer ${event.reviewerId} takes part in the review.`);
+      if (reviewer.status !== "failed") throw new ReviewError(`${reviewer.label} hasn't failed; only a failed reviewer is removed.`);
+      const removed = updateReviewer(review, reviewer.id, (it) => ({ ...withActivity(it, { at: event.at, kind: "status", text: "Removed from the council" }), enabled: false }));
+      const unweighed = review.phase === "independent-review" || (review.phase === "interrupted" && review.interruptedPhase === "independent-review");
+      const findings = unweighed ? removed.findings.filter((finding) => finding.reviewerId !== reviewer.id) : removed.findings;
+      return {
+        ...removed,
+        // Who ran the reviewers follows the seats while only they authored the findings; later the removed seat's stay.
+        runner: unweighed ? runnerKindOf(removed.reviewers) : review.runner,
+        findings: findings.map((finding) => ({ ...finding, positions: finding.positions.filter((position) => position.reviewerId !== reviewer.id) })),
       };
     }
     case "agent-heard":
@@ -616,7 +703,7 @@ function resume(review: Review, at: number): Review {
       round: Math.max(0, review.round - 1),
       reviewers: back,
       arguments: args,
-      findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(finding, args, at) })),
+      findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(review, finding, args, at) })),
     };
   }
   // The synthesis starts again after the last round.

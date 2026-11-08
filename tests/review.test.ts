@@ -34,7 +34,7 @@ describe("reduce", () => {
       ["r3", "Gemini", false],
       ["r4", "Qwen", false],
     ]);
-    expect(setupOf(review)).toEqual(setup);
+    expect(setupOf(review)).toEqual({ ...setup, deliberationRounds: 2, maxFindings: 3 });
   });
 
   test("configure changes the setup, and only before the start", () => {
@@ -559,8 +559,8 @@ describe("upgradeReview", () => {
     expect(upgraded.findings[1]!.fix).toBeNull();
   });
 
-  test("the review format is 6", () => {
-    expect(REVIEW_FORMAT).toBe(6);
+  test("the review format is 8", () => {
+    expect(REVIEW_FORMAT).toBe(8);
   });
 
   test("a current review is returned as it is", () => {

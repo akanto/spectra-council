@@ -3,10 +3,6 @@
  * where the reviewers ended up standing. Pure: the engine runs the rounds and dispatches what this decides.
  */
 import { argumentsOn, type Finding, type FindingStatus, type Review, type Reviewer, reportersOf } from "./model.ts";
-import type { Depth } from "./schemas.ts";
-
-/** Rounds per depth: a challenge needs one round to be made, one to be answered and one to be reconsidered. */
-export const ROUNDS: Record<Depth, number> = { quick: 2, standard: 3, deep: 4 };
 
 export interface Settlement {
   status: Exclude<FindingStatus, "reported">;
@@ -30,11 +26,12 @@ export function settle(review: Review, finding: Finding): Settlement {
   const byId = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id);
   const reporter = byId(finding.reviewerId);
   const stanceOf = (id: string) => finding.positions.find((position) => position.reviewerId === id)?.stance;
-  const reporterName = reporter?.label ?? finding.reviewerId;
 
-  // Withdrawn once no one who reported it backs it any more (the reporter and any whose report merged into it).
-  const reporters = reportersOf(finding);
-  if (reporters.every((id) => stanceOf(id) !== undefined && stanceOf(id) !== "supports")) {
+  // Withdrawn once no one who reported it backs it any more (the reporter and any whose report merged into it); a
+  // reporter the user removed has no say, and a finding whose reporters were all removed stands on the others' stances.
+  const reporters = reportersOf(finding).filter((id) => byId(id)?.enabled);
+  const reporterName = byId(reporters[0] ?? finding.reviewerId)?.label ?? finding.reviewerId;
+  if (reporters.length > 0 && reporters.every((id) => stanceOf(id) !== undefined && stanceOf(id) !== "supports")) {
     const challengers = finding.positions.filter((position) => !reporters.includes(position.reviewerId) && position.stance === "challenges").map((position) => byId(position.reviewerId)).filter((it) => it !== undefined);
     return {
       status: "withdrawn",
