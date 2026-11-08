@@ -11,11 +11,11 @@ type Handler = (profile: string, prompt: string, call: number, signal: AbortSign
 
 /** Conversations whose replies a test scripts per profile; records every prompt. */
 class FakeConversations implements Conversations {
-  prompts: { profile: string; prompt: string }[] = [];
+  prompts: { profile: string; prompt: string; turn?: string }[] = [];
   private calls = new Map<string, number>();
   constructor(private handler: Handler) {}
-  async ask({ profile, prompt, signal, onStart }: Parameters<Conversations["ask"]>[0]): Promise<AgentReply> {
-    this.prompts.push({ profile, prompt });
+  async ask({ profile, prompt, turn, signal, onStart }: Parameters<Conversations["ask"]>[0]): Promise<AgentReply> {
+    this.prompts.push({ profile, prompt, turn });
     const call = this.calls.get(profile) ?? 0;
     this.calls.set(profile, call + 1);
     const conversationId = `c-${profile}-${call}`;
@@ -229,5 +229,49 @@ describe("AgentRunner verify", () => {
     expect(verificationPrompt(job)).toContain("Guarded F1.");
     expect(proposalPrompt({ ...job, review: done })).toContain("minority report");
     expect(deliberationPrompt({ ...job, round: 1, rounds: 3 })).toContain("round 1 of 3");
+  });
+});
+
+describe("AgentRunner turn identities", () => {
+  const turnsOf = (conversations: FakeConversations) => conversations.prompts.map((each) => each.turn!);
+
+  test("every turn of a review has its own identity: by reviewer, task, round and findings", async () => {
+    const conversations = new FakeConversations(council);
+    await play(conversations);
+    const turns = turnsOf(conversations);
+    expect(turns.every((turn) => typeof turn === "string")).toBe(true);
+    expect(new Set(turns).size).toBe(turns.length);
+    const parsed = turns.map((turn) => JSON.parse(turn) as string[]);
+    expect(parsed).toContainEqual(["rev", "r1", "review", "ask"]);
+    expect(parsed).toContainEqual(["rev", "r2", "review", "ask"]);
+    expect(parsed).toContainEqual(["rev", "r1", "deliberate", "round 1", "ask"]);
+    expect(parsed).toContainEqual(["rev", "r1", "deliberate", "round 2", "ask"]);
+    expect(parsed).toContainEqual(["rev", "r2", "deliberate", "round 1", "ask"]);
+    expect(parsed.some((turn) => turn[2] === "propose" && turn.includes("F1"))).toBe(true);
+  });
+
+  test("the JSON repair is a turn of its own", async () => {
+    const handler: Handler = (who, prompt, call, signal) => (who === "beta" && !isDeliberation(prompt) && !isProposal(prompt) ? { text: "Nothing to report." } : council(who, prompt, call, signal));
+    const conversations = new FakeConversations(handler);
+    await play(conversations);
+    const beta = conversations.prompts.filter((each) => each.profile === "beta" && !isDeliberation(each.prompt)).map((each) => JSON.parse(each.turn!));
+    expect(beta).toEqual([
+      ["rev", "r2", "review", "ask"],
+      ["rev", "r2", "review", "repair"],
+    ]);
+  });
+
+  test("a turn's identity holds no label or model: a relabelled reviewer asks the same turn", async () => {
+    const review = base();
+    const relabelled = reduce(review, { type: "model-seen", reviewerId: "r1", model: { name: "Actual Model", effort: null } });
+    expect(relabelled.reviewers[0]!.label).not.toBe(review.reviewers[0]!.label);
+    const ask = async (on: Review) => {
+      const conversations = new FakeConversations(council);
+      await new AgentRunner(conversations, new FakeClock()).run({ review: on, reviewer: on.reviewers[0]!, profile: PROFILES.code }, () => {}, new AbortController().signal);
+      return conversations.prompts[0]!;
+    };
+    const [before, after] = [await ask(review), await ask(relabelled)];
+    expect(after.prompt).not.toBe(before.prompt);
+    expect(after.turn).toBe(before.turn!);
   });
 });

@@ -44,13 +44,16 @@ const IN_FLIGHT_DAYS = 1;
 
 /**
  * A reviewer conversation started and not heard back from yet: for which review, in which chair's conversation, with
- * which ask (a hash of the profile and prompt), and its reply if that came in while no review waited for it (after a
+ * which ask (a hash of the profile and the turn's identity; of the profile and prompt when the ask named no turn, and
+ * in records from before turns were named), and its reply if that came in while no review waited for it (after a
  * restart). Only the same review, resumed, takes one over.
  */
 interface InFlight {
   chair: string;
   review: string;
   key: string;
+  /** Set when `key` hashes the turn's identity rather than the prompt. */
+  turn?: true;
   profile: string;
   at: number;
   reply?: ConversationReply;
@@ -187,15 +190,18 @@ export function createCouncilHost({
 
   /**
    * Conversations on Mirador profiles, started for the reviews of the conversation `chairId`. An ask the same as one
-   * whose conversation a restart left running (same chair, profile and prompt, as a resumed review asks again) takes
+   * whose conversation a restart left running (same chair, review, profile and turn, as a resumed review asks again) takes
    * that conversation over, with its reply if it came in meanwhile, rather than starting a new one.
    */
   function conversationsOf(chairId: string, reviewId: string, storage: CanvasPluginContext<Review>["storage"]): Conversations {
     return {
-      ask: ({ profile, prompt, signal, onStart, onModel }) =>
+      ask: ({ profile, prompt, turn, signal, onStart, onModel }) =>
         new Promise<AgentReply>((resolve, reject) => {
           if (signal.aborted) return reject(signal.reason);
-          const key = askKey(profile, prompt);
+          // The turn's identity rather than its prompt, which can change while the turn runs (a label follows the model).
+          const key = askKey(profile, turn ?? prompt);
+          const promptKey = askKey(profile, prompt);
+          const sameAsk = (flight: InFlight) => (flight.turn ? turn !== undefined && flight.key === key : flight.key === promptKey);
           let id: string | null = null;
           let lookups: ReturnType<typeof setTimeout>[] = [];
           let seen = false;
@@ -234,7 +240,7 @@ export function createCouncilHost({
             pending.set(started.id, (reply) => settle(started, reply));
           };
 
-          const left = Object.entries(inFlight(storage)).find(([each, flight]) => flight.chair === chairId && flight.review === reviewId && flight.key === key && !adopted.has(each) && !pending.has(each));
+          const left = Object.entries(inFlight(storage)).find(([each, flight]) => flight.chair === chairId && flight.review === reviewId && sameAsk(flight) && !adopted.has(each) && !pending.has(each));
           // A conversation that a crash cut short reports as failed: its work is redone in a new one.
           if (left && left[1].reply && left[1].reply.ended !== "finished") {
             const dead = left[0];
@@ -259,7 +265,7 @@ export function createCouncilHost({
             (started) => {
               if (signal.aborted) return;
               rememberProfile(storage, started.profile);
-              keepInFlight(storage, (all) => (all[started.id] = { chair: chairId, review: reviewId, key, profile: started.profile, at: clock.now() }));
+              keepInFlight(storage, (all) => (all[started.id] = { chair: chairId, review: reviewId, key, ...(turn !== undefined && { turn: true as const }), profile: started.profile, at: clock.now() }));
               follow(started);
               onStart?.(started.id);
             },

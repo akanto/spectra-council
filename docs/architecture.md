@@ -105,8 +105,10 @@ the phase, where `ReviewerRunner.verify` has each reporter and backer check a fi
   (`resumed`, `ReviewSession.resume`) goes on in that phase and redoes only the work in flight: the unfinished
   reviewers' independent reviews, the current round, or the synthesis. A cut-short re-check just ends; it can be run
   again. The host keeps the reviewer conversations it started in plugin storage (`inFlight`), with any reply that
-  arrives while nothing waits for it; a resumed review asking the same profile the same prompt takes that conversation
-  over instead of starting a new one.
+  arrives while nothing waits for it; a resumed review asking the same profile for the same turn takes that conversation
+  over instead of starting a new one. A turn is matched by its identity (review, reviewer, task, round or pass, findings,
+  first ask or JSON repair), not its prompt, which changes when a reviewer's label follows its model; records from
+  before turns were named still match by prompt.
 - **Seats.** A council has one to `MAX_SEATS` (8) seats; a new review starts with two, and the user adds and removes
   reviewers in the setup. (Reviews stored before this may have unseated seats, `enabled: false`, which take no part.)
 - **Model and effort.** A seat runs on its profile's defaults. [mirador-api.md](mirador-api.md) lists the API

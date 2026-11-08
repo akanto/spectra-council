@@ -240,6 +240,80 @@ describe("conversations taken over after a restart: only the right ones", () => 
     expect(second.canvas.item(id).data.reviewers[0]!.status).toBe("reviewing");
   });
 
+  /** A profile:alpha review whose conversation finds it runs "Actual Model" while its first turn is under way. */
+  async function relabelled() {
+    const actual = { name: "Actual Model", effort: null };
+    const records = { profiles: () => [], modelOf: (conversationId: string) => (conversationId === "conversation-fixer-1" ? actual : null) };
+    const first = boot();
+    const host = createCouncilHost({ ...first.options, records, modelLookupMs: [0] });
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, first.context);
+    const id = first.canvas.items[0]!.id;
+    expect(first.canvas.item(id).data.reviewers[0]!.label).toBe("alpha");
+    await host.action!(first.canvas.item(id), { kind: "start" }, first.context);
+    await first.clock.settle();
+    await Bun.sleep(5);
+    await first.clock.settle();
+    expect(first.canvas.item(id).data.reviewers[0]!.label).toBe("Actual Model");
+    expect(first.canvas.started).toHaveLength(1);
+    return { first, id };
+  }
+
+  test("a turn whose reviewer was relabelled by its model meanwhile takes over its conversation", async () => {
+    const { first, id } = await relabelled();
+    const second = boot(first.canvas);
+    await second.host.action!(second.canvas.item(id), { kind: "resume" }, second.context);
+    await second.host.tools.council_begin!.run({}, second.context);
+    await second.clock.settle();
+    // The resumed prompt names "Actual Model" where the first said "alpha", yet no second conversation started.
+    expect(first.canvas.started).toHaveLength(1);
+    expect(second.canvas.item(id).data.reviewers[0]!.status).toBe("reviewing");
+
+    await drive(second, second.host);
+    const review = second.canvas.item(id).data;
+    expect(review.phase).toBe("complete");
+    expect(review.findings.map((finding) => finding.title)).toEqual(["alpha finding"]);
+    expect(first.canvas.started.filter((each) => each.prompt === first.canvas.started[0]!.prompt)).toHaveLength(1);
+  });
+
+  test("a relabelled turn's reply saved during the downtime is used, once", async () => {
+    const { first, id } = await relabelled();
+    const second = boot(first.canvas);
+    await second.host.replied!({ id: "conversation-fixer-1", profile: "alpha" }, { text: answer("alpha", first.canvas.started[0]!.prompt), ended: "finished" }, second.context);
+    await second.host.action!(second.canvas.item(id), { kind: "resume" }, second.context);
+    await second.host.tools.council_begin!.run({}, second.context);
+    await second.clock.settle();
+    const resumed = second.canvas.item(id).data;
+    expect(resumed.reviewers[0]!.status).toBe("completed");
+    expect(resumed.findings.map((finding) => finding.title)).toEqual(["alpha finding"]);
+    // Taken over: no new review conversation, and the kept reply is gone from the storage.
+    expect(first.canvas.started.filter((each) => !each.prompt.includes('"arguments"') && !each.prompt.includes('"proposals"'))).toHaveLength(1);
+    expect((first.canvas.storage.get(IN_FLIGHT_KEY) as Record<string, unknown> | undefined)?.["conversation-fixer-1"]).toBeUndefined();
+
+    await drive(second, second.host);
+    const review = second.canvas.item(id).data;
+    expect(review.phase).toBe("complete");
+    expect(review.findings.map((finding) => finding.title)).toEqual(["alpha finding"]);
+  });
+
+  test("an in-flight record from before turns were named is still taken over by its prompt", async () => {
+    const first = boot();
+    await first.host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, first.context);
+    const id = first.canvas.items[0]!.id;
+    await first.host.action!(first.canvas.item(id), { kind: "start" }, first.context);
+    await first.clock.settle();
+    // Rewrite the record as an older version kept it: the key hashes the profile and prompt.
+    const flights = first.canvas.storage.get(IN_FLIGHT_KEY) as Record<string, { key: string; turn?: true }>;
+    const flight = flights["conversation-fixer-1"]!;
+    expect(flight.turn).toBe(true);
+    first.canvas.storage.set(IN_FLIGHT_KEY, { "conversation-fixer-1": { ...flight, turn: undefined, key: Bun.hash(`alpha\u0000${first.canvas.started[0]!.prompt}`).toString(36) } });
+
+    const second = boot(first.canvas);
+    await second.host.action!(second.canvas.item(id), { kind: "resume" }, second.context);
+    await second.host.tools.council_begin!.run({}, second.context);
+    await second.clock.settle();
+    expect(first.canvas.started).toHaveLength(1);
+  });
+
   test("a conversation given up on in this process (stopped) leaves nothing to take over", async () => {
     const env = boot();
     await env.host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, env.context);

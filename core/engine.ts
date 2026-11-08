@@ -128,6 +128,12 @@ export interface Conversations {
   ask(request: {
     profile: string;
     prompt: string;
+    /**
+     * Which turn this ask is, independent of the prompt's wording (review, reviewer, task, round or pass, findings, and
+     * whether it is the first ask or the JSON repair): a host that takes over a conversation a restart left running
+     * matches it by this, since the prompt can change meanwhile (a reviewer's label follows its model, for one).
+     */
+    turn?: string;
     signal: AbortSignal;
     onStart?: (conversationId: string) => void;
     /** The model the conversation runs on, when the host learns it: called at most a few times, before the ask resolves. */
