@@ -3,7 +3,8 @@ import { useEffect, useRef } from "react";
 import { seatDetail } from "../core/agents.ts";
 import { isActive, reportersOf, type Review } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
-import { ActivityLine, FindingRow, removable, removeHint } from "./Workspace.tsx";
+import { canFetchReply } from "../core/late-replies.ts";
+import { ActivityLine, fetchHint, FindingRow, removable, removeHint } from "./Workspace.tsx";
 import { elapsed, StatusMark, statusWord } from "./ui.tsx";
 
 const clockTime = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -79,6 +80,11 @@ export function ReviewerDetail({
           </span>
         </div>
         <div className="detail-actions">
+          {canFetchReply(review, reviewer) && (
+            <button onClick={() => act({ kind: "fetch-reply", reviewerId: reviewer.id })} disabled={busy} title={fetchHint(review, reviewer)}>
+              Fetch its reply
+            </button>
+          )}
           {review.phase === "independent-review" && reviewer.status === "failed" && (
             <button onClick={() => act({ kind: "retry", reviewerId: reviewer.id })} disabled={busy}>
               Retry

@@ -63,7 +63,7 @@ export function describeReview(review: Review): string {
   lines.push(`Findings (${review.findings.length}):`);
   for (const finding of [...review.findings].sort(bySeverity)) {
     lines.push(
-      `- ${finding.id} [${finding.severity}, ${finding.confidence} confidence, ${finding.status}] ${finding.title} — by ${label(finding.reviewerId)}; ${finding.category}; at ${evidenceText(finding)}. ${finding.summary}${finding.recommendation ? ` Fix: ${finding.recommendation}` : ""}`,
+      `- ${finding.id} [${finding.severity}, ${finding.confidence} confidence, ${finding.status}${finding.late ? ", came in late after the verdict" : ""}] ${finding.title} — by ${label(finding.reviewerId)}; ${finding.category}; at ${evidenceText(finding)}. ${finding.summary}${finding.recommendation ? ` Fix: ${finding.recommendation}` : ""}`,
     );
     if (finding.alsoReported.length > 0) lines.push(`  Also reported by: ${finding.alsoReported.map((report) => `${label(report.reviewerId)} as ${report.findingId} ("${report.title}")${report.mergedBy ? `, merged by ${label(report.mergedBy)}${report.reason ? `: ${report.reason}` : ""}` : ""}`).join(", ")}`);
     if (finding.resolution) lines.push(`  Council: ${finding.resolution.rationale}`);

@@ -173,14 +173,21 @@ export function verdictSummary(review: Review): string {
   const contested = findings.filter((finding) => finding.status === "disputed" && isSerious(finding)).length;
   const failed = review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "failed");
   const dropped = failed.length > 0 ? ` ${names(failed)} failed and couldn't continue.` : "";
+  // Taken in after the verdict from a reviewer's late reply: never weighed by the council.
+  const late = findings.filter((finding) => finding.late).length;
+  const lateLine = late > 0 ? ` ${late} came in late, from a reviewer's reply fetched after the verdict${review.rounds > 0 ? `, and ${late === 1 ? "wasn't" : "weren't"} deliberated` : ""}.` : "";
   // Without a deliberation (rounds is set when one starts), every finding is still as reported.
   if (review.rounds === 0) {
-    return `${findings.length} finding${findings.length === 1 ? "" : "s"}, not deliberated: fewer than two reviewers finished their review.${dropped}`;
+    const finished = review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "completed").length;
+    // A late reply may have brought a second reviewer's findings in after a verdict that can't reopen.
+    const why = late > 0 && finished >= 2 ? "fewer than two reviewers had finished their review at the verdict" : "fewer than two reviewers finished their review";
+    return `${findings.length} finding${findings.length === 1 ? "" : "s"}, not deliberated: ${why}.${lateLine}${dropped}`;
   }
   // A finding the synthesis left reported had no backing left to stand on; it is counted, not dropped from the verdict.
-  const unsettled = count("reported");
+  const unsettled = findings.filter((finding) => finding.status === "reported" && !finding.late).length;
   const parts = (["agreed", "confirmed", "disputed", "withdrawn"] as const).filter((status) => count(status) > 0).map((status) => `${count(status)} ${status}`);
   if (unsettled > 0) parts.push(`${unsettled} unsettled`);
+  if (late > 0) parts.push(`${late} late`);
   const head = `${findings.length} finding${findings.length === 1 ? "" : "s"}: ${parts.join(", ")}.`;
   // Findings more than one reviewer reported on its own, before anyone saw the others' findings.
   const shared = findings.filter((finding) => reportersOf(finding).length > 1).length;
@@ -189,5 +196,5 @@ export function verdictSummary(review: Review): string {
   // Kept as it was at the verdict (the hand-off quotes it), so it states the outcome rather than what is left to do.
   const open = contested > 0 ? ` ${contested} serious finding${contested === 1 ? " is" : "s are"} disputed.` : "";
   const unbacked = unsettled > 0 ? ` ${unsettled === 1 ? "1 finding was" : `${unsettled} findings were`} left unsettled, with no one backing ${unsettled === 1 ? "it" : "them"}.` : "";
-  return head + independent + held + open + unbacked + dropped;
+  return head + independent + held + open + unbacked + lateLine + dropped;
 }

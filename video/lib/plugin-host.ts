@@ -13,7 +13,7 @@ import { scriptedRunners } from "./scripted-runner.ts";
 const real = miradorRecords();
 
 const host = createCouncilHost({
-  records: { profiles: () => SEATS.map(({ name, harness, model }) => ({ name, harness, model })), modelOf: (id) => real.modelOf(id) },
+  records: { profiles: () => SEATS.map(({ name, harness, model }) => ({ name, harness, model })), modelOf: (id) => real.modelOf(id), replyOf: () => null },
   runnerFor: scriptedRunners(systemClock),
 });
 

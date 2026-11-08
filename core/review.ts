@@ -11,7 +11,8 @@
  * verification round has reviewers re-check the fixes (verification-started → fix-checked → verification-ended).
  */
 import { agentLabel, isRunnableAgent, runnerKindOf, withLabels } from "./agents.ts";
-import { DEPTH_PRESETS, depthOf, type DepthChoice, type Knobs } from "./depth.ts";
+import { verdictSummary } from "./deliberation.ts";
+import { DEPTH_PRESETS, depthOf, overLimit, type DepthChoice, type Knobs } from "./depth.ts";
 import {
   MAX_ACTIVITY,
   REVIEW_FORMAT,
@@ -52,8 +53,32 @@ export type ReviewerEvent =
   | { type: "fix-checked"; reviewerId: string; at: number; check: FixCheckInput }
   | { type: "reviewer-finished"; reviewerId: string; at: number; outcome: ReviewerOutcome; problem?: string };
 
+/**
+ * A seat that failed its own review takes the reply its conversation gave after all, fetched late from the conversation
+ * the seat gave up on (`conversationId`): the reply's prose (`note`), its findings, checked, and why any were rejected.
+ * The seat is completed with those findings, as if its turn had ended in time. During the independent review they are
+ * its review's findings; on a complete review that doesn't reopen (`reopened`) they come in `late`, the council never
+ * weighs them, and the verdict is written again to count them.
+ */
+export interface ReplyFetched {
+  type: "reply-fetched";
+  reviewerId: string;
+  at: number;
+  conversationId: string;
+  note: string | null;
+  findings: FindingInput[];
+  rejected: string[];
+}
+
 export type ReviewEvent =
   | ReviewerEvent
+  | ReplyFetched
+  /**
+   * A complete review that ended without a deliberation goes back to the end of its independent review, to go on from
+   * there as a run does (merging, grouping, rounds, synthesis, verdict): a late reply brought a second reviewer's
+   * findings in. Only before anything was done with its verdict (`whyNoReopen`).
+   */
+  | { type: "reopened"; at: number }
   /** The user retries a reviewer that failed in the independent review: its findings so far are dropped, and it waits to run again. */
   | { type: "reviewer-retried"; reviewerId: string; at: number }
   /**
@@ -155,6 +180,28 @@ const askedAbout = (review: Review, findingId: string) => (review.asks ?? []).so
 
 /** Thrown for an event the review can't take now; its message says why, for whoever sent it. */
 export class ReviewError extends Error {}
+
+/**
+ * Why a complete review can't go back to its deliberation, or null when it can: it ended without one, and nobody has
+ * ruled on, handed off, ticketed, asked about or re-checked its findings since.
+ */
+export function whyNoReopen(review: Review): string | null {
+  if (review.phase !== "complete") return `Only a complete review reopens; this one is ${review.phase}.`;
+  if (review.rounds > 0) return "The council deliberated this review already.";
+  const touched = review.verifications > 0 || review.handoff !== null || (review.asks?.length ?? 0) > 0 || review.findings.some((finding) => finding.ruling || finding.fix || finding.ticket);
+  if (touched) return "Its findings were ruled on or handed off since the verdict.";
+  return null;
+}
+
+/**
+ * Whether taking this late reply reopens the review for its deliberation: it can reopen, and with the reply at least two
+ * seated reviewers will have finished their review, with a finding between them.
+ */
+export function reopensWith(review: Review, fetched: ReplyFetched): boolean {
+  if (whyNoReopen(review) !== null) return false;
+  const finished = seatedReviewers(review).filter((reviewer) => reviewer.status === "completed" || reviewer.id === fetched.reviewerId).length;
+  return finished >= 2 && review.findings.length + fetched.findings.length > 0;
+}
 
 const reviewerOf = (seat: Seat, index: number): Reviewer => ({
   id: `r${index + 1}`,
@@ -643,10 +690,16 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (!reviewer || !reviewer.enabled) throw new ReviewError(`No reviewer ${event.reviewerId} takes part in the review.`);
       if (event.findingIds.length === 0) return review;
       for (const id of event.findingIds) if (findingOf(review, id).reviewerId !== reviewer.id) throw new ReviewError(`${id} isn't ${reviewer.label}'s finding.`);
-      const gone = new Set(event.findingIds);
-      const text = `Kept its ${review.maxFindings} most severe finding${review.maxFindings === 1 ? "" : "s"}; dropped ${event.findingIds.join(", ")}`;
-      const capped = updateReviewer(review, reviewer.id, (it) => withActivity(it, { at: event.at, kind: "note", text }));
-      return { ...capped, findings: review.findings.filter((finding) => !gone.has(finding.id)) };
+      return capped(review, reviewer.id, event.findingIds, event.at);
+    }
+    case "reply-fetched":
+      return takeLateReply(review, event);
+    case "reopened": {
+      const why = whyNoReopen(review);
+      if (why) throw new ReviewError(why);
+      // Findings taken in late before are deliberated with the rest now.
+      const findings = review.findings.map(({ late: _, ...finding }) => finding);
+      return { ...review, phase: "independent-review", verdict: null, endedAt: null, agentHeardAt: null, findings };
     }
     case "duplicates-checked": {
       if (review.phase !== "deliberation" || review.round !== 0) throw new ReviewError(`Findings are grouped before the first round; the review is ${review.phase}.`);
@@ -761,6 +814,59 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
       return updateReviewer(review, reviewer.id, (it) => ({ ...it, status: event.outcome, current, endedAt: event.at, problem: event.problem ?? null }));
     }
   }
+}
+
+/** Drops a reviewer's findings past the review's limit, and says so in its activity. */
+function capped(review: Review, reviewerId: string, findingIds: string[], at: number): Review {
+  const gone = new Set(findingIds);
+  const text = `Kept its ${review.maxFindings} most severe finding${review.maxFindings === 1 ? "" : "s"}; dropped ${findingIds.join(", ")}`;
+  const noted = updateReviewer(review, reviewerId, (it) => withActivity(it, { at, kind: "note", text }));
+  return { ...noted, findings: review.findings.filter((finding) => !gone.has(finding.id)) };
+}
+
+/** A failed seat's late reply, taken in (`reply-fetched`). */
+function takeLateReply(review: Review, event: ReplyFetched): Review {
+  const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
+  if (!reviewer || !reviewer.enabled) throw new ReviewError(`No reviewer ${event.reviewerId} takes part in the review.`);
+  if (reviewer.status !== "failed") throw new ReviewError(`${reviewer.label} hasn't failed; only a failed reviewer's reply is fetched.`);
+  if (review.phase !== "independent-review" && review.phase !== "complete") {
+    throw new ReviewError(isRunning(review) ? `The council is at work; fetch ${reviewer.label}'s reply once the review is complete.` : `A reply is fetched while the reviewers review or once the review is complete; it is ${review.phase}.`);
+  }
+  const { at } = event;
+  const late = review.phase === "complete";
+  const added: Finding[] = event.findings.map((input, index) => ({
+    ...input,
+    id: `F${review.findingsIssued + index + 1}`,
+    reviewerId: reviewer.id,
+    status: "reported",
+    reportedAt: at,
+    positions: [],
+    resolution: null,
+    proposal: null,
+    ruling: null,
+    fix: null,
+    alsoReported: [],
+    ...(late ? { late: true as const } : {}),
+  }));
+  let seat = withActivity(reviewer, { at, kind: "status", text: `Took its late reply from conversation ${event.conversationId}` });
+  if (event.note) seat = withActivity(seat, { at, kind: "note", text: event.note });
+  for (const finding of added) seat = withActivity(seat, { at, kind: "finding", text: `Reported ${finding.id}: ${finding.title}`, ...(finding.evidence[0] ? { path: finding.evidence[0].path } : {}) });
+  for (const problem of event.rejected) seat = withActivity(seat, { at, kind: "error", text: `Rejected a malformed finding: ${problem}` });
+  seat = withActivity(seat, { at, kind: "status", text: `Reported ${added.length} finding${added.length === 1 ? "" : "s"}` });
+  seat = { ...seat, status: "completed", current: "Review complete", problem: null, endedAt: at };
+  // During the independent review, any findings it had give way to the reply's, as a retry's do.
+  const kept = late ? review.findings : review.findings.filter((finding) => finding.reviewerId !== reviewer.id);
+  let next: Review = {
+    ...review,
+    reviewers: review.reviewers.map((each) => (each.id === reviewer.id ? seat : each)),
+    findings: [...kept, ...added],
+    findingsIssued: review.findingsIssued + added.length,
+  };
+  const dropped = overLimit(next, reviewer.id);
+  if (dropped.length > 0) next = capped(next, reviewer.id, dropped, at);
+  if (!late) return next;
+  // After the verdict: the verdict is written again to count them, and the agent hears of the review anew.
+  return { ...next, verdict: { summary: verdictSummary(next), at }, agentHeardAt: null };
 }
 
 const evidenceKey = (evidence: Evidence) => `${evidence.path}:${evidence.line ?? ""}-${evidence.endLine ?? ""}`;

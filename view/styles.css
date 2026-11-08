@@ -867,7 +867,8 @@ h4 {
 
 .detail-head {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  /* The name keeps room to read; the seat's actions wrap under each other before it is squeezed. */
+  grid-template-columns: auto minmax(11em, 1fr) auto;
   align-items: start;
   gap: 10px;
 }
@@ -1709,6 +1710,8 @@ main[role="tabpanel"] {
 
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 8px;
 }

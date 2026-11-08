@@ -173,6 +173,11 @@ export interface Finding {
   fix: Fix | null;
   /** The beads issue filed for it, once asked for; absent in reviews from before tickets. */
   ticket?: Ticket | null;
+  /**
+   * Taken in after the verdict, from a reviewer's late reply (`reply-fetched` on a complete review that doesn't reopen):
+   * the council never weighed it, so it stays reported and is ruled on as reported. Absent otherwise.
+   */
+  late?: true;
 }
 
 /** A beads issue for an accepted finding: asked of the agent, then filed under the id it reports. */
@@ -369,6 +374,9 @@ export const seatedReviewers = (review: Review) => review.reviewers.filter((revi
 /** Findings that stand after the synthesis: the ones worth a fix proposal and a ruling. */
 export const isStanding = (finding: Finding) => finding.status === "agreed" || finding.status === "confirmed" || finding.status === "disputed";
 
-/** Uncorroborated reports can be ruled on individually after a review without deliberation. */
+/**
+ * Uncorroborated reports can be ruled on individually after a review without deliberation, as can a late finding taken
+ * in after the verdict.
+ */
 export const isRulable = (review: Review, finding: Finding) => isStanding(finding) ||
-  (finding.status === "reported" && review.rounds === 0 && (review.phase === "complete" || review.phase === "verification"));
+  (finding.status === "reported" && (review.rounds === 0 || finding.late === true) && (review.phase === "complete" || review.phase === "verification"));

@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import { countsIn } from "../core/deliberation.ts";
 import { bySeverity, possibleDuplicates, STATUS_MEANINGS } from "../core/describe.ts";
-import { argumentsOn, isStanding, type Argument, type Finding, type Resolution, type Review } from "../core/model.ts";
+import { argumentsOn, isRulable, type Argument, type Finding, type Resolution, type Review } from "../core/model.ts";
 import type { FindingStatus } from "../core/model.ts";
 import type { Evidence, ViewAction } from "../core/schemas.ts";
 import { FindingEvidence } from "./Findings.tsx";
@@ -269,7 +269,7 @@ export function Deliberation({ review, focus, select, openPath, act, busy }: { s
     }
     if (window.matchMedia("(max-width: 720px)").matches) detailRef.current?.scrollIntoView({ block: "start" });
   }, [selectedId]);
-  const needsRuling = (finding: Finding) => review.phase === "complete" && isStanding(finding) && !finding.ruling && !finding.fix;
+  const needsRuling = (finding: Finding) => review.phase === "complete" && isRulable(review, finding) && !finding.ruling && !finding.fix;
   // The next finding that still needs a ruling, down the list and wrapping round, for the ruling control to offer.
   const nextToRule = (() => {
     if (!selected) return null;

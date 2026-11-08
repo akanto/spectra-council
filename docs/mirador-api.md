@@ -96,3 +96,14 @@ after the tool that began the step has returned.
 
 **Sketch:** a sentence in the API docs, such as: "A `CanvasToolContext` stays valid for `startConversation`, `change` and
 `prompt` after its tool returns, for as long as the conversation exists in this Mirador process."
+
+## 7. A started conversation's reply, on demand
+
+**What:** a way to read the reply of a conversation the plugin started, at any time: the agent's last message of its
+latest turn and how that turn ended (or that it still runs), as `replied` gives it.
+
+**Why:** `replied` is heard once. When a seat's turn runs past its limit, the plugin keeps the conversation on record
+and keeps a reply that comes later, but a reply that came while Mirador or the plugin was down is only in Mirador's
+database, which `hosts/mirador/records.ts` reads (`replyOf`) to let the user fetch it into the review.
+
+**Sketch:** `CanvasPluginContext.replyOf(conversationId): ConversationReply | { ended: "running" } | null`.

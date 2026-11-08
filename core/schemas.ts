@@ -175,6 +175,11 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("handoff") }),
   /** Run a reviewer that failed in the independent review again, while the review runs. */
   z.object({ kind: z.literal("retry"), reviewerId: z.string().min(1) }),
+  /**
+   * Take the reply a failed reviewer's conversation gave after the seat gave up on it (its turn ran past the limit, say)
+   * into the review, as its own review's; a complete review that ended without a deliberation goes on to one.
+   */
+  z.object({ kind: z.literal("fetch-reply"), reviewerId: z.string().min(1) }),
   /** Take a failed reviewer off the council: its panel and its positions go (and, during the independent review, its findings). */
   z.object({ kind: z.literal("remove"), reviewerId: z.string().min(1) }),
   /** Go on with a review a restart of the host cut short, from the phase it was in. */

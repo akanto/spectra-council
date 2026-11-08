@@ -114,19 +114,43 @@ there is one; a direct write would be lost under the session's next one.
   each conversation and starts reviewers through it. After a Mirador restart there is none: Start, Resume and Re-check
   ask the agent to call `council_begin`, which starts the work.
 - **Failures.** A reviewer that fails in the independent review can be retried (`reviewer-retried`) or, at any time,
-  removed (`reviewer-removed`): it no longer counts in the synthesis or the verdict.
+  removed (`reviewer-removed`): it no longer counts in the synthesis or the verdict. A turn past its limit fails with a
+  `TurnTimeout` ("Its turn took longer than 15 minutes"), which is also the reason its ask is aborted with.
+- **Late replies.** A seat that failed its own review turn (timed out, say) can take the reply its conversation gave
+  after all: the view offers "Fetch its reply" while the reviewers review and once the review is complete
+  (`whyNoFetch`, `core/late-replies.ts`). The seat's activity names the turn and its conversation (`Asking the …
+  profile to review`, `Started conversation <id>`), so reviews stored before this work too. A conversation the limit
+  gave up on stays in the host's in-flight records (`gaveUp`): never taken over by a resume or retry, but its reply is
+  kept when Mirador sends it. The fetch uses that reply, else reads the conversation's latest turn from Mirador's
+  database (`replyOf`, `hosts/mirador/records.ts`, the agent's last message as Mirador's own `replyOf` reads it). A
+  turn still running, ended badly or without a valid JSON block changes nothing: the view says why. Otherwise
+  `replyFetched` (`core/agent-runner.ts`) reads it as the runner reads a review reply, and `reply-fetched` completes
+  the seat with its findings (capped as usual), then:
+  - **during the independent review**, they count as its review's, and the run goes on as before;
+  - **on a complete review that ended without a deliberation**, when with the reply at least two reviewers finished
+    and nothing was done with the verdict yet (no ruling, hand-off, fix, ticket, ask or re-check: `whyNoReopen`), the
+    review is `reopened` to the end of its independent review and goes on as a run does (`ReviewSession.reopen`):
+    merging, the grouping turn, the rounds, the synthesis, proposals and a new verdict. With no tool context to start
+    conversations (after a restart) it waits as interrupted, and the agent is asked to call `council_begin`, which
+    resumes it;
+  - **otherwise** (it was deliberated, or the user already acted on its verdict) the findings come in `late`: never
+    deliberated, ruled on as reported, counted apart in a rewritten verdict. The agent hears of the review again.
+
+  A seat that failed in a deliberation round can't fetch: its round is over, and its arguments would land in a
+  settled deliberation. Run the review again instead.
 - **Resume.** A restart cuts a running review short (`interrupted`). Resume (`resumed`) redoes only the work in flight.
   The host keeps the conversations it started in plugin storage, with any reply that came while nothing waited for it,
   and a resumed turn takes its conversation over. Turns are matched by identity (review, reviewer, task, round or pass,
   findings, first ask or repair), not by prompt, which changes when a seat's label follows its model.
 - **Model names.** A seat runs on its profile's model and effort. The plugin API can't read them, so
-  `hosts/mirador/records.ts` reads Mirador's database read-only to name each seat by its model (`model-seen`).
+  `hosts/mirador/records.ts` reads Mirador's database read-only to name each seat by its model (`model-seen`), and to
+  read a late reply that came while no host kept it.
   [mirador-api.md](mirador-api.md) lists the API extensions that would replace this and let a seat choose its model.
 - **Other runners.** `createCouncilHost`'s `runnerFor` option hands an agent to a runner of the host's own, ahead of
   the mock and profile runners. The installed plugin passes none; the video's host (`video/lib/plugin-host.ts`) plays
   scripted reviewers through it.
 - **Limits.** Stop aborts the review, but the reviewers' conversations run on until their turn ends; their replies are
-  ignored.
+  ignored. A turn's limit is its total time (15 minutes), not its idle time.
 
 ## Releasing
 

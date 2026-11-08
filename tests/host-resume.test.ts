@@ -243,7 +243,7 @@ describe("conversations taken over after a restart: only the right ones", () => 
   /** A profile:alpha review whose conversation finds it runs "Actual Model" while its first turn is under way. */
   async function relabelled() {
     const actual = { name: "Actual Model", effort: null };
-    const records = { profiles: () => [], modelOf: (conversationId: string) => (conversationId === "conversation-fixer-1" ? actual : null) };
+    const records = { profiles: () => [], modelOf: (conversationId: string) => (conversationId === "conversation-fixer-1" ? actual : null), replyOf: () => null };
     const first = boot();
     const host = createCouncilHost({ ...first.options, records, modelLookupMs: [0] });
     await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, first.context);

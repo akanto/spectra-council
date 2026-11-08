@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { miradorDatabase, miradorRecords, modelFromOptions, noRecords } from "../hosts/mirador/records.ts";
+import { miradorDatabase, miradorRecords, modelFromOptions, noRecords, replyFromEvents } from "../hosts/mirador/records.ts";
 
 const claude = (current = "opus", effort: string | null = "high") => [
   { id: "mode", category: "mode", type: "select", currentValue: "default", options: [] },
@@ -161,4 +161,81 @@ describe("modelFromOptions, a capitalised default choice", () => {
     const options = [{ id: "model", category: "model", currentValue: "Default", options: [{ value: "Default", name: "Default (recommended)", description: "Opus" }] }];
     expect(modelFromOptions(options)).toEqual({ name: "Opus", effort: null });
   });
+});
+
+/** A chunk of the agent's message, as Mirador stores an ACP update. */
+const said = (text: string, messageId = "m1", meta?: Record<string, unknown>) => ({ type: "acp", update: { content: { text, type: "text" }, messageId, sessionUpdate: "agent_message_chunk", ...(meta ? { _meta: meta } : {}) } });
+const thought = (text: string) => ({ type: "acp", update: { content: { text, type: "text" }, sessionUpdate: "agent_thought_chunk" } });
+const toolCall = (id: string) => ({ type: "acp", update: { toolCallId: id, title: "Read", sessionUpdate: "tool_call" } });
+const asked = { type: "user-message", text: "Review this." };
+const turnEnd = (stopReason = "end_turn") => ({ type: "turn-end", stopReason });
+
+describe("replyFromEvents", () => {
+  test("the agent's last message, after thoughts and tool calls, of a turn that ended", () => {
+    const reply = replyFromEvents([asked, thought("Let me look."), said("First "), said("look."), toolCall("t1"), thought("Hm."), said("Done.\n\n```json\n", "m2"), said('{"findings": []}\n```', "m2"), turnEnd()]);
+    expect(reply).toEqual({ text: 'Done.\n\n```json\n{"findings": []}\n```', ended: "finished" });
+  });
+
+  test("a turn with no end is running; a cancelled one stopped; an error that ends the turn failed", () => {
+    expect(replyFromEvents([asked, said("Working on it")])).toEqual({ text: "Working on it", ended: "running" });
+    expect(replyFromEvents([asked, said("Half"), turnEnd("cancelled")])).toEqual({ text: "Half", ended: "stopped" });
+    expect(replyFromEvents([asked, said("Half"), { type: "error", message: "gone", endsTurn: true }])).toEqual({ text: "Half", ended: "failed" });
+    // An error that doesn't end the turn changes nothing.
+    expect(replyFromEvents([asked, { type: "error", message: "retrying" }, said("Fine."), turnEnd()])).toEqual({ text: "Fine.", ended: "finished" });
+  });
+
+  test("a plan, a permission, an error, a new tool call or an image ends a message, as in Mirador's timeline", () => {
+    const fence = "```json\n{}\n```";
+    const plan = { type: "acp", update: { entries: [], sessionUpdate: "plan" } };
+    const image = { type: "acp", update: { content: { type: "image", data: "x", mimeType: "image/png" }, messageId: "m1", sessionUpdate: "agent_message_chunk" } };
+    for (const between of [plan, { type: "permission" }, { type: "error", message: "retrying" }, image, { type: "acp", update: { toolCallId: "new", sessionUpdate: "tool_call_update" } }]) {
+      expect(replyFromEvents([asked, said("All checked."), between, said(fence, "m2"), turnEnd()]).text).toBe(fence);
+    }
+    // An update of a tool call already shown doesn't.
+    const update = { type: "acp", update: { toolCallId: "t1", status: "completed", sessionUpdate: "tool_call_update" } };
+    expect(replyFromEvents([asked, toolCall("t1"), said("One "), update, said("two"), turnEnd()]).text).toBe("One two");
+    const child = said("A child session's words", "c1", { "opencode/child-session": { id: "s2" } });
+    expect(replyFromEvents([asked, said("Mine"), child, turnEnd()]).text).toBe("Mine");
+  });
+
+  test("nothing said in words is a null text", () => {
+    expect(replyFromEvents([asked, thought("..."), toolCall("t1"), said("   "), turnEnd()])).toEqual({ text: null, ended: "finished" });
+  });
+
+  test("a subagent's message, an informational one and a repeat of the whole message don't count", () => {
+    const sub = said("The subagent's report", "s1", { claudeCode: { parentToolUseId: "t1" } });
+    const info = said("Compacted.", "i1", { claudeCode: { kind: "informational" } });
+    expect(replyFromEvents([asked, said("Mine"), sub, turnEnd()]).text).toBe("Mine");
+    expect(replyFromEvents([asked, said("Mine"), info, turnEnd()]).text).toBe("Mine");
+    expect(replyFromEvents([asked, said("One, "), said("two."), said("One, two."), turnEnd()]).text).toBe("One, two.");
+  });
+});
+
+describe("miradorRecords.replyOf", () => {
+  const dir = mkdtempSync(join(tmpdir(), "records-reply-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "state.sqlite");
+  const db = new Database(path);
+  // Mirador's events table, as in its state.sqlite.
+  db.run("CREATE TABLE events (conversation_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, event TEXT NOT NULL, PRIMARY KEY (conversation_id, seq))");
+  const add = (conversation: string, events: unknown[]) => events.forEach((event, index) => db.run("INSERT INTO events VALUES (?, ?, ?, ?)", [conversation, index + 1, 1000 + index, JSON.stringify(event)]));
+  add("finished", [asked, { type: "files-kept", turnSeq: 1, checkpoint: "x" }, said("Here.\n```json\n{\"findings\": []}\n```"), turnEnd()]);
+  add("working", [asked, thought("Reading"), toolCall("t1")]);
+  // A second message began a new turn: its reply is the one that counts.
+  add("again", [asked, said("Old answer"), turnEnd(), { type: "user-message", text: "And now?" }, said("New answer")]);
+  add("silent", [{ type: "files-kept", turnSeq: 1, checkpoint: "x" }]);
+  db.run("INSERT INTO events VALUES ('broken', 1, 1, ?), ('broken', 2, 2, 'not json'), ('broken', 3, 3, ?)", [JSON.stringify(asked), JSON.stringify(turnEnd())]);
+  db.close();
+  const records = miradorRecords(path);
+
+  test("a finished turn's reply", () => expect(records.replyOf("finished")).toEqual({ text: 'Here.\n```json\n{"findings": []}\n```', ended: "finished" }));
+  test("a turn still running", () => expect(records.replyOf("working")).toEqual({ text: null, ended: "running" }));
+  test("the latest turn's", () => expect(records.replyOf("again")).toEqual({ text: "New answer", ended: "running" }));
+  test("no turn, no conversation, or no database: null", () => {
+    expect(records.replyOf("silent")).toBeNull();
+    expect(records.replyOf("nope")).toBeNull();
+    expect(miradorRecords(join(dir, "absent", "state.sqlite")).replyOf("finished")).toBeNull();
+    expect(noRecords.replyOf("finished")).toBeNull();
+  });
+  test("an unreadable event is skipped", () => expect(records.replyOf("broken")).toEqual({ text: null, ended: "finished" }));
 });

@@ -170,6 +170,7 @@ describe("models from Mirador's records", () => {
       { name: "beta", harness: "pi", model: null },
     ],
     modelOf: (id: string) => (id.endsWith("-1") || id.endsWith("-3") ? opus : qwen),
+    replyOf: () => null,
   };
   const withRecords = () => {
     const clock = new FakeClock();

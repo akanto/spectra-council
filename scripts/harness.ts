@@ -30,6 +30,7 @@ const host = createCouncilHost({
       { name: "pi home", harness: "pi", model: { name: "Qwen 3.8 Max", effort: "medium" } },
     ],
     modelOf: () => null,
+    replyOf: () => null,
   },
   writeFile: async (path, text) => {
     await mkdir(handoffs, { recursive: true });

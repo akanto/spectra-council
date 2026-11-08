@@ -1,12 +1,14 @@
 /**
  * What the plugin reads from Mirador's own records, which its plugin API doesn't offer yet (docs/mirador-api.md, 1 and
- * 4): the user's profiles, and the model and effort a conversation runs on. Mirador keeps both in its SQLite database
+ * 4): the user's profiles, the model and effort a conversation runs on, and a conversation's latest reply (for a
+ * reviewer's late reply, which Mirador told the plugin while nothing waited for it). Mirador keeps both in its SQLite database
  * (`$MIRADOR_DATA_DIR/state.sqlite`, by default `~/.mirador/state.sqlite`), which this opens read-only. Anything it
  * can't read gives an empty answer, never an error: the council then names seats by their profiles, as before.
  */
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { LateReply } from "../../core/agent-runner.ts";
 import type { ProfileInfo } from "../../core/agents.ts";
 import type { ModelInfo } from "../../core/model.ts";
 
@@ -15,10 +17,101 @@ export interface MiradorRecords {
   profiles(): ProfileInfo[];
   /** The model and effort a conversation runs on, from its header's choices; null until its session reported them. */
   modelOf(conversationId: string): ModelInfo | null;
+  /**
+   * What the agent said last in the conversation's latest turn, and how that turn ended ("running" while it hasn't), as
+   * Mirador tells a plugin when a conversation it started replies (`replyFromEvents`); null when there is no such
+   * conversation or turn.
+   */
+  replyOf(conversationId: string): LateReply | null;
 }
 
 /** Records that know nothing, for tests and hosts without Mirador's database. */
-export const noRecords: MiradorRecords = { profiles: () => [], modelOf: () => null };
+export const noRecords: MiradorRecords = { profiles: () => [], modelOf: () => null, replyOf: () => null };
+
+type Json = Record<string, unknown>;
+const record = (value: unknown): Json => (value && typeof value === "object" ? (value as Json) : {});
+
+/**
+ * The reply in a turn's events (Mirador's `events` rows, parsed, oldest first, from the message that began the turn), as
+ * Mirador's own `replyOf` (shared/last-words.ts) reads it: the agent's last message, the run of its message chunks that
+ * nothing Mirador's timeline shows as a block of its own broke (a thought, a new tool call, a plan, a notice, a mode
+ * change, a permission, an error, an image, another message), trimmed (null when it said nothing in words); and how the
+ * turn ended: the last `turn-end` (stopped when cancelled, else finished) or error that ended the turn (failed),
+ * "running" when none did. A subagent's or an informational message doesn't count, nor a chunk that repeats its whole
+ * message.
+ */
+export function replyFromEvents(events: unknown[]): LateReply {
+  let last: string | null = null;
+  let current: string | null = null;
+  let ended: LateReply["ended"] = "running";
+  const streamed = new Map<string, { text: string; chunks: number }>();
+  const tools = new Set<string>();
+  for (const raw of events) {
+    const event = record(raw);
+    if (event.type === "turn-end") {
+      ended = event.stopReason === "cancelled" ? "stopped" : "finished";
+      current = null;
+      continue;
+    }
+    if (event.type === "error") {
+      if (event.endsTurn === true) ended = "failed";
+      current = null;
+      continue;
+    }
+    if (event.type === "user-message" || event.type === "permission") {
+      current = null;
+      continue;
+    }
+    if (event.type !== "acp") continue;
+    const update = record(event.update);
+    const meta = record(update._meta);
+    const claudeCode = record(meta.claudeCode);
+    // A subagent's updates (Claude Code's tasks, opencode's child sessions) show in its own block.
+    if (typeof claudeCode.parentToolUseId === "string" || meta["opencode/child-session"] !== undefined) continue;
+    switch (update.sessionUpdate) {
+      case "agent_message_chunk": {
+        const content = record(update.content);
+        if (content.type !== "text" || typeof content.text !== "string") {
+          current = null;
+          continue;
+        }
+        if (claudeCode.kind === "informational") {
+          current = null;
+          continue;
+        }
+        const text = content.text;
+        const messageId = typeof update.messageId === "string" ? update.messageId : null;
+        if (messageId) {
+          const chunks = Number(record(meta["mirador/coalesced"]).chunks) || 1;
+          const soFar = streamed.get(messageId) ?? { text: "", chunks: 0 };
+          // Some gateways follow a streamed message with one chunk that holds all of it again.
+          if (soFar.chunks >= 2 && text.trim() !== "" && text === soFar.text) continue;
+          streamed.set(messageId, { text: soFar.text + text, chunks: soFar.chunks + chunks });
+        }
+        current = (current ?? "") + text;
+        last = current;
+        continue;
+      }
+      case "tool_call":
+      case "tool_call_update": {
+        // An update of a tool call already shown changes its block; a new one is a block of its own.
+        const id = typeof update.toolCallId === "string" ? update.toolCallId : null;
+        if (update.sessionUpdate === "tool_call" || id === null || !tools.has(id)) current = null;
+        if (id !== null) tools.add(id);
+        continue;
+      }
+      case "agent_thought_chunk":
+      case "user_message_chunk":
+      case "plan":
+      case "notice":
+      case "current_mode_update":
+        current = null;
+        continue;
+    }
+  }
+  const text = last?.trim() || null;
+  return { text, ended };
+}
 
 /** The database's path: `MIRADOR_DATA_DIR` as Mirador reads it, else `~/.mirador`. */
 export function miradorDatabase(env: Record<string, string | undefined> = process.env): string {
@@ -154,6 +247,24 @@ export function miradorRecords(path: string = miradorDatabase()): MiradorRecords
           }
           return { name: String(r.name), harness: String(r.harness), model };
         });
+      });
+    },
+    replyOf(conversationId) {
+      return withDb<LateReply | null>(null, (db) => {
+        // The turn is the latest message's, as Mirador's own reply is (a reviewer's conversation has only its first).
+        const start = db
+          .query("SELECT MAX(seq) AS seq FROM events WHERE conversation_id = ? AND CASE WHEN json_valid(event) THEN json_extract(event, '$.type') END = 'user-message'")
+          .get(conversationId) as { seq: number | null } | null;
+        if (start?.seq === null || start?.seq === undefined) return null;
+        const rows = db.query("SELECT event FROM events WHERE conversation_id = ? AND seq >= ? ORDER BY seq").all(conversationId, start.seq) as { event: string }[];
+        const events = rows.flatMap((row) => {
+          try {
+            return [JSON.parse(row.event) as unknown];
+          } catch {
+            return [];
+          }
+        });
+        return replyFromEvents(events);
       });
     },
     modelOf(conversationId) {

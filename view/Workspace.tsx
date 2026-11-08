@@ -4,6 +4,7 @@ import { isFinished, isResumable, isRulable, reportersOf, type Activity, type Fi
 import type { ViewAction } from "../core/schemas.ts";
 import { seatDetail } from "../core/agents.ts";
 import { bySeverity } from "../core/describe.ts";
+import { canFetchReply } from "../core/late-replies.ts";
 import { ActionPlan } from "./Actions.tsx";
 import { cx, elapsed, FindingStatusBadge, AlsoMark, FixBadge, RulingMark, SeverityBadge, StatusMark, statusWord, VerdictBanner } from "./ui.tsx";
 
@@ -50,7 +51,13 @@ export function removeHint(review: Review, reviewer: Reviewer) {
   return `Take ${reviewer.label} off the council: its panel and positions go${unweighed ? ", and its findings so far" : ""}`;
 }
 
-function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, retry, remove, busy }: { review: Review; reviewer: Reviewer; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean; retry: (() => void) | null; remove: (() => void) | null; busy: boolean }) {
+/** What fetching a failed reviewer's late reply does, for its tooltip. */
+export function fetchHint(review: Review, reviewer: Reviewer) {
+  const after = review.phase === "complete" ? (review.rounds === 0 ? "; with two reviewers' findings, the council then deliberates" : "; its findings come in after the verdict, not deliberated") : "";
+  return `Take the reply ${reviewer.label}'s conversation gave after its turn was given up on, if it has ended${after}`;
+}
+
+function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, retry, fetch, remove, busy }: { review: Review; reviewer: Reviewer; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean; retry: (() => void) | null; fetch: (() => void) | null; remove: (() => void) | null; busy: boolean }) {
   const recent = reviewer.activity.filter((activity) => activity.kind !== "status").slice(-3);
   return (
     <div className="seat-cell">
@@ -86,8 +93,13 @@ function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, re
         <span className="muted">{elapsed(reviewer.startedAt, reviewer.endedAt, now) ?? ""}</span>
       </span>
     </button>
-    {(retry || remove) && (
+    {(retry || fetch || remove) && (
       <span className="seat-actions">
+        {fetch && (
+          <button onClick={fetch} disabled={busy} title={fetchHint(review, reviewer)}>
+            Fetch its reply
+          </button>
+        )}
         {retry && (
           <button onClick={retry} disabled={busy}>
             Retry {reviewer.label}
@@ -194,7 +206,7 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
       <ActionPlan review={review} act={act} busy={busy} openCouncil={openCouncil} compact {...(openPath ? { openPath } : {})} />
       <div className={cx("seat-grid", `seats-${seated.length}`)}>
         {seated.map((reviewer) => (
-          <SeatPanel key={reviewer.id} review={review} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} retry={review.phase === "independent-review" && reviewer.status === "failed" ? () => act({ kind: "retry", reviewerId: reviewer.id }) : null} remove={removable(review, reviewer) ? () => act({ kind: "remove", reviewerId: reviewer.id }) : null} busy={busy} />
+          <SeatPanel key={reviewer.id} review={review} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} retry={review.phase === "independent-review" && reviewer.status === "failed" ? () => act({ kind: "retry", reviewerId: reviewer.id }) : null} fetch={canFetchReply(review, reviewer) ? () => act({ kind: "fetch-reply", reviewerId: reviewer.id }) : null} remove={removable(review, reviewer) ? () => act({ kind: "remove", reviewerId: reviewer.id }) : null} busy={busy} />
         ))}
       </div>
       <section className="findings-summary">

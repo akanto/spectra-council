@@ -10,7 +10,7 @@ import { isProfileAgent } from "./agents.ts";
 import { currentFinding, duplicateGroups, keeperOf } from "./duplicates.ts";
 import { isRunning, isStanding, reportersOf, seatedReviewers, type Finding, type ModelInfo, type Review, type Reviewer } from "./model.ts";
 import { PROFILES, type ReviewProfile } from "./profiles.ts";
-import { reduce, type ReviewEvent, type ReviewerEvent } from "./review.ts";
+import { reduce, type ReplyFetched, type ReviewEvent, type ReviewerEvent } from "./review.ts";
 import { argumentInputSchema, duplicateGroupInputSchema, findingInputSchema, fixCheckInputSchema, problemsOf, proposalInputSchema } from "./schemas.ts";
 
 /** How long the synthesis takes over each finding, so the user sees the verdicts come in. */
@@ -144,6 +144,12 @@ export interface Conversations {
 /** How long a real reviewer's turn may take before its seat gives up on it. */
 export const TURN_LIMIT_MS = 15 * 60_000;
 
+/**
+ * Why a runner gave up on a turn that ran past its limit: the reason its ask's signal aborts with, and the seat's
+ * problem. A host may keep following such a conversation, whose late reply the user can still fetch (`reply-fetched`).
+ */
+export class TurnTimeout extends Error {}
+
 /** A runner that sends each reviewer to `byAgent(reviewer.agent)`, so mocks and real agents can sit at one council. */
 export function routeByAgent(byAgent: (agent: string) => ReviewerRunner): ReviewerRunner {
   return {
@@ -204,6 +210,17 @@ export class ReviewSession {
    */
   async resume(): Promise<Review> {
     this.#dispatch({ type: "resumed", at: this.#clock.now() });
+    return this.#onwards();
+  }
+
+  /**
+   * Reopens a complete review that ended without a deliberation, takes a failed reviewer's late reply into it, and goes
+   * on from the end of its independent review as a run does: merging, the grouping turn, the rounds, the synthesis and
+   * the verdict. The host checks `reopensWith` first.
+   */
+  async reopen(fetched: ReplyFetched): Promise<Review> {
+    this.#dispatch({ type: "reopened", at: fetched.at });
+    this.#dispatch(fetched);
     return this.#onwards();
   }
 

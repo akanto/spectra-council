@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AgentRunner } from "../core/agent-runner.ts";
 import { deliberationPrompt, proposalPrompt, reviewPrompt, verificationPrompt } from "../core/agent-turns.ts";
-import { ReviewSession, type AgentReply, type Conversations } from "../core/engine.ts";
+import { ReviewSession, TurnTimeout, type AgentReply, type Conversations } from "../core/engine.ts";
 import { isStanding, type Review } from "../core/model.ts";
 import { PROFILES } from "../core/profiles.ts";
 import { newReview, reduce } from "../core/review.ts";
@@ -166,6 +166,23 @@ describe("AgentRunner failures", () => {
     expect(review.reviewers[1]!.problem).toBe("Its turn took longer than 15 minutes");
     expect(clock.time).toBeGreaterThanOrEqual(1_000_000 + 15 * 60_000);
     expect(await clock.step()).toBe(false);
+  });
+
+  test("a host whose ask rejects at once on the limit's abort still shows the timeout, and hears it as one", async () => {
+    // As Mirador's host does: the ask's promise rejects with the signal's reason the moment it aborts.
+    const reasons: unknown[] = [];
+    const hostLike: Conversations = {
+      ask: ({ profile, prompt, signal, onStart }) => {
+        if (profile === "beta" && !isDeliberation(prompt)) {
+          onStart?.("c-beta");
+          return new Promise((_, reject) => signal.addEventListener("abort", () => (reasons.push(signal.reason), reject(signal.reason)), { once: true }));
+        }
+        return Promise.resolve({ conversationId: `c-${profile}`, profile, ended: "finished" as const, ...(council(profile, prompt, 0, signal) as { text: string }) });
+      },
+    };
+    const { review } = await play(hostLike as FakeConversations);
+    expect(review.reviewers[1]!.problem).toBe("Its turn took longer than 15 minutes");
+    expect(reasons[0]).toBeInstanceOf(TurnTimeout);
   });
 
   test("stopping the session aborts a pending ask", async () => {

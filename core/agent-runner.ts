@@ -7,9 +7,11 @@
 import type { z } from "zod";
 import { deliberationPrompt, groupingPrompt, proposalPrompt, repairPrompt, reviewPrompt, verificationPrompt } from "./agent-turns.ts";
 import { profileName } from "./agents.ts";
-import { TURN_LIMIT_MS, type AgentReply, type Clock, type Conversations, type DeliberationJob, type ProposalJob, type Report, type ReviewerJob, type ReviewerRunner, type VerificationJob } from "./engine.ts";
+import { TURN_LIMIT_MS, TurnTimeout, type AgentReply, type Clock, type Conversations, type DeliberationJob, type ProposalJob, type Report, type ReviewerJob, type ReviewerRunner, type VerificationJob } from "./engine.ts";
+import { askingText, REVIEW_TURN, startedText } from "./late-replies.ts";
 import { jsonProblem, lastJson } from "./replies.ts";
-import { deliberationReplySchema, groupingReplySchema, proposalReplySchema, reviewReplySchema, verificationReplySchema } from "./schemas.ts";
+import type { ReplyFetched } from "./review.ts";
+import { deliberationReplySchema, findingInputSchema, groupingReplySchema, problemsOf, proposalReplySchema, reviewReplySchema, verificationReplySchema, type FindingInput } from "./schemas.ts";
 
 type Reporter = (report: Report) => void;
 
@@ -52,7 +54,7 @@ export class AgentRunner implements ReviewerRunner {
   }
 
   run(job: ReviewerJob, report: Reporter, signal: AbortSignal) {
-    return this.#turn(job, report, signal, ["review"], "to review", reviewPrompt(job), reviewReplySchema, ({ findings }) => {
+    return this.#turn(job, report, signal, ["review"], REVIEW_TURN, reviewPrompt(job), reviewReplySchema, ({ findings }) => {
       for (const finding of findings) report({ type: "finding-reported", finding });
       return plural(findings.length, "finding");
     });
@@ -111,7 +113,7 @@ export class AgentRunner implements ReviewerRunner {
     // A repair also names the reply it repairs: after a restart the first ask is asked anew, and its new reply must not
     // take over the repair of the old one.
     const turn = (attempt: string, repairing?: string) => JSON.stringify([job.review.id, job.reviewer.id, ...task, attempt, ...(repairing === undefined ? [] : [repairing])]);
-    report({ type: "activity", kind: "status", text: `Asking the ${profile} profile ${what}` });
+    report({ type: "activity", kind: "status", text: askingText(profile, what) });
     let reply = await this.#ask(profile, prompt, turn("ask"), report, signal);
     if (reply.ended !== "finished") throw new Error(reply.ended === "failed" ? "Its conversation failed" : "Its conversation was stopped");
     let parsed = lastJson(reply.text, schema);
@@ -143,13 +145,15 @@ export class AgentRunner implements ReviewerRunner {
       prompt,
       turn,
       signal: child.signal,
-      onStart: (conversationId) => report({ type: "activity", kind: "tool", text: `Started conversation ${conversationId}` }),
+      onStart: (conversationId) => report({ type: "activity", kind: "tool", text: startedText(conversationId) }),
       onModel: (model) => report({ type: "model-seen", model }),
     });
-    // Rejects with the timeout, or with the signal's reason when the sleep is cancelled by an abort.
+    // Rejects with the timeout, or with the signal's reason when the sleep is cancelled by an abort. The ask is aborted
+    // with the same error: a host's ask rejects with its signal's reason at once, and may win the race.
     const limit = this.#clock.sleep(this.#limitMs, child.signal).then((): never => {
-      child.abort(new Error("timed out"));
-      throw new Error(`Its turn took longer than ${Math.round(this.#limitMs / 60_000)} minutes`);
+      const timeout = new TurnTimeout(`Its turn took longer than ${Math.round(this.#limitMs / 60_000)} minutes`);
+      child.abort(timeout);
+      throw timeout;
     });
     // Whichever loses the race must not leave an unhandled rejection behind.
     ask.catch(() => {});
@@ -161,4 +165,31 @@ export class AgentRunner implements ReviewerRunner {
       child.abort(new Error("done"));
     }
   }
+}
+
+/** How a conversation's latest turn ended, as a host reads it from its records: "running" while it hasn't. */
+export interface LateReply {
+  text: string | null;
+  ended: AgentReply["ended"] | "running";
+}
+
+/**
+ * The event that takes a failed seat's late reply to its own review into the review, read as `run` reads a reply: the
+ * prose before its JSON block becomes a note, and each finding is checked as the session checks a reported one (a
+ * malformed one is rejected, the rest count). Throws, saying why, when the reply can't be used: its turn hasn't ended,
+ * ended badly, or left no valid JSON block.
+ */
+export function replyFetched(reviewerId: string, conversationId: string, reply: LateReply, at: number): ReplyFetched {
+  if (reply.ended === "running") throw new Error(`Its conversation ${conversationId} is still working; fetch its reply once its turn has ended.`);
+  if (reply.ended !== "finished") throw new Error(`Its conversation ${conversationId} ${reply.ended === "failed" ? "failed" : "was stopped"} before it replied.`);
+  const parsed = lastJson(reply.text, reviewReplySchema);
+  if (parsed === null) throw new Error(`Its reply in conversation ${conversationId} has no valid JSON block: ${jsonProblem(reply.text, reviewReplySchema)}.`);
+  const findings: FindingInput[] = [];
+  const rejected: string[] = [];
+  for (const item of parsed.findings) {
+    const finding = findingInputSchema.safeParse(item);
+    if (finding.success) findings.push(finding.data);
+    else rejected.push(problemsOf(finding.error));
+  }
+  return { type: "reply-fetched", reviewerId, at, conversationId, note: proseBefore(reply.text ?? ""), findings, rejected };
 }

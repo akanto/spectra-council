@@ -7,18 +7,19 @@ import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { AgentRunner } from "../../core/agent-runner.ts";
+import { AgentRunner, replyFetched, type LateReply } from "../../core/agent-runner.ts";
 import { knobsText } from "../../core/depth.ts";
 import { checkersOf } from "../../core/deliberation.ts";
 import { isProfileAgent, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, outcomeOf } from "../../core/describe.ts";
-import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
+import { ReviewSession, routeByAgent, systemClock, TurnTimeout, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
 import { acceptedFindings, digestOf, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
+import { lastTurnOf, whyNoFetch } from "../../core/late-replies.ts";
 import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
-import { awaitsFixRequest, newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
+import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
 import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ticketIdSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
@@ -46,7 +47,8 @@ const IN_FLIGHT_DAYS = 1;
  * A reviewer conversation started and not heard back from yet: for which review, in which chair's conversation, with
  * which ask (a hash of the profile and the turn's identity; of the profile and prompt when the ask named no turn, and
  * in records from before turns were named), and its reply if that came in while no review waited for it (after a
- * restart). Only the same review, resumed, takes one over.
+ * restart, or after its turn ran past the limit). Only the same review, resumed, takes one over, and never one the
+ * limit gave up on: that one is kept only for the user to fetch its late reply.
  */
 interface InFlight {
   chair: string;
@@ -57,6 +59,8 @@ interface InFlight {
   profile: string;
   at: number;
   reply?: ConversationReply;
+  /** Set when the turn's limit gave up on it: its seat failed, and its reply is kept for a fetch (`fetch-reply`). */
+  gaveUp?: true;
 }
 
 const askKey = (profile: string, prompt: string) => Bun.hash(`${profile}\u0000${prompt}`).toString(36);
@@ -223,14 +227,19 @@ export function createCouncilHost({
             lookups.forEach(clearTimeout);
             onModel?.(model);
           };
-          // A conversation given up on in this process (stopped, timed out) is never wanted again: only a restart leaves one to take over.
+          // A conversation given up on in this process is never taken over again: only a restart leaves one to take over.
+          // One the turn's limit gave up on stays on record, so its late reply is kept when it comes, for a fetch.
           const onAbort = () => {
             lookups.forEach(clearTimeout);
             if (id) {
               pending.delete(id);
               adopted.delete(id);
               const gone = id;
-              keepInFlight(storage, (all) => delete all[gone]);
+              const timedOut = signal.reason instanceof TurnTimeout;
+              keepInFlight(storage, (all) => {
+                if (timedOut && all[gone]) all[gone] = { ...all[gone]!, gaveUp: true };
+                else delete all[gone];
+              });
             }
             reject(signal.reason);
           };
@@ -249,7 +258,9 @@ export function createCouncilHost({
             pending.set(started.id, (reply) => settle(started, reply));
           };
 
-          const left = Object.entries(inFlight(storage)).find(([each, flight]) => flight.chair === chairId && flight.review === reviewId && sameAsk(flight) && !adopted.has(each) && !pending.has(each));
+          const left = Object.entries(inFlight(storage)).find(
+            ([each, flight]) => flight.chair === chairId && flight.review === reviewId && !flight.gaveUp && sameAsk(flight) && !adopted.has(each) && !pending.has(each),
+          );
           // A conversation that a crash cut short reports as failed: its work is redone in a new one.
           if (left && left[1].reply && left[1].reply.ended !== "finished") {
             const dead = left[0];
@@ -408,9 +419,10 @@ export function createCouncilHost({
       .finally(() => {
         out.flush();
         sessions.delete(item.id);
-        // Nothing of this review's left over from before a restart is wanted once it has gone on and ended.
+        // Nothing of this review's left over from before a restart is wanted once it has gone on and ended, but for
+        // the conversations the limit gave up on, whose late replies the user may still fetch.
         if (!isRunning(session.review)) keepInFlight(context.storage, (all) => {
-          for (const [id, flight] of Object.entries(all)) if (flight.review === review.id && !pending.has(id)) delete all[id];
+          for (const [id, flight] of Object.entries(all)) if (flight.review === review.id && !pending.has(id) && !flight.gaveUp) delete all[id];
         });
       });
   }
@@ -589,6 +601,63 @@ export function createCouncilHost({
     const said = `Started a conversation on ${started.profile} to fix ${ids.join(", ")} of review ${review.id}. The canvas shows each finding as fixed when it reports back.`;
     const more = waiting.length > ids.length || askWaits;
     return more ? `${said} More waits for a fixer profile (${askWaits ? "the user's ask" : "findings for another profile"}): call council_delegate_fix (review ${review.id}) again.` : `${said} There is nothing more for you to do.`;
+  }
+
+  /**
+   * A failed seat's late reply to its own review, from the conversation its activity names: the reply kept when Mirador
+   * told it after the seat gave up, else what Mirador's records hold. Taken in as the seat's review: into the running
+   * independent review; into a complete review that ended without a deliberation, which then goes on to one (through
+   * council_begin when no tool context can start the reviewers' conversations); else, after the verdict, as late
+   * findings. A reply that isn't there or usable yet changes nothing: the error says why.
+   */
+  async function fetchReply(item: PluginItem<Review>, context: CanvasActionContext<Review>, reviewerId: string) {
+    const review = current(item, context);
+    const reviewer = review.reviewers.find(({ id }) => id === reviewerId);
+    if (!reviewer) throw new Error(`No reviewer ${reviewerId} sits at the council.`);
+    const why = whyNoFetch(review, reviewer);
+    if (why) throw new Error(why);
+    const conversationId = lastTurnOf(reviewer)!.conversationId!;
+    // The reply kept when Mirador told it; else, or when that one can't be used (Mirador tells it once, and the user may
+    // have had the conversation answer again since), what Mirador's records hold now.
+    const kept: LateReply | undefined = inFlight(context.storage)[conversationId]?.reply;
+    let event: ReturnType<typeof replyFetched> | null = null;
+    let problem: unknown = null;
+    for (const read of [() => kept ?? null, () => records.replyOf(conversationId)]) {
+      const reply = read();
+      if (!reply) continue;
+      try {
+        event = replyFetched(reviewer.id, conversationId, reply, clock.now());
+        break;
+      } catch (error) {
+        problem ??= error;
+      }
+    }
+    if (!event) {
+      if (problem === null) throw new Error(`Couldn't fetch ${reviewer.label}'s reply: Mirador has no record of its conversation ${conversationId}.`);
+      throw new Error(`Couldn't take ${reviewer.label}'s reply: ${problem instanceof Error ? problem.message : String(problem)}`);
+    }
+    const taken = () => keepInFlight(context.storage, (all) => delete all[conversationId]);
+    if (sessions.has(item.id) || !reopensWith(review, event)) {
+      applyTo(item, context, event);
+      taken();
+      return null;
+    }
+    taken();
+    const profiles = seatedReviewers(review).filter((each) => isProfileAgent(each.agent));
+    if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
+      // No way to start the reviewers' conversations from here: the review waits where a restart would have left it, at
+      // the end of its independent review, for council_begin to resume it.
+      const waiting = [{ type: "reopened", at: event.at }, event, { type: "interrupted", at: event.at }].reduce<Review>((next, each) => reduceOrSay(next, each as ReviewEvent), review);
+      context.change(item.id, { data: waiting });
+      const names = [...new Set(profiles.map((each) => profileName(each.agent)))].join(", ");
+      await context.prompt(
+        `The user fetched ${reviewer.label}'s late reply into Spectra Council review ${review.id}, which can now be deliberated; it seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`,
+        { afterTurn: true },
+      );
+      return { prompted: true };
+    }
+    launch(item, context, review, (session) => session.reopen(event));
+    return null;
   }
 
   /** Asks the agent to open a new review with an ended one's setup: only a tool may publish an item. */
@@ -803,6 +872,8 @@ export function createCouncilHost({
           applyTo(item, context, { type: "reviewer-removed", reviewerId: parsed.data.reviewerId, at: clock.now() });
           return null;
         }
+        case "fetch-reply":
+          return fetchReply(item, context, parsed.data.reviewerId);
         case "resume":
           return start(item, context);
         case "handoff":
