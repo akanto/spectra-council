@@ -9,6 +9,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AgentRunner } from "../../core/agent-runner.ts";
 import { knobsText } from "../../core/depth.ts";
+import { checkersOf } from "../../core/deliberation.ts";
 import { isProfileAgent, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations } from "../../core/engine.ts";
@@ -405,6 +406,7 @@ export function createCouncilHost({
   async function startable(item: PluginItem<Review>): Promise<Review> {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const review = settled(item);
+    if (hasFixedFinding(review)) return review;
     if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before starting the review.");
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
@@ -413,9 +415,12 @@ export function createCouncilHost({
     return review;
   }
 
-  /** Runs a review in setup, or resumes one a restart cut short. */
+  /** A complete review with a fixed finding is one whose fixes can be re-checked. */
+  const hasFixedFinding = (review: Review) => review.phase === "complete" && review.findings.some((finding) => finding.fix?.state === "fixed");
+
+  /** Runs a review in setup, resumes one a restart cut short, or re-checks the fixes of a complete one. */
   const begin = (item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review) =>
-    launch(item, context, review, (session) => (review.phase === "setup" ? session.run() : session.resume()));
+    launch(item, context, review, (session) => (hasFixedFinding(review) ? session.verify() : review.phase === "setup" ? session.run() : session.resume()));
 
   /**
    * The user's Start or Resume: runs the review, or, with profile seats and no tool context to start them from, asks the
@@ -565,6 +570,16 @@ export function createCouncilHost({
     const review = settled(item);
     if (review.phase !== "complete") throw new Error(`Fixes are re-checked once the review is complete; it is ${review.phase}.`);
     if (!review.findings.some((finding) => finding.fix?.state === "fixed")) throw new Error("No finding has a fix to re-check yet.");
+    const checkers = new Map<string, string>();
+    for (const finding of review.findings) {
+      if (finding.fix?.state !== "fixed") continue;
+      for (const reviewer of checkersOf(review, finding)) if (isProfileAgent(reviewer.agent)) checkers.set(reviewer.id, profileName(reviewer.agent));
+    }
+    if (checkers.size > 0 && !toolContexts.has(context.conversationId)) {
+      const names = [...new Set(checkers.values())].join(", ");
+      await context.prompt(`The user asked to re-check fixes in Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
+      return { prompted: true };
+    }
     launch(item, context, review, (session) => session.verify());
     return null;
   }
@@ -617,7 +632,7 @@ export function createCouncilHost({
       },
       council_begin: {
         description:
-          "Start a Spectra Council review the user pressed Start (or Resume) on, when it asks you to: starts a conversation for each seat on its Mirador profile. Only call it when the canvas asks; the review then runs on its own and you hear when it ends.",
+          "Start a Spectra Council review the user pressed Start (or Resume) on, when it asks you to: starts a conversation for each seat on its Mirador profile. Also starts the re-check of fixes of a complete review, when the canvas asks. Only call it when the canvas asks; the review then runs on its own and you hear when it ends.",
         input: jsonSchema(beginInput),
         async run(input, context) {
           const parsed = beginInput.safeParse(input);
@@ -626,6 +641,7 @@ export function createCouncilHost({
           const review = await startable(item);
           begin(item, context, review);
           const seated = seatedReviewers(review).map((reviewer) => reviewer.label);
+          if (hasFixedFinding(review)) return `Started the re-check of the fixes of review ${review.id}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
           return `${review.phase === "setup" ? "Started" : "Resumed"} review ${review.id} with ${seated.join(", ")}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
         },
       },

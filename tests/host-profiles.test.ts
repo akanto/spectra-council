@@ -116,6 +116,39 @@ describe("profile seats", () => {
     expect(canvas.items[0]!.data.phase).toBe("complete");
   });
 
+  test("after a restart, re-checking fixes asks the agent to call council_begin, which runs the verification", async () => {
+    const harness = setup();
+    const { canvas, context, options, host } = harness;
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    await host.action!(canvas.items[0]!, { kind: "start" }, context);
+    await drive(harness, host);
+    const finding = canvas.items[0]!.data.findings[0]!;
+    await host.action!(canvas.items[0]!, { kind: "rule", findingId: finding.id, decision: "accepted" }, context);
+    await host.action!(canvas.items[0]!, { kind: "fix" }, context);
+    await host.tools.council_mark_fixed!.run({ finding: finding.id, summary: "done", files: [] }, context);
+    const startedBefore = canvas.started.length;
+    const promptsBefore = canvas.prompts.length;
+
+    const restarted = createCouncilHost(options);
+    expect(await restarted.action!(canvas.items[0]!, { kind: "verify" }, context)).toEqual({ prompted: true });
+    expect(canvas.prompts).toHaveLength(promptsBefore + 1);
+    expect(canvas.prompts.at(-1)).toContain("Call council_begin (review rev1)");
+    expect(canvas.started).toHaveLength(startedBefore);
+
+    expect(await restarted.tools.council_begin!.run({}, context)).toContain("re-check");
+    await drive(harness, restarted);
+    expect(canvas.started.length).toBeGreaterThan(startedBefore);
+  });
+
+  test("council_begin on a complete review with nothing fixed is refused", async () => {
+    const harness = setup();
+    const { canvas, context, host } = harness;
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    await host.action!(canvas.items[0]!, { kind: "start" }, context);
+    await drive(harness, host);
+    await expect(Promise.resolve().then(() => host.tools.council_begin!.run({}, context))).rejects.toThrow("complete");
+  });
+
   test("a mock council starts without asking the agent", async () => {
     const { host, canvas, context, options } = setup();
     await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
