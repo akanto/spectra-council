@@ -37,6 +37,43 @@ describe("the Mirador host", () => {
     expect(canvas.promptOptions[0]).toEqual({ afterTurn: true });
   });
 
+  test("a runner from runnerFor plays the agents it takes, and the others keep theirs", async () => {
+    const clock = new FakeClock();
+    const played: string[] = [];
+    const host = createCouncilHost({
+      clock,
+      listFiles: async () => FILES,
+      throttleMs: 0,
+      writeFile: async () => {},
+      runnerFor: (agent) =>
+        agent === "profile:scripted"
+          ? {
+              run: async (job, report) => {
+                played.push(job.reviewer.agent);
+                report({ type: "finding-reported", finding: { title: "Scripted finding", summary: "It happens.", severity: "low", confidence: "high", category: "correctness", evidence: [{ path: "README.md", line: 1 }] } });
+              },
+              deliberate: async () => {},
+              propose: async () => {},
+              verify: async () => {},
+            }
+          : undefined,
+    });
+    const canvas = new FakeCanvas<Review>();
+    const context = canvas.context();
+    await host.tools.council_open!.run({ target, agents: ["profile:scripted", "mock-claude"] }, context);
+    const id = canvas.items[0]!.id;
+    await host.action!(canvas.item(id), { kind: "start" }, context);
+    await clock.runAll();
+    await clock.settle();
+    const review = canvas.item(id).data;
+    expect(played).toEqual(["profile:scripted"]);
+    expect(review.findings.some((finding) => finding.title === "Scripted finding" && finding.reviewerId === "r1")).toBe(true);
+    // The mock seat ran as a mock, and no conversation was started for the scripted profile seat.
+    expect(review.findings.some((finding) => finding.reviewerId === "r2")).toBe(true);
+    expect(canvas.prompts).toHaveLength(0);
+    expect(canvas.started).toHaveLength(0);
+  });
+
   test("source paths resolve against real file and folder targets without changing the review", async () => {
     const { host, canvas, context } = setup();
     const folder = join(target, "folder.with.dots");

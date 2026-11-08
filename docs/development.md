@@ -47,6 +47,7 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 | `hosts/mirador/` | The canvas host (tools, actions, persistence), the view's entry, the read-only reader of Mirador's records, and a copy of Mirador's API types (`api.ts`) | `core/`, `view/` |
 | `scripts/` | Build, harness, screenshots, release, API check | |
 | `tests/`, `e2e/` | Bun tests; browser tests against the built view | |
+| `video/` | The README's promo video: a take in a throwaway Mirador, scripted reviewers, the edit ([video/README.md](../video/README.md)). Nothing in it ships | `core/`, `hosts/mirador/` |
 
 ## How it works
 
@@ -121,6 +122,9 @@ there is one; a direct write would be lost under the session's next one.
 - **Model names.** A seat runs on its profile's model and effort. The plugin API can't read them, so
   `hosts/mirador/records.ts` reads Mirador's database read-only to name each seat by its model (`model-seen`).
   [mirador-api.md](mirador-api.md) lists the API extensions that would replace this and let a seat choose its model.
+- **Other runners.** `createCouncilHost`'s `runnerFor` option hands an agent to a runner of the host's own, ahead of
+  the mock and profile runners. The installed plugin passes none; the video's host (`video/lib/plugin-host.ts`) plays
+  scripted reviewers through it.
 - **Limits.** Stop aborts the review, but the reviewers' conversations run on until their turn ends; their replies are
   ignored.
 

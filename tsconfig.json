@@ -13,5 +13,6 @@
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["core", "hosts", "view", "tests", "scripts", "e2e"]
+  "include": ["core", "hosts", "view", "tests", "scripts", "e2e", "video/lib"],
+  "exclude": ["video/lib/capture.ts"]
 }

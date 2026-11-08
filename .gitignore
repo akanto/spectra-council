@@ -11,3 +11,5 @@ compat/tsconfig.local.json
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+video/out/
+.DS_Store

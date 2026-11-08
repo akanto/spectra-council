@@ -12,7 +12,7 @@ import { knobsText } from "../../core/depth.ts";
 import { checkersOf } from "../../core/deliberation.ts";
 import { isProfileAgent, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, outcomeOf } from "../../core/describe.ts";
-import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations } from "../../core/engine.ts";
+import { ReviewSession, routeByAgent, systemClock, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
 import { acceptedFindings, digestOf, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
 import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
@@ -134,6 +134,11 @@ export interface HostOptions {
   records?: MiradorRecords;
   /** How long after a reviewer's conversation started its model is looked up, in turn, until one is found. */
   modelLookupMs?: number[];
+  /**
+   * A runner of the host's own for an agent, ahead of the mock and profile runners; undefined leaves the agent to them.
+   * The promo video's build of the plugin plays scripted reviewers through it (video/lib/scripted-runner.ts).
+   */
+  runnerFor?: (agent: string) => ReviewerRunner | undefined;
 }
 
 /** A finding handed to a fixer profile whose conversation nobody started yet: council_delegate_fix's to start. */
@@ -152,6 +157,7 @@ export function createCouncilHost({
   writeFile = writeWithFolder,
   records = noRecords,
   modelLookupMs = [1_500, 5_000, 15_000],
+  runnerFor = () => undefined,
 }: HostOptions = {}): CanvasHost<Review> {
   /** The reviews running in this process, by item id; one missing for a running review was cut short by a restart. */
   const sessions = new Map<string, ReviewSession>();
@@ -393,7 +399,7 @@ export function createCouncilHost({
     const out = writer(context, item.id);
     const mock = new MockRunner(listFiles, clock);
     const agents = new AgentRunner(conversationsOf(context.conversationId, review.id, context.storage), clock);
-    const runner = routeByAgent((agent) => (isProfileAgent(agent) ? agents : mock));
+    const runner = routeByAgent((agent) => runnerFor(agent) ?? (isProfileAgent(agent) ? agents : mock));
     const session = new ReviewSession(review, { runner, clock, onChange: (next) => out.write(next) });
     sessions.set(item.id, session);
     // The engine ends each reviewer itself, failed or not; the work rejects only on a bug, which is logged.
