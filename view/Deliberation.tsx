@@ -1,7 +1,7 @@
 /** The Council tab: the findings on the left, and the selected one's positions, resolution and argument timeline. */
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import { bySeverity, possibleDuplicates, STATUS_MEANINGS } from "../core/describe.ts";
-import { argumentsOn, isStanding, type Argument, type Finding, type Review } from "../core/model.ts";
+import { argumentsOn, isStanding, type Argument, type Finding, type Resolution, type Review } from "../core/model.ts";
 import type { FindingStatus } from "../core/model.ts";
 import type { Evidence, ViewAction } from "../core/schemas.ts";
 import { FindingEvidence } from "./Findings.tsx";
@@ -85,6 +85,49 @@ function ArgumentItem({ review, argument, openPath, select }: { review: Review; 
   );
 }
 
+/**
+ * A disputed finding's dissent, first in its detail: each dissenter with why they still challenge it (a sentence cut in
+ * core from their latest challenge, which the argument id jumps to). Reviews settled before the reasons were kept show
+ * the names and the rationale.
+ */
+function MinorityReport({ review, resolution, select }: { review: Review; resolution: Resolution; select(id: string): void }) {
+  const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
+  const dissent = resolution.dissent ?? [];
+  const silent = resolution.dissenters.filter((id) => !dissent.some((each) => each.reviewerId === id));
+  return (
+    <div className="resolution minority">
+      <h4>Minority report</h4>
+      {dissent.length === 0 ? (
+        <>
+          <p>
+            {resolution.dissenters.map(label).join(", ") || "A reviewer"} still challenge{resolution.dissenters.length === 1 ? "s" : ""} this finding.
+          </p>
+          <p>
+            <LinkedText review={review} text={resolution.rationale} select={select} />
+          </p>
+        </>
+      ) : (
+        <ul className="dissent">
+          {dissent.map((each) => (
+            <li key={each.reviewerId}>
+              <strong>{label(each.reviewerId)}</strong> still challenges it{each.reason ? ": " : "."}
+              {each.reason && <LinkedText review={review} text={each.reason} select={select} />}{" "}
+              <button className="link mono argument-jump" title="Show the full argument" onClick={() => jumpToArgument(each.argumentId)}>
+                {each.argumentId}
+              </button>
+            </li>
+          ))}
+          {silent.map((id) => (
+            <li key={id}>
+              <strong>{label(id)}</strong> still challenges it.
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function FindingDetail({ review, finding, openPath, act, busy, select, next }: { review: Review; finding: Finding; openPath?: (path: string) => void; act(action: ViewAction): void; busy: boolean; select(id: string): void; next: { id: string; go(): void } | null }) {
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
   const timeline = argumentsOn(review, finding.id);
@@ -120,6 +163,8 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
           </p>
         )}
       </header>
+
+      {resolution && resolution.status === "disputed" && <MinorityReport review={review} resolution={resolution} select={select} />}
 
       <RulingControl review={review} finding={finding} act={act} busy={busy} openPath={openPath} next={next} />
 
@@ -162,16 +207,6 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
       )}
 
       <ProposalBlock review={review} finding={finding} openPath={openPath} />
-
-      {resolution && resolution.status === "disputed" && (
-        <div className="resolution minority">
-          <h4>Minority report</h4>
-          <p>
-            {resolution.dissenters.map(label).join(", ") || "A reviewer"} still challenge{resolution.dissenters.length === 1 ? "s" : ""} this finding.
-          </p>
-          <p>{resolution.rationale}</p>
-        </div>
-      )}
 
       <h3>Arguments {timeline.length > 0 && <span className="muted">{timeline.length}</span>}</h3>
       {timeline.length === 0 ? (

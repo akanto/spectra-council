@@ -1139,6 +1139,19 @@ h4 {
   color: var(--warn);
 }
 
+.resolution.minority .dissent {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.resolution.minority .dissent li {
+  margin: 3px 0;
+}
+
+.resolution.minority .argument-jump {
+  font-size: 0.85em;
+}
+
 .arguments {
   list-style: none;
   margin: 0;

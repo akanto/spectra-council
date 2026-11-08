@@ -76,19 +76,9 @@ export function handoffMarkdown(review: Review): string {
     if (finding.ruling?.note.trim()) out.push(`- The user's note: ${oneLine(finding.ruling.note)}`);
     out.push("");
     out.push("### What's wrong", "", oneLine(finding.summary), "");
-    out.push("### Evidence", "", ...evidenceLines(finding.evidence), "");
-
-    out.push("### How the council got there", "");
-    out.push(finding.resolution ? oneLine(finding.resolution.rationale) : "The council did not settle this finding.", "");
     const timeline = argumentsOn(review, finding.id);
-    const rounds = [...new Set(timeline.map((argument) => argument.round))].sort((a, b) => a - b);
-    for (const round of rounds) {
-      out.push(`Round ${round}:`);
-      for (const argument of timeline.filter((each) => each.round === round)) out.push(`- ${entry(argument)}`);
-      out.push("");
-    }
     if (finding.status === "disputed") {
-      out.push("#### Minority report", "");
+      out.push("### Minority report", "");
       const dissenters = finding.resolution?.dissenters ?? [];
       out.push(`This finding is disputed. A challenge by ${dissenters.length > 0 ? dissenters.map(label).join(", ") : "a reviewer"} still stands; weigh it before you change anything.`, "");
       const standing = dissenters.length > 0
@@ -106,6 +96,16 @@ export function handoffMarkdown(review: Review): string {
       out.push("");
     }
 
+    out.push("### Evidence", "", ...evidenceLines(finding.evidence), "");
+
+    out.push("### How the council got there", "");
+    out.push(finding.resolution ? oneLine(finding.resolution.rationale) : "The council did not settle this finding.", "");
+    const rounds = [...new Set(timeline.map((argument) => argument.round))].sort((a, b) => a - b);
+    for (const round of rounds) {
+      out.push(`Round ${round}:`);
+      for (const argument of timeline.filter((each) => each.round === round)) out.push(`- ${entry(argument)}`);
+      out.push("");
+    }
     out.push("### Proposed fix", "");
     const proposal = finding.proposal;
     if (proposal) {

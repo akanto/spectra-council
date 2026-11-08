@@ -93,6 +93,7 @@ describe("handoff", () => {
     expect(f2).toContain("src/cache.ts:9");
     expect(f2).toContain("Go with the dissent");
     expect(md.slice(md.indexOf("## F1:"))).not.toContain("Minority report");
+    expect(f2.indexOf("Minority report")).toBeLessThan(f2.indexOf("### Evidence"));
   });
 
   test("proposal steps are numbered, with files, verification and risks", () => {

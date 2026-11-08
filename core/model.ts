@@ -108,6 +108,15 @@ export interface Argument {
   at: number;
 }
 
+/** A challenge that still stands at the synthesis: who holds it, and why in a sentence, cut from their latest challenge. */
+export interface Dissent {
+  reviewerId: string;
+  /** One sentence (at most DISSENT_REASON_MAX characters) from the argument; empty if it said nothing. */
+  reason: string;
+  /** The challenge it was cut from, where the full argument is. */
+  argumentId: string;
+}
+
 /** How the synthesis settled a finding: its status in words, with any dissent named. */
 export interface Resolution {
   status: Exclude<FindingStatus, "reported">;
@@ -115,6 +124,8 @@ export interface Resolution {
   rationale: string;
   /** The reviewers whose challenge still stands, for a disputed finding. */
   dissenters: string[];
+  /** Why each dissenter still challenges it, for a disputed finding; absent in reviews settled before it was kept. */
+  dissent?: Dissent[];
   at: number;
 }
 

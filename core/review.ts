@@ -23,6 +23,7 @@ import {
   type Argument,
   type CoReport,
   type Decision,
+  type Dissent,
   type Finding,
   type FindingStatus,
   type ModelInfo,
@@ -90,7 +91,7 @@ export type ReviewEvent =
   | { type: "deliberation-started"; at: number; rounds: number }
   | { type: "round-started"; at: number; round: number }
   | { type: "synthesis-started"; at: number }
-  | { type: "finding-resolved"; at: number; findingId: string; status: Exclude<FindingStatus, "reported">; rationale: string; dissenters: string[] }
+  | { type: "finding-resolved"; at: number; findingId: string; status: Exclude<FindingStatus, "reported">; rationale: string; dissenters: string[]; dissent?: Dissent[] }
   /** The review ends with the council's verdict. */
   | { type: "concluded"; at: number; summary: string }
   /**
@@ -378,8 +379,8 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "finding-resolved": {
       if (review.phase !== "synthesis") throw new ReviewError(`A finding can't be resolved: the review is ${review.phase}.`);
       if (!review.findings.some((finding) => finding.id === event.findingId)) throw new ReviewError(`There is no finding ${event.findingId}.`);
-      const { status, rationale, dissenters, at } = event;
-      return updateFinding(review, event.findingId, (finding) => ({ ...finding, status, resolution: { status, rationale, dissenters, at } }));
+      const { status, rationale, dissenters, dissent, at } = event;
+      return updateFinding(review, event.findingId, (finding) => ({ ...finding, status, resolution: { status, rationale, dissenters, ...(dissent ? { dissent } : {}), at } }));
     }
     case "concluded": {
       if (!isRunning(review)) throw new ReviewError(`The review can't conclude: it is ${review.phase}.`);

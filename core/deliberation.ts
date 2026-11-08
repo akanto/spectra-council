@@ -2,12 +2,31 @@
  * The council's deliberation protocol: how many rounds a review gets, and how the synthesis settles each finding from
  * where the reviewers ended up standing. Pure: the engine runs the rounds and dispatches what this decides.
  */
-import { argumentsOn, type Finding, type FindingStatus, type Review, type Reviewer, reportersOf } from "./model.ts";
+import { argumentsOn, type Dissent, type Finding, type FindingStatus, type Review, type Reviewer, reportersOf } from "./model.ts";
 
 export interface Settlement {
   status: Exclude<FindingStatus, "reported">;
   rationale: string;
   dissenters: string[];
+  /** Why each dissenter still challenges it; only for a disputed finding. */
+  dissent?: Dissent[];
+}
+
+/** The longest a dissent's reason runs, in characters; the full argument stays in the timeline. */
+export const DISSENT_REASON_MAX = 200;
+
+/**
+ * The first sentence of an argument, at most `max` characters: cut at a word with "…" when longer. A sentence ends at
+ * ".", "!" or "?" followed by a space and a capital (or the end), so "api.ts:42" and "e.g. this" don't end it.
+ */
+export function firstSentence(text: string, max = DISSENT_REASON_MAX): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const end = flat.search(/[.!?](?=\s+["'(`*]?[A-Z]|$)/);
+  const sentence = end === -1 ? flat : flat.slice(0, end + 1);
+  if (sentence.length <= max) return sentence;
+  const cut = sentence.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}…`;
 }
 
 const names = (reviewers: Reviewer[]) => {
@@ -47,8 +66,15 @@ export function settle(review: Review, finding: Finding): Settlement {
   const tally = `${backers.length} of ${participants.length} back it`;
 
   if (dissenters.length > 0) {
+    const timeline = argumentsOn(review, finding.id);
+    const dissent = dissenters.flatMap((reviewer): Dissent[] => {
+      const latest = timeline.filter((argument) => argument.reviewerId === reviewer.id && argument.stance === "challenges").at(-1);
+      return latest ? [{ reviewerId: reviewer.id, reason: firstSentence(latest.text), argumentId: latest.id }] : [];
+    });
+    const only = dissenters.length === 1 ? dissent[0]?.reason : undefined;
     const plural = dissenters.length === 1 ? "challenge stands" : "challenges stand";
-    return { status: "disputed", rationale: `${tally}; ${names(dissenters)}'s ${plural}.`, dissenters: dissenters.map((reviewer) => reviewer.id) };
+    const why = only ? `: ${/[.!?…]$/.test(only) ? only : `${only}.`}` : ".";
+    return { status: "disputed", rationale: `${tally}; ${names(dissenters)}'s ${plural}${why}`, dissenters: dissenters.map((reviewer) => reviewer.id), dissent };
   }
   const everChallenged = argumentsOn(review, finding.id).some((argument) => argument.stance === "challenges" && argument.reviewerId !== finding.reviewerId);
   if (!everChallenged && unsure.length === 0 && backers.length === participants.length && participants.length > 1) {

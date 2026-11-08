@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
-import { settle, verdictSummary } from "../core/deliberation.ts";
+import { DISSENT_REASON_MAX, firstSentence, settle, verdictSummary } from "../core/deliberation.ts";
 import { REVIEW_FORMAT, type Finding, type Review } from "../core/model.ts";
 import { newReview, reduce, upgradeReview } from "../core/review.ts";
 import type { ArgumentInput, FindingInput, Stance } from "../core/schemas.ts";
@@ -18,9 +18,9 @@ function council(severity: FindingInput["severity"] = "medium"): Review {
   return reduce(review, { type: "round-started", at: 6, round: 1 });
 }
 
-const argue = (review: Review, reviewerId: string, stance: Stance, round = review.round): Review => {
+const argue = (review: Review, reviewerId: string, stance: Stance, round = review.round, text = "Because."): Review => {
   while (review.round < round) review = reduce(review, { type: "round-started", at: 7, round: review.round + 1 });
-  const argument: ArgumentInput = { findingId: "F1", stance, confidence: "medium", text: "Because.", evidence: [] };
+  const argument: ArgumentInput = { findingId: "F1", stance, confidence: "medium", text, evidence: [] };
   return reduce(review, { type: "argued", reviewerId, at: 8, argument });
 };
 
@@ -54,13 +54,41 @@ describe("settle", () => {
     review = reduce(review, { type: "round-started", at: 6, round: 1 });
     for (const reviewerId of ["r2", "r3"]) review = argue(review, reviewerId, "supports");
     review = argue(review, "r4", "challenges");
-    expect(settled(review)).toEqual({ status: "disputed", rationale: "3 of 4 back it; Qwen's challenge stands.", dissenters: ["r4"] });
+    expect(settled(review)).toEqual({
+      status: "disputed",
+      rationale: "3 of 4 back it; Qwen's challenge stands: Because.",
+      dissenters: ["r4"],
+      dissent: [{ reviewerId: "r4", reason: "Because.", argumentId: "A3" }],
+    });
   });
 
   test("two challenges are listed together", () => {
     let review = argue(council(), "r2", "challenges");
     review = argue(review, "r3", "challenges");
-    expect(settled(review)).toEqual({ status: "disputed", rationale: "1 of 3 back it; Codex and Gemini's challenges stand.", dissenters: ["r2", "r3"] });
+    expect(settled(review)).toEqual({
+      status: "disputed",
+      rationale: "1 of 3 back it; Codex and Gemini's challenges stand.",
+      dissenters: ["r2", "r3"],
+      dissent: [
+        { reviewerId: "r2", reason: "Because.", argumentId: "A1" },
+        { reviewerId: "r3", reason: "Because.", argumentId: "A2" },
+      ],
+    });
+  });
+
+  test("a dissent's reason is the first sentence of the dissenter's latest challenge", () => {
+    let review = argue(council(), "r2", "challenges", 1, "An older objection.");
+    review = argue(review, "r2", "challenges", 2, "The unchecked path is guarded by validateInput() at api.ts:42. It never sees raw input, e.g. from the CLI.");
+    const settlement = settled(review);
+    expect(settlement.dissent).toEqual([{ reviewerId: "r2", reason: "The unchecked path is guarded by validateInput() at api.ts:42.", argumentId: "A2" }]);
+    expect(settlement.rationale).toBe("1 of 3 back it; Codex's challenge stands: The unchecked path is guarded by validateInput() at api.ts:42.");
+  });
+
+  test("the resolution keeps the dissent", () => {
+    let review = argue(council(), "r2", "challenges", 1, "Not reachable");
+    review = reduce(review, { type: "synthesis-started", at: 9 });
+    review = reduce(review, { type: "finding-resolved", at: 10, findingId: "F1", ...settled(review) });
+    expect(review.findings[0]!.resolution).toMatchObject({ rationale: "1 of 3 back it; Codex's challenge stands: Not reachable.", dissent: [{ reviewerId: "r2", reason: "Not reachable", argumentId: "A1" }] });
   });
 
   test("a challenger who came round leaves it confirmed, and says the challenge was answered", () => {
@@ -86,6 +114,21 @@ describe("settle", () => {
     review = reduce(review, { type: "reviewer-finished", reviewerId: "r3", at: 7, outcome: "failed" });
     review = argue(review, "r2", "supports");
     expect(settled(review)).toEqual({ status: "agreed", rationale: "All 2 reviewers back it.", dissenters: [] });
+  });
+});
+
+describe("firstSentence", () => {
+  test("stops at the first sentence end, not at a dot inside a path or an abbreviation", () => {
+    expect(firstSentence("See core/api.ts:42. Then more.")).toBe("See core/api.ts:42.");
+    expect(firstSentence("Guarded, e.g. by the caller, so fine! Second.")).toBe("Guarded, e.g. by the caller, so fine!");
+    expect(firstSentence("  No end\n  at all  ")).toBe("No end at all");
+  });
+
+  test("cuts a long sentence at a word, with an ellipsis, within the limit", () => {
+    const long = `${"word ".repeat(80)}end.`;
+    const cut = firstSentence(long);
+    expect(cut.length).toBeLessThanOrEqual(DISSENT_REASON_MAX);
+    expect(cut.endsWith("word…")).toBe(true);
   });
 });
 
