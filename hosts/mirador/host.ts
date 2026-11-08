@@ -528,7 +528,10 @@ export function createCouncilHost({
     const toFix = handed.filter(awaitsFixRequest);
     if (toFix.length === 0) {
       const pending = handed.filter((finding) => finding.fix?.state === "handed-off").map(({ id }) => id);
-      if (pending.length > 0) throw new Error(`Nothing new to fix: ${pending.join(", ")} ${pending.length === 1 ? "is" : "are"} with the fixer already.`);
+      if (pending.length > 0) {
+        const these = pending.length === 1 ? "it" : "them";
+        throw new Error(`Nothing new to fix: ${pending.join(", ")} ${pending.length === 1 ? "is" : "are"} with the fixer already. To hand ${these} over again, take ${these} out of the fixes and accept ${these} again.`);
+      }
       throw new Error("Every accepted finding is fixed already.");
     }
     const ids = toFix.sort(bySeverity).map(({ id }) => id);
@@ -542,7 +545,8 @@ export function createCouncilHost({
       );
       return null;
     }
-    const reopened = toFix.filter((finding) => finding.fix?.state === "reopened").map(({ id }) => id);
+    // Reopened before, even if a fixer has failed it since: the agent should know an earlier fix didn't hold.
+    const reopened = toFix.filter((finding) => finding.fix?.checks.some((check) => check.outcome === "reopened")).map(({ id }) => id);
     await context.prompt(
       [
         `Please fix these findings from Spectra Council review ${review.id}, most severe first: ${ids.join(", ")}.`,
@@ -561,7 +565,16 @@ export function createCouncilHost({
   async function delegateFixes(item: PluginItem<Review>, context: CanvasToolContext<Review>, review: Review, waiting: Finding[], askWaits: boolean): Promise<string> {
     const profile = waiting[0]!.fix!.fixer!.profile;
     const ids = waiting.filter((finding) => finding.fix!.fixer!.profile === profile).sort(bySeverity).map(({ id }) => id);
-    const started = await context.startConversation({ profile, prompt: fixerPrompt(review, ids, review.handoff!.path) });
+    let started: Awaited<ReturnType<typeof context.startConversation>>;
+    try {
+      started = await context.startConversation({ profile, prompt: fixerPrompt(review, ids, review.handoff!.path) });
+    } catch (error) {
+      // Recorded as the fixer's failure, so asking again hands the work over anew (to the fixer chosen then).
+      const reason = `Couldn't start a conversation on ${profile}: ${error instanceof Error ? error.message : String(error)}`;
+      const unstarted = current(item, context).findings.filter((finding) => awaitsDelegation(finding) && ids.includes(finding.id)).map(({ id }) => id);
+      if (unstarted.length > 0) applyTo(item, context, { type: "fix-failed", at: clock.now(), findingIds: unstarted, reason });
+      throw error;
+    }
     // The conversation is this one's to own, but only for findings still waiting for it: one taken out of the fixes
     // while it started isn't its work (the delegation lock keeps another council_delegate_fix from claiming any).
     const still = new Set(current(item, context).findings.filter((finding) => awaitsDelegation(finding) && finding.fix!.fixer!.profile === profile).map(({ id }) => id));

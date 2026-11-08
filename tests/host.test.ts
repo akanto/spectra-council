@@ -663,6 +663,18 @@ describe("the Mirador host", () => {
         expect(fixOf(env.review(), second).fixer!.conversationId).toBe("conversation-fixer-2");
       });
 
+      test("a fixer conversation that can't start fails its findings, so asking again hands them to the fixer chosen then", async () => {
+        const { host, review, canvas, context, act, ids } = await delegated();
+        const broken = { ...context, startConversation: async () => Promise.reject(new Error("No profile codx")) };
+        await expect(host.tools.council_delegate_fix!.run({}, broken)).rejects.toThrow("No profile codx");
+        for (const id of ids) expect(fixOf(review(), id)).toMatchObject({ state: "handed-off", problem: "Couldn't start a conversation on codex: No profile codx" });
+        canvas.settings.fixer = "claude";
+        await act({ kind: "fix" });
+        for (const id of ids) expect(fixOf(review(), id)).toMatchObject({ state: "handed-off", fixer: { profile: "claude", conversationId: null }, problem: null });
+        await host.tools.council_delegate_fix!.run({}, context);
+        expect(canvas.started.at(-1)!.profile).toBe("claude");
+      });
+
       test("a retry hands only the failed findings to a new conversation, and the old one's late report is ignored", async () => {
         const { host, review, canvas, context, act, ids } = await delegated();
         const [done, failed, ...silent] = ids as [string, string, ...string[]];
