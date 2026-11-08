@@ -124,6 +124,11 @@ function MinorityReport({ review, resolution, select }: { review: Review; resolu
           ))}
         </ul>
       )}
+      {dissent.length > 0 && (
+        <p className="muted">
+          <LinkedText review={review} text={resolution.rationale} select={select} />
+        </p>
+      )}
     </div>
   );
 }

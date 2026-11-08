@@ -120,7 +120,7 @@ export interface Dissent {
 /** How the synthesis settled a finding: its status in words, with any dissent named. */
 export interface Resolution {
   status: Exclude<FindingStatus, "reported">;
-  /** Why, in a sentence, e.g. "3 of 4 back it; Qwen's challenge stands: …". */
+  /** Why, in a sentence, e.g. "3 of 4 back it; Qwen's challenge stands." (the dissent's reasons are in `dissent`). */
   rationale: string;
   /** The reviewers whose challenge still stands, for a disputed finding. */
   dissenters: string[];

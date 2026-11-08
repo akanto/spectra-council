@@ -15,18 +15,49 @@ export interface Settlement {
 /** The longest a dissent's reason runs, in characters; the full argument stays in the timeline. */
 export const DISSENT_REASON_MAX = 200;
 
+/** Words whose dot doesn't end a sentence. */
+const ABBREVIATIONS = new Set(["e.g", "i.e", "etc", "vs", "cf", "approx", "incl", "resp", "fig", "no"]);
+
+/** Where the sentence starting at `from` ends (just past its closing punctuation and any quote), or -1. */
+function sentenceEnd(text: string, from: number): number {
+  const ends = /[.!?]["')\]]*(?=\s+["'(`*]?[A-Z0-9]|$)/g;
+  ends.lastIndex = from;
+  for (let match = ends.exec(text); match; match = ends.exec(text)) {
+    const word = /(\S+)$/.exec(text.slice(from, match.index))?.[1]?.toLowerCase() ?? "";
+    // "e.g. React", "U.S. law", "A. Smith": an abbreviation or a single letter, not the end of a sentence.
+    if (match[0].startsWith(".") && (ABBREVIATIONS.has(word.replace(/^[("'`]+/, "")) || /^[a-z](\.[a-z])*$/.test(word))) continue;
+    return match.index + match[0].length;
+  }
+  return -1;
+}
+
+/** Below this, a first sentence is a lead-in ("I disagree.") and the next one is taken too. */
+const LEAD_IN = 40;
+
 /**
- * The first sentence of an argument, at most `max` characters: cut at a word with "…" when longer. A sentence ends at
- * ".", "!" or "?" followed by a space and a capital (or the end), so "api.ts:42" and "e.g. this" don't end it.
+ * The gist of an argument, for a dissent's reason: its first sentence (with the next ones while it is still a short
+ * lead-in like "Not a bug."), at most `max` characters, cut at a word with "…" when longer. A sentence ends at ".", "!"
+ * or "?" followed by a space and a capital (or the end), so "api.ts:42" and "e.g. React" don't end it.
  */
 export function firstSentence(text: string, max = DISSENT_REASON_MAX): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  const end = flat.search(/[.!?](?=\s+["'(`*]?[A-Z]|$)/);
-  const sentence = end === -1 ? flat : flat.slice(0, end + 1);
+  let end = 0;
+  while (end < flat.length && end < LEAD_IN) {
+    const next = sentenceEnd(flat, end);
+    if (next === -1) {
+      end = flat.length;
+      break;
+    }
+    end = next;
+  }
+  const sentence = flat.slice(0, end).trim();
   if (sentence.length <= max) return sentence;
-  const cut = sentence.slice(0, max - 1);
+  let cut = sentence.slice(0, max - 1);
   const space = cut.lastIndexOf(" ");
-  return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}…`;
+  if (space > max / 2) cut = cut.slice(0, space);
+  // A hard cut keeps no half of a surrogate pair, and no half of a token (which could turn "F12" into a link to F1).
+  else cut = cut.replace(/[\ud800-\udbff]$/, "").replace(/[\w./-]{1,24}$/, "");
+  return `${cut.replace(/[\s,;:.]+$/, "")}…`;
 }
 
 const names = (reviewers: Reviewer[]) => {
@@ -71,10 +102,8 @@ export function settle(review: Review, finding: Finding): Settlement {
       const latest = timeline.filter((argument) => argument.reviewerId === reviewer.id && argument.stance === "challenges").at(-1);
       return latest ? [{ reviewerId: reviewer.id, reason: firstSentence(latest.text), argumentId: latest.id }] : [];
     });
-    const only = dissenters.length === 1 ? dissent[0]?.reason : undefined;
     const plural = dissenters.length === 1 ? "challenge stands" : "challenges stand";
-    const why = only ? `: ${/[.!?…]$/.test(only) ? only : `${only}.`}` : ".";
-    return { status: "disputed", rationale: `${tally}; ${names(dissenters)}'s ${plural}${why}`, dissenters: dissenters.map((reviewer) => reviewer.id), dissent };
+    return { status: "disputed", rationale: `${tally}; ${names(dissenters)}'s ${plural}.`, dissenters: dissenters.map((reviewer) => reviewer.id), dissent };
   }
   const everChallenged = argumentsOn(review, finding.id).some((argument) => argument.stance === "challenges" && argument.reviewerId !== finding.reviewerId);
   if (!everChallenged && unsure.length === 0 && backers.length === participants.length && participants.length > 1) {

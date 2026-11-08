@@ -56,7 +56,7 @@ describe("settle", () => {
     review = argue(review, "r4", "challenges");
     expect(settled(review)).toEqual({
       status: "disputed",
-      rationale: "3 of 4 back it; Qwen's challenge stands: Because.",
+      rationale: "3 of 4 back it; Qwen's challenge stands.",
       dissenters: ["r4"],
       dissent: [{ reviewerId: "r4", reason: "Because.", argumentId: "A3" }],
     });
@@ -81,14 +81,14 @@ describe("settle", () => {
     review = argue(review, "r2", "challenges", 2, "The unchecked path is guarded by validateInput() at api.ts:42. It never sees raw input, e.g. from the CLI.");
     const settlement = settled(review);
     expect(settlement.dissent).toEqual([{ reviewerId: "r2", reason: "The unchecked path is guarded by validateInput() at api.ts:42.", argumentId: "A2" }]);
-    expect(settlement.rationale).toBe("1 of 3 back it; Codex's challenge stands: The unchecked path is guarded by validateInput() at api.ts:42.");
+    expect(settlement.rationale).toBe("1 of 3 back it; Codex's challenge stands.");
   });
 
   test("the resolution keeps the dissent", () => {
     let review = argue(council(), "r2", "challenges", 1, "Not reachable");
     review = reduce(review, { type: "synthesis-started", at: 9 });
     review = reduce(review, { type: "finding-resolved", at: 10, findingId: "F1", ...settled(review) });
-    expect(review.findings[0]!.resolution).toMatchObject({ rationale: "1 of 3 back it; Codex's challenge stands: Not reachable.", dissent: [{ reviewerId: "r2", reason: "Not reachable", argumentId: "A1" }] });
+    expect(review.findings[0]!.resolution).toMatchObject({ rationale: "1 of 3 back it; Codex's challenge stands.", dissent: [{ reviewerId: "r2", reason: "Not reachable", argumentId: "A1" }] });
   });
 
   test("a challenger who came round leaves it confirmed, and says the challenge was answered", () => {
@@ -119,9 +119,28 @@ describe("settle", () => {
 
 describe("firstSentence", () => {
   test("stops at the first sentence end, not at a dot inside a path or an abbreviation", () => {
-    expect(firstSentence("See core/api.ts:42. Then more.")).toBe("See core/api.ts:42.");
-    expect(firstSentence("Guarded, e.g. by the caller, so fine! Second.")).toBe("Guarded, e.g. by the caller, so fine!");
+    expect(firstSentence("The check is already done, see core/api.ts:42. Then more.")).toBe("The check is already done, see core/api.ts:42.");
+    expect(firstSentence("It is guarded, e.g. by the caller, so it is fine! Second.")).toBe("It is guarded, e.g. by the caller, so it is fine!");
     expect(firstSentence("  No end\n  at all  ")).toBe("No end at all");
+  });
+
+  test("a short lead-in takes the next sentence along", () => {
+    expect(firstSentence("Not a bug. The caller validates input before parse(). More detail.")).toBe("Not a bug. The caller validates input before parse().");
+    expect(firstSentence("I disagree. The lock is held by the caller.")).toBe("I disagree. The lock is held by the caller.");
+  });
+
+  test("abbreviations, initials and quoted sentence ends", () => {
+    expect(firstSentence("It is guarded, e.g. React escapes it for us. Second sentence.")).toBe("It is guarded, e.g. React escapes it for us.");
+    expect(firstSentence("This breaks the U.S. API contract in two places. Second.")).toBe("This breaks the U.S. API contract in two places.");
+    expect(firstSentence('The comment in the handler says "never." Then more follows here.')).toBe('The comment in the handler says "never."');
+  });
+
+  test("a hard cut splits neither a surrogate pair nor a finding id", () => {
+    const emoji = firstSentence(`${"x".repeat(198)}😀 tail`);
+    expect(emoji.endsWith("…")).toBe(true);
+    expect(/[\ud800-\udbff]…$/.test(emoji)).toBe(false);
+    const id = firstSentence(`a ${"path/".repeat(39)}F12 tail`);
+    expect(id).not.toMatch(/F1…$/);
   });
 
   test("cuts a long sentence at a word, with an ellipsis, within the limit", () => {

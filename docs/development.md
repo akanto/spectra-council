@@ -51,9 +51,10 @@ there:
    evidence (click a path to open the file) and recommendation.
 5. **Rule**: once the verdict is in, each finding that stands (agreed, confirmed or disputed) has a proposed fix, drafted
    from the deliberation. In the Council tab, mark it Accept, Dismiss or Later, with an optional note. For a disputed
-   finding the minority report sits right above the ruling.
+   finding the minority report comes first, above the ruling: who still challenges it and why, in a sentence each.
 6. **Hand-off**: *Write hand-off* writes the accepted findings to `<target>/.spectra-council/review-<id>.md`. Each one
-   has what's wrong, the evidence, how the council got there (rationale, arguments by round, any minority report) and
+   has what's wrong, any minority report (a disputed finding's standing challenges), the evidence, how the council got
+   there (rationale, arguments by round) and
    the proposed fix with how to verify it. Dismissed and deferred findings are listed too, so they're left alone.
 7. **Fix**: *Ask agent to fix* sends the conversation's agent a message to fix the accepted findings in the hand-off,
    most severe first. The agent reports each fix with the `council_mark_fixed` tool, and the finding shows as fixed.

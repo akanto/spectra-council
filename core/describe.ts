@@ -67,6 +67,7 @@ export function describeReview(review: Review): string {
     );
     if (finding.alsoReported.length > 0) lines.push(`  Also reported by: ${finding.alsoReported.map((report) => `${label(report.reviewerId)} as ${report.findingId} ("${report.title}")${report.mergedBy ? `, merged by ${label(report.mergedBy)}${report.reason ? `: ${report.reason}` : ""}` : ""}`).join(", ")}`);
     if (finding.resolution) lines.push(`  Council: ${finding.resolution.rationale}`);
+    for (const dissent of finding.resolution?.dissent ?? []) if (dissent.reason) lines.push(`  ${label(dissent.reviewerId)} still challenges it: ${dissent.reason}`);
     if (finding.proposal) lines.push(`  Proposed fix (by ${label(finding.proposal.drafterId)}): ${finding.proposal.summary} Steps: ${finding.proposal.steps.join(" / ")}. Verify: ${finding.proposal.verification}`);
     if (finding.ruling) lines.push(`  User ruling: ${finding.ruling.decision}${finding.ruling.note ? ` (${finding.ruling.note})` : ""}`);
     if (finding.fix) {
