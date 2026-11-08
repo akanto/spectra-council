@@ -64,6 +64,12 @@ there:
    short JSON report of what it fixed and what it didn't, and the review shows each finding as fixed or says why not.
 8. **Re-check**: *Re-check fixes* starts a verification round in which each fixed finding's reporter and backers check
    the fix. It ends verified or reopened, and reopened findings can be handed off again.
+9. **Tickets or your own ask**: instead of (or before) fixing, *Write beads tickets* has the conversation's agent file
+   one beads issue per accepted finding (priority from the severity, the evidence, the proposed fix, and a link back to
+   the review), and report each id with `council_mark_ticketed`; the finding shows its ticket. The button shows when the
+   target, or a folder above it, has a beads workspace (`.beads` with bd's `config.yaml` or `metadata.json`). The box under the buttons sends your own instruction
+   ("fix only the security ones and add tests", "open a PR per finding") to the agent, with the accepted findings and
+   the hand-off.
 
 When the deliberation ends, a verdict banner shows at the top of the review with a one-line verdict. The agent hears
 about the review with your next message, and `council_status` gives it every finding and its status. Reviews are canvas items, so Mirador keeps them across restarts. A review that was running

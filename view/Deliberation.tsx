@@ -7,7 +7,7 @@ import type { Evidence, ViewAction } from "../core/schemas.ts";
 import { FindingEvidence } from "./Findings.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ActionPlan, ProposalBlock, RulingControl } from "./Actions.tsx";
-import { AlsoMark, AlsoReported, ConfidenceMeter, cx, mergedInto, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, StanceBadge, VerdictBanner } from "./ui.tsx";
+import { AlsoMark, AlsoReported, ConfidenceMeter, cx, mergedInto, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, StanceBadge, TicketBadge, VerdictBanner } from "./ui.tsx";
 
 const where = (evidence: Evidence) => `${evidence.path}${evidence.line ? `:${evidence.line}${evidence.endLine ? `-${evidence.endLine}` : ""}` : ""}`;
 
@@ -294,7 +294,7 @@ export function Deliberation({ review, focus, select, openPath, act, busy }: { s
                         </span>
                       )}
                       <RulingMark finding={finding} />
-                      <FixBadge finding={finding} />
+                      <FixBadge finding={finding} /> <TicketBadge finding={finding} />
                     </span>
                     <span className="council-item-title">
                       {finding.title} <AlsoMark review={review} finding={finding} />

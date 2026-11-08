@@ -15,6 +15,9 @@ export const DECISIONS = ["accepted", "dismissed", "deferred"] as const;
 /** The most seats a council can have; it starts with two, and the user adds and removes seats. The workspace shows one panel each. */
 export const MAX_SEATS = 8;
 
+/** The longest instruction the user can send the agent about the accepted findings ("ask"), in characters. */
+export const ASK_MAX = 4000;
+
 export const profileIdSchema = z.enum(PROFILE_IDS);
 export const depthSchema = z.enum(DEPTHS);
 export const severitySchema = z.enum(SEVERITIES);
@@ -171,6 +174,12 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("rerun") }),
   /** Ask the conversation's agent to fix the accepted findings, by the hand-off. */
   z.object({ kind: z.literal("fix") }),
+  /** Ask the conversation's agent to file a beads issue for each accepted finding without one, by the hand-off. */
+  z.object({ kind: z.literal("tickets") }),
+  /** Send the user's own instruction about the accepted findings to the conversation's agent, with the hand-off. */
+  z.object({ kind: z.literal("ask"), text: z.string().trim().min(1).max(ASK_MAX) }),
+  /** Where the review's beads workspace is: resolves to `{ workspace: string | null }`, null when the target has none. */
+  z.object({ kind: z.literal("beads") }),
   /** Re-check the fixed findings in a verification round. */
   z.object({ kind: z.literal("verify") }),
   /** Who fixes: resolves to `{ profile }`, the fixer profile this conversation chose, or null for its own agent. */

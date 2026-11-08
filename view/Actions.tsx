@@ -2,7 +2,9 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { isRunning, isRulable, type Finding, type Review } from "../core/model.ts";
 import type { Decision, ViewAction } from "../core/schemas.ts";
-import { cx, FIX_WORDS, FixerContext } from "./ui.tsx";
+import { ASK_MAX } from "../core/schemas.ts";
+import { unticketed, waitingTickets } from "../core/tickets.ts";
+import { BeadsContext, cx, FIX_WORDS, FixerContext } from "./ui.tsx";
 import { Markdown } from "./Markdown.tsx";
 
 type Act = (action: ViewAction) => void;
@@ -219,10 +221,62 @@ export function RulingControl({ review, finding, act, busy, openPath, next }: { 
   );
 }
 
+/** A box to ask the agent for something in the user's own words about the accepted findings. */
+function AskForm({ act, off, last, asks }: { act: Act; off: boolean; last: string | undefined; asks: number }) {
+  const [text, setText] = useState("");
+  // How many asks the review had when this one was sent: the box clears once the review records another, and keeps the
+  // text if the host refused it.
+  const [sentAt, setSentAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (sentAt !== null && asks > sentAt) {
+      setText("");
+      setSentAt(null);
+    }
+  }, [asks, sentAt]);
+  const trimmed = text.trim();
+  const submit = () => {
+    if (!trimmed || off) return;
+    setSentAt(asks);
+    act({ kind: "ask", text: trimmed });
+  };
+  return (
+    <form
+      className="ask-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <div className="ask-row">
+        <textarea
+          rows={2}
+          maxLength={ASK_MAX}
+          placeholder="Ask the agent about the accepted findings… e.g. fix only the security ones and add tests"
+          aria-label="Ask the agent about the accepted findings"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <button type="submit" disabled={!trimmed || off}>
+          Send
+        </button>
+      </div>
+      <p className="hint">Goes to this conversation's agent with the accepted findings and the hand-off.</p>
+      {last && <p className="hint ask-last">Last asked: “{last.length > 140 ? `${last.slice(0, 140)}…` : last}”</p>}
+    </form>
+  );
+}
+
 /** Counts of the user's rulings, the next step that follows from them, and the fixes' progress. */
 export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }: { review: Review; act: Act; busy: boolean; compact?: boolean; openPath?: OpenPath; openCouncil?: () => void }) {
   const standing = review.findings.filter((finding) => isRulable(review, finding));
   const fixer = useContext(FixerContext);
+  const beads = useContext(BeadsContext);
   const showable = (review.phase === "complete" || review.phase === "verification") && standing.length > 0;
   if (!showable) return null;
   const count = (decision: Decision) => standing.filter((finding) => finding.ruling?.decision === decision).length;
@@ -240,6 +294,11 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
   const running = isRunning(review);
   const off = busy || running;
   const handoff = review.handoff;
+  const toTicket = unticketed(review).length;
+  const ticketed = standing.filter((finding) => finding.ticket && finding.ticket.id !== null).length;
+  const ticketWaiting = waitingTickets(review).length;
+  const hasTickets = standing.some((finding) => finding.ticket);
+  const lastAsk = review.asks?.[review.asks.length - 1]?.text;
   const who = fixer ?? "agent";
   // The one accent-filled button follows the next step; nothing is primary while the user still has to rule.
   const next: "verify" | "fix" | null = unruled > 0 ? null : fixed > 0 ? "verify" : toHand + reopened > 0 ? "fix" : null;
@@ -287,6 +346,11 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
           )}
         </p>
       )}
+      {hasTickets && (
+        <p className="ticket-progress">
+          Tickets: {ticketed} filed{ticketWaiting > 0 && ` · ${ticketWaiting} waiting for the agent`}
+        </p>
+      )}
       {handoff && (
         <p className="handoff-path">
           <span className="muted">Hand-off </span>
@@ -312,6 +376,11 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
               {handoff ? "Rewrite hand-off" : "Write hand-off"}
             </button>
           )}
+          {beads && (toTicket > 0 || ticketWaiting > 0) && review.phase === "complete" && (
+            <button disabled={off} title={toTicket > 0 ? `File a beads issue for each accepted finding without one, in ${beads}` : "The agent hasn't reported these tickets yet: ask it again"} onClick={() => act({ kind: "tickets" })}>
+              {toTicket > 0 ? `Write beads tickets (${toTicket})` : `Ask again for tickets (${ticketWaiting})`}
+            </button>
+          )}
           {pending > 0 && (
             <button className={cx(next === "fix" && "primary")} disabled={off} onClick={() => act({ kind: "fix" })}>
               {fixLabel}
@@ -324,6 +393,7 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
           )}
         </div>
       )}
+      {!compact && accepted.length > 0 && review.phase === "complete" && <AskForm act={act} off={off} last={lastAsk} asks={review.asks?.length ?? 0} />}
       {!compact && (accepted.length > 0 || hasFixes) && (
         <p className="hint">
           {fixer

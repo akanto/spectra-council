@@ -171,6 +171,23 @@ export interface Finding {
   alsoReported: CoReport[];
   /** Set once an accepted finding is handed off. */
   fix: Fix | null;
+  /** The beads issue filed for it, once asked for; absent in reviews from before tickets. */
+  ticket?: Ticket | null;
+}
+
+/** A beads issue for an accepted finding: asked of the agent, then filed under the id it reports. */
+export interface Ticket {
+  /** The issue's id, e.g. "spectra-council-x1y"; null until the agent reports it. */
+  id: string | null;
+  requestedAt: number;
+  filedAt: number | null;
+}
+
+/** What the user asked the agent to do about the accepted findings, in their own words. */
+export interface Ask {
+  text: string;
+  findingIds: string[];
+  at: number;
 }
 
 /** The hand-off document: the accepted findings, how the council got there and the proposed fixes, written to a file. */
@@ -303,6 +320,8 @@ export interface Review {
    * resumed review doesn't ask again.
    */
   duplicatesChecked: boolean;
+  /** What the user asked the agent about the accepted findings, oldest first; absent in reviews from before asks. */
+  asks?: Ask[];
 }
 
 /** The phases a review cut short by a restart can resume in. (A cut-short re-check just ends; it can be run again.) */

@@ -53,7 +53,10 @@ writes the verdict. Stored reviews from the earlier format are upgraded on read 
 After the verdict, the review moves through the `verification` phase too. `fix-proposed` attaches a proposed fix to each
 finding that stands (drafted by its reporter through `ReviewerRunner.propose`), and `ruled` records the user's Accept,
 Dismiss or Later. A handed-off finding nobody has fixed yet can still be dismissed or deferred, which takes it out of
-the fixes (the agent is told). `handoff-written` marks the hand-off file that `core/handoff.ts` renders. `fix-requested` sends the
+the fixes (the agent is told). `handoff-written` marks the hand-off file that `core/handoff.ts` renders. Besides fixes, the agent can be asked (core/tickets.ts) to file a beads
+issue per accepted finding (`tickets-requested`, then `ticketed` from `council_mark_ticketed`), or anything the user
+writes about them (`asked`, kept in `review.asks`). A fix or ticket it reports for an accepted finding nobody handed off
+counts only if the user asked about that finding, so a report meant for another review is refused. `fix-requested` sends the
 agent the accepted findings, and `fix-reported` records each fix from `council_mark_fixed`. With a fixer profile chosen
 (the plugin's profile setting `fixer`), the agent calls `council_delegate_fix`, which starts a conversation on that
 profile (`fix-delegated`); only a tool may start one. That conversation can't reach the review's canvas, so it ends its

@@ -101,15 +101,23 @@ export type ReviewEvent =
   | { type: "ruled"; at: number; findingId: string; decision: Decision | null; note: string }
   /** The hand-off document of these (accepted) findings was written to `path`. */
   | { type: "handoff-written"; at: number; path: string; findingIds: string[] }
-  /** The agent was asked to fix these accepted findings, by the hand-off. */
   /** The agent was asked to fix these accepted findings, by the hand-off: this conversation's, or another profile's. */
   | { type: "fix-requested"; at: number; findingIds: string[]; profile?: string }
   /** A conversation was started on the fixer's profile to fix these findings. */
   | { type: "fix-delegated"; at: number; findingIds: string[]; profile: string; conversationId: string }
   /** The fixer didn't fix these findings: what it said, or how its turn ended. */
   | { type: "fix-failed"; at: number; findingIds: string[]; reason: string }
-  /** The agent says it fixed the finding: what it changed, and where. */
+  /**
+   * The agent says it fixed the finding: what it changed, and where. An accepted finding nobody handed off (fixed on the
+   * user's own ask) gets its fix with it.
+   */
   | { type: "fix-reported"; at: number; findingId: string; summary: string; files: string[] }
+  /** The agent was asked to file a beads issue for each of these accepted findings. */
+  | { type: "tickets-requested"; at: number; findingIds: string[] }
+  /** The agent filed a beads issue for an accepted finding, under this id. */
+  | { type: "ticketed"; at: number; findingId: string; ticket: string }
+  /** The user asked the agent, in their own words, to do something about these accepted findings. */
+  | { type: "asked"; at: number; text: string; findingIds: string[] }
   /** These reviewers re-check these fixed findings. */
   | { type: "verification-started"; at: number; findingIds: string[]; reviewerIds: string[] }
   /** Each finding checked in this round is verified, or reopened if any check reopened it. */
@@ -119,6 +127,9 @@ export type ReviewEvent =
   | { type: "interrupted"; at: number }
   /** The host's agent was told how the review ended. */
   | { type: "agent-heard"; at: number };
+
+/** Whether the user asked the agent about this finding in their own words (an `asked` event). */
+const askedAbout = (review: Review, findingId: string) => (review.asks ?? []).some((ask) => ask.findingIds.includes(findingId));
 
 /** Thrown for an event the review can't take now; its message says why, for whoever sent it. */
 export class ReviewError extends Error {}
@@ -401,13 +412,15 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (review.phase !== "complete" || !review.verdict) throw new ReviewError(`Findings are ruled on once the council has its verdict; the review is ${review.phase}.`);
       const finding = findingOf(review, event.findingId);
       const ruling = event.decision === null ? null : { decision: event.decision, note: event.note, at: event.at };
+      // A ticket asked for and not filed yet goes when the finding is no longer accepted; a filed one stays on record.
+      const ticket = event.decision !== "accepted" && finding.ticket && finding.ticket.id === null ? { ticket: null } : {};
       if (finding.fix) {
         // Handed off: the note may change, or the finding comes out of the fixes while nobody has fixed it yet.
         if (event.decision === "accepted") return updateFinding(review, finding.id, (it) => ({ ...it, ruling }));
         if (finding.fix.state !== "handed-off" && finding.fix.state !== "reopened") throw new ReviewError(`${finding.id} is ${finding.fix.state} already; its ruling can't change.`);
-        return updateFinding(review, finding.id, (it) => ({ ...it, ruling, fix: null }));
+        return updateFinding(review, finding.id, (it) => ({ ...it, ruling, fix: null, ...ticket }));
       }
-      return updateFinding(review, finding.id, (it) => ({ ...it, ruling }));
+      return updateFinding(review, finding.id, (it) => ({ ...it, ruling, ...ticket }));
     }
     case "handoff-written": {
       if (review.phase !== "complete" || !review.verdict) throw new ReviewError(`A hand-off is written once the council has its verdict; the review is ${review.phase}.`);
@@ -468,10 +481,43 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "fix-reported": {
       if (review.phase !== "complete" && review.phase !== "verification") throw new ReviewError(`A fix is reported after the verdict; the review is ${review.phase}.`);
       const finding = findingOf(review, event.findingId);
-      if (!finding.fix) throw new ReviewError(`${finding.id} wasn't handed off for fixing.`);
+      if (!finding.fix) {
+        // Only a finding the user asked the agent about in their own words, accepted, may be fixed without a hand-off.
+        if (review.phase !== "complete" || finding.ruling?.decision !== "accepted" || !askedAbout(review, finding.id)) throw new ReviewError(`${finding.id} wasn't handed off for fixing.`);
+        const fix = { state: "fixed" as const, handedOffAt: event.at, fixer: null, problem: null, summary: event.summary, files: event.files, fixedAt: event.at, checks: [] };
+        return updateFinding(review, finding.id, (it) => ({ ...it, fix }));
+      }
       if (review.phase === "verification" && finding.fix.state === "fixed") throw new ReviewError(`${finding.id}'s fix is being re-checked; report a change to it once the re-check ends.`);
       if (finding.fix.state === "verified") throw new ReviewError(`${finding.id}'s fix is verified already.`);
       return updateFinding(review, finding.id, (it) => ({ ...it, fix: { ...it.fix!, state: "fixed", problem: null, summary: event.summary, files: event.files, fixedAt: event.at } }));
+    }
+    case "tickets-requested": {
+      if (review.phase !== "complete") throw new ReviewError(`Tickets are asked for once the review is complete; it is ${review.phase}.`);
+      if (event.findingIds.length === 0) throw new ReviewError("No accepted finding to file a ticket for.");
+      for (const id of event.findingIds) if (findingOf(review, id).ruling?.decision !== "accepted") throw new ReviewError(`${id} isn't accepted.`);
+      const ids = new Set(event.findingIds);
+      // A filed ticket stays; one asked for before and never reported is asked for again.
+      return {
+        ...review,
+        findings: review.findings.map((finding) => (ids.has(finding.id) && !finding.ticket?.id ? { ...finding, ticket: { id: null, requestedAt: event.at, filedAt: null } } : finding)),
+      };
+    }
+    case "ticketed": {
+      if (review.phase !== "complete") throw new ReviewError(`A ticket is recorded once the review is complete; it is ${review.phase}.`);
+      const finding = findingOf(review, event.findingId);
+      const ticket = event.ticket.trim();
+      if (!ticket) throw new ReviewError("A ticket needs its issue id.");
+      if (finding.ruling?.decision !== "accepted") throw new ReviewError(`${finding.id} isn't accepted.`);
+      if (!finding.ticket && !askedAbout(review, finding.id)) throw new ReviewError(`No ticket was asked for ${finding.id}.`);
+      return updateFinding(review, finding.id, (it) => ({ ...it, ticket: { id: ticket, requestedAt: it.ticket?.requestedAt ?? event.at, filedAt: event.at } }));
+    }
+    case "asked": {
+      if (review.phase !== "complete") throw new ReviewError(`The agent is asked about the findings once the review is complete; it is ${review.phase}.`);
+      const text = event.text.trim();
+      if (!text) throw new ReviewError("Say what to ask the agent.");
+      if (event.findingIds.length === 0) throw new ReviewError("Accept at least one finding before asking about them.");
+      for (const id of event.findingIds) if (findingOf(review, id).ruling?.decision !== "accepted") throw new ReviewError(`${id} isn't accepted.`);
+      return { ...review, asks: [...(review.asks ?? []), { text, findingIds: event.findingIds, at: event.at }] };
     }
     case "verification-started": {
       if (review.phase !== "complete") throw new ReviewError(`A verification starts from a complete review; it is ${review.phase}.`);

@@ -265,6 +265,25 @@ export function FixBadge({ finding }: { finding: Finding }) {
   );
 }
 
+export function TicketBadge({ finding }: { finding: Finding }) {
+  if (!finding.ticket) return null;
+  if (finding.ticket.id === null) {
+    return (
+      <span className="badge ticket pending" title="Waiting for the agent to file it">
+        ticket…
+      </span>
+    );
+  }
+  return (
+    <span className="badge ticket mono" title="Beads issue">
+      {finding.ticket.id}
+    </span>
+  );
+}
+
+/** The review target's beads workspace folder, null when it has none (supplied by App for the action plan). */
+export const BeadsContext = createContext<string | null>(null);
+
 /** The fixer profile this conversation chose (null: its own agent), supplied by App for the action plan. */
 export const FixerContext = createContext<string | null>(null);
 

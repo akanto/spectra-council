@@ -3,7 +3,8 @@
  * with council_open, the user sets it up and starts it in the view, and the engine's reviews go into the item's data,
  * which Mirador persists and sends to the view on every change.
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AgentRunner } from "../../core/agent-runner.ts";
@@ -20,6 +21,7 @@ import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from 
 import { bySeverity } from "../../core/describe.ts";
 import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
+import { askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
 import { miradorRecords, noRecords, type MiradorRecords } from "./records.ts";
 
@@ -82,6 +84,25 @@ const markFixedInput = z.object({
   summary: z.string().min(1).describe("What you changed, in a sentence or two."),
   files: z.array(z.string().min(1)).default([]).describe("The files you changed, relative to the review's target."),
 });
+
+const markTicketedInput = z.object({
+  review: z.string().min(1).optional().describe("The review's id; default: this conversation's newest review."),
+  finding: z.string().min(1).describe('The finding you filed an issue for, e.g. "F4".'),
+  ticket: z.string().min(1).describe('The beads issue\'s id, e.g. "myrepo-a1b".'),
+});
+
+const isFile = (path: string) => stat(path).then((it) => it.isFile(), () => false);
+
+/**
+ * The beads workspace a review's tickets go in: the nearest folder, from the target's folder up, whose `.beads` folder
+ * is a workspace (it has bd's config.yaml or metadata.json; bd's own state in ~/.beads is not one); null when none is.
+ */
+export async function beadsWorkspace(folder: string, home = homedir()): Promise<string | null> {
+  for (let at = folder; ; at = dirname(at)) {
+    if (at !== home && ((await isFile(join(at, ".beads", "config.yaml"))) || (await isFile(join(at, ".beads", "metadata.json"))))) return at;
+    if (dirname(at) === at) return null;
+  }
+}
 
 const delegateInput = z.object({
   review: z.string().min(1).optional().describe("The review's id; default: this conversation's newest review."),
@@ -327,6 +348,9 @@ export function createCouncilHost({
     return context.change(item.id, { data: reduceOrSay(settled(item), event) });
   }
 
+  /** The item as it is now: an action's snapshot goes stale across an await, while the agent records fixes and tickets. */
+  const fresh = (item: PluginItem<Review>, context: CanvasPluginContext<Review>) => context.items().find((each) => each.id === item.id) ?? item;
+
   /** The review a tool means: by id, else the conversation's newest. */
   function itemFor(context: CanvasPluginContext<Review>, wanted: string | undefined) {
     const items = councilItems(context);
@@ -400,22 +424,55 @@ export function createCouncilHost({
 
   /** Writes the hand-off of the accepted findings and records it; returns the review with it. */
   async function writeHandoff(item: PluginItem<Review>, context: CanvasPluginContext<Review>): Promise<Review> {
-    const review = settled(item);
+    const review = settled(fresh(item, context));
     const accepted = acceptedFindings(review).sort(bySeverity);
     if (accepted.length === 0) throw new Error("Accept at least one finding before writing the hand-off.");
     const path = await handoffPath(review);
     const event: ReviewEvent = { type: "handoff-written", at: clock.now(), path, findingIds: accepted.map(({ id }) => id) };
-    const next = reduceOrSay(review, event);
-    await writeFile(path, handoffMarkdown(next));
-    return context.change(item.id, { data: next }).data;
+    await writeFile(path, handoffMarkdown(reduceOrSay(review, event)));
+    // Recorded on the review as it is now: the agent may have reported a fix or a ticket while the file was written.
+    return context.change(item.id, { data: reduceOrSay(settled(fresh(item, context)), event) }).data;
+  }
+
+  /** The review with a hand-off of exactly its accepted findings: the one written, or a new one if it is missing or stale. */
+  async function currentHandoff(item: PluginItem<Review>, context: CanvasPluginContext<Review>): Promise<Review> {
+    const review = settled(fresh(item, context));
+    const accepted = acceptedFindings(review).map(({ id }) => id);
+    const current = review.handoff && review.handoff.findingIds.length === accepted.length && accepted.every((id) => review.handoff!.findingIds.includes(id));
+    return current ? review : writeHandoff(item, context);
+  }
+
+  /** The folder a review's beads workspace is looked for from: the target's, or the folder of a target document. */
+  async function beadsFor(review: Review) {
+    return beadsWorkspace(dirname(await handoffPath(review)));
+  }
+
+  /** Asks the conversation's agent to file a beads issue for each accepted finding that has none yet. */
+  async function requestTickets(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
+    const workspace = await beadsFor(settled(item));
+    if (!workspace) throw new Error(`There is no beads workspace (a .beads folder) at ${item.data.target} or above it; run bd init there to track the findings in beads.`);
+    const review = await currentHandoff(item, context);
+    // The findings with no ticket yet; else, asked again, those whose ticket the agent never reported.
+    const fresher = unticketed(review);
+    const ids = (fresher.length > 0 ? fresher : waitingTickets(review)).map(({ id }) => id);
+    if (ids.length === 0) throw new Error("Every accepted finding that isn't fixed has a ticket already.");
+    const next = context.change(item.id, { data: reduceOrSay(review, { type: "tickets-requested", at: clock.now(), findingIds: ids }) }).data;
+    await context.prompt(ticketsPrompt(next, ids, review.handoff!.path, workspace), { afterTurn: true });
+    return null;
+  }
+
+  /** Sends the user's own instruction about the accepted findings to the conversation's agent, with the hand-off. */
+  async function ask(item: PluginItem<Review>, context: CanvasActionContext<Review>, text: string) {
+    const review = await currentHandoff(item, context);
+    const ids = acceptedFindings(review).map(({ id }) => id);
+    const next = context.change(item.id, { data: reduceOrSay(review, { type: "asked", at: clock.now(), text, findingIds: ids }) }).data;
+    await context.prompt(askPrompt(next, text, review.handoff!.path), { afterTurn: true });
+    return null;
   }
 
   /** Asks the conversation's agent to fix the accepted findings, writing the hand-off first if it is missing or stale. */
   async function requestFixes(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
-    let review = settled(item);
-    const accepted = acceptedFindings(review).map(({ id }) => id);
-    const current = review.handoff && review.handoff.findingIds.length === accepted.length && accepted.every((id) => review.handoff!.findingIds.includes(id));
-    if (!current) review = await writeHandoff(item, context);
+    const review = await currentHandoff(item, context);
     const handoff = review.handoff!;
     const toFix = review.findings.filter((finding) => handoff.findingIds.includes(finding.id) && (!finding.fix || finding.fix.state === "handed-off" || finding.fix.state === "reopened"));
     if (toFix.length === 0) throw new Error("Every accepted finding is fixed already.");
@@ -436,7 +493,7 @@ export function createCouncilHost({
         `Please fix these findings from Spectra Council review ${review.id}, most severe first: ${ids.join(", ")}.`,
         `The hand-off at ${handoff.path} has, for each one, the evidence, how the council reached its conclusion (including any dissent), and the proposed fix with how to verify it.`,
         reopened.length > 0 ? `${reopened.join(", ")} were fixed before but reopened by the council's re-check; council_status has what the reviewers found.` : "",
-        "Fix only these findings. After each one, call council_mark_fixed with the finding id, what you changed, and the files.",
+        `Fix only these findings. After each one, call council_mark_fixed with review "${review.id}", the finding id, what you changed, and the files.`,
       ]
         .filter(Boolean)
         .join("\n\n"),
@@ -573,10 +630,24 @@ export function createCouncilHost({
           return `Marked ${finding} fixed in review ${next.id}.${open.length > 0 ? ` Still to fix: ${open.join(", ")}.` : " Every handed-off finding is fixed; the user can have the council re-check them."}`;
         },
       },
+      council_mark_ticketed: {
+        description:
+          "Report that you filed a beads issue for an accepted finding of a Spectra Council review: the finding and the issue's id. The finding then shows its ticket in the canvas.",
+        input: jsonSchema(markTicketedInput),
+        run(input, context) {
+          const parsed = markTicketedInput.safeParse(input);
+          if (!parsed.success) throw new Error(problemsOf(parsed.error));
+          const { review: wanted, finding, ticket } = parsed.data;
+          const item = itemFor(context, wanted);
+          const next = applyTo(item, context, { type: "ticketed", at: clock.now(), findingId: finding, ticket }).data;
+          const open = next.findings.filter((each) => each.ticket && !each.ticket.id).map(({ id }) => id);
+          return `Recorded ${ticket} for ${finding} in review ${next.id}.${open.length > 0 ? ` Still to file: ${open.join(", ")}.` : ""}`;
+        },
+      },
     }),
     guidance: {
       instructions:
-        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. Leave agents out to seat the user's profiles; seat mock personas only when the user asks for a mock or demo review. When the canvas asks you to call council_begin, do. council_status reads its progress and findings; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile.",
+        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. Leave agents out to seat the user's profiles; seat mock personas only when the user asks for a mock or demo review. When the canvas asks you to call council_begin, do. council_status reads its progress and findings; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
     },
     async action(item, action, context) {
       const parsed = viewActionSchema.safeParse(action);
@@ -591,6 +662,13 @@ export function createCouncilHost({
           const { findingId, decision, note } = parsed.data;
           const before = settled(item).findings.find((finding) => finding.id === findingId);
           const after = applyTo(item, context, { type: "ruled", at: clock.now(), findingId, decision, note }).data;
+          const ticket = before?.ticket?.id;
+          if (ticket && decision !== "accepted" && before?.ruling?.decision === "accepted") {
+            await context.prompt(
+              `The user ${decision === null ? "cleared the ruling on" : decision === "dismissed" ? "dismissed" : "deferred"} ${findingId} of Spectra Council review ${after.id}, which has the beads issue ${ticket}. Tell the user, and close or update ${ticket} only if they want you to.`,
+              { afterTurn: true },
+            );
+          }
           if (before?.fix && !after.findings.find((finding) => finding.id === findingId)?.fix) {
             const fixer = before.fix.fixer ? ` It was handed to the "${before.fix.fixer.profile}" profile, whose conversation can't hear this; its report on ${findingId} will be ignored.` : "";
             await context.prompt(
@@ -630,6 +708,12 @@ export function createCouncilHost({
           return null;
         case "fix":
           return requestFixes(item, context);
+        case "tickets":
+          return requestTickets(item, context);
+        case "ask":
+          return ask(item, context, parsed.data.text);
+        case "beads":
+          return { workspace: await beadsFor(settled(item)) };
         case "verify":
           return verify(item, context);
         case "rerun":

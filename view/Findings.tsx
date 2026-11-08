@@ -5,7 +5,7 @@ import { isFinished, isRulable, reportersOf, type Finding, type FindingStatus, t
 import { SEVERITIES, type Evidence, type Severity, type ViewAction } from "../core/schemas.ts";
 import { ActionPlan, ProposalBlock, RulingControl } from "./Actions.tsx";
 import { Markdown } from "./Markdown.tsx";
-import { AlsoMark, AlsoReported, ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge } from "./ui.tsx";
+import { AlsoMark, AlsoReported, ConfidenceMeter, cx, FindingStatusBadge, FixBadge, Positions, RulingMark, SeverityBadge, TicketBadge } from "./ui.tsx";
 
 const rulingOf = (review: Review, finding: Finding) => (!isRulable(review, finding) ? "n/a" : (finding.ruling?.decision ?? "unruled"));
 
@@ -58,7 +58,7 @@ function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, o
         <SeverityBadge severity={finding.severity} />
         <FindingStatusBadge status={finding.status} />
         <RulingMark finding={finding} />
-        <FixBadge finding={finding} />
+        <FixBadge finding={finding} /> <TicketBadge finding={finding} />
       </button>
       {finding.positions.length > 0 && (
         <div className="finding-card-positions">
@@ -70,7 +70,7 @@ function FindingCard({ review, finding, reviewer, open, toggle, openInCouncil, o
           <RulingControl review={review} finding={finding} act={act} busy={busy} openPath={openPath} next={next} />
           <Markdown className="finding-summary" review={review} text={finding.summary} {...(openPath ? { openPath } : {})} />
           <p className="finding-state">
-            <FindingStatusBadge status={finding.status} /> <RulingMark finding={finding} /> <FixBadge finding={finding} />
+            <FindingStatusBadge status={finding.status} /> <RulingMark finding={finding} /> <FixBadge finding={finding} /> <TicketBadge finding={finding} />
             {openInCouncil && (
               <button className="link" onClick={openInCouncil}>
                 Open in Council →

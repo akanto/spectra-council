@@ -1829,3 +1829,40 @@ button.md-path {
 .argument .md {
   margin: 4px 0;
 }
+
+/* Beads tickets and the custom ask in the action plan */
+.badge.ticket {
+  background: transparent;
+  text-transform: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.badge.ticket.pending {
+  font-style: italic;
+}
+
+.ticket-progress {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.ask-form {
+  margin-top: 10px;
+}
+
+.ask-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.ask-row textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+}
+
+.ask-last {
+  font-style: italic;
+}

@@ -9,7 +9,7 @@ import { Deliberation } from "./Deliberation.tsx";
 import { Findings } from "./Findings.tsx";
 import { ReviewerDetail } from "./ReviewerDetail.tsx";
 import { Setup } from "./Setup.tsx";
-import { cx, elapsed, FixerContext, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
+import { cx, elapsed, BeadsContext, FixerContext, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
 import { Workspace } from "./Workspace.tsx";
 
 type Tab = "workspace" | "council" | "findings";
@@ -51,7 +51,34 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const { send, busy } = useSender(bridge, setProblem);
   const [confirmStop, setConfirmStop] = useState(false);
   const [fixer, setFixer] = useState<string | null>(null);
+  const [beads, setBeads] = useState<string | null>(null);
   useEffect(() => bridge.onReview(setReview), [bridge]);
+  const reviewId = review?.id;
+  const reviewTarget = review?.target;
+  // Whether the target has a beads workspace, for the tickets button: asked once the review is complete, and again when
+  // the window regains focus (the user may have run bd init meanwhile).
+  const reviewComplete = review?.phase === "complete";
+  useEffect(() => {
+    if (reviewId === undefined || !reviewComplete) return;
+    let live = true;
+    const ask = () => {
+      Promise.resolve(bridge.send({ kind: "beads" })).then(
+        (result) => {
+          const workspace = (result as { workspace?: string | null } | null)?.workspace;
+          if (live) setBeads(typeof workspace === "string" ? workspace : null);
+        },
+        () => {
+          if (live) setBeads(null);
+        },
+      );
+    };
+    ask();
+    window.addEventListener("focus", ask);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", ask);
+    };
+  }, [bridge, reviewId, reviewTarget, reviewComplete]);
   const act = (action: ViewAction) => void send(action).catch(() => {});
   const running = review !== null && isRunning(review);
   useEffect(() => {
@@ -152,6 +179,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const time = elapsed(review.startedAt, review.endedAt, now);
 
   return (
+    <BeadsContext.Provider value={beads}>
     <FixerContext.Provider value={fixer}>
     <div className="app">
       <header className="top">
@@ -277,5 +305,6 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
       )}
     </div>
     </FixerContext.Provider>
+    </BeadsContext.Provider>
   );
 }
