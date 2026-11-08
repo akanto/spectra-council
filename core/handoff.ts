@@ -4,7 +4,7 @@
  */
 import { knobsText } from "./depth.ts";
 import { bySeverity } from "./describe.ts";
-import { argumentsOn, type Argument, type Finding, type Review } from "./model.ts";
+import { argumentsOn, type Argument, type Finding, type Review, reportersOf } from "./model.ts";
 import type { Evidence } from "./schemas.ts";
 
 /** Where a review's hand-off goes, relative to the folder of its target. */
@@ -105,6 +105,9 @@ export function handoffMarkdown(review: Review): string {
     out.push(`## ${finding.id}: ${oneLine(finding.title)}`, "");
     out.push(`- Severity: ${finding.severity}; category: ${finding.category}; council status: ${finding.status}`);
     out.push(`- Reported by: ${label(finding.reviewerId)}, ${finding.confidence} confidence`);
+    // Found on their own by others too: the strongest support a finding can have, so it is said, not left to "back it".
+    const others = reportersOf(finding).filter((id) => id !== finding.reviewerId);
+    if (others.length > 0) out.push(`- Also found independently by: ${others.map(label).join(", ")}`);
     if (finding.ruling?.note.trim()) out.push(`- The user's note: ${oneLine(finding.ruling.note)}`);
     out.push("");
     out.push("### What's wrong", "", prose(finding.summary), "");

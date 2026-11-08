@@ -96,6 +96,32 @@ describe("handoff", () => {
     expect(f2.indexOf("Minority report")).toBeLessThan(f2.indexOf("### Evidence"));
   });
 
+  test("a finding other reviewers found on their own names them; one nobody else found doesn't", () => {
+    const merged = apply(
+      newReview("rev1", setup, "mirador", 0),
+      { type: "started", at: 10 },
+      { type: "reviewer-started", reviewerId: "r1", at: 11 },
+      { type: "reviewer-started", reviewerId: "r2", at: 11 },
+      { type: "finding-reported", reviewerId: "r1", at: 12, finding: base },
+      { type: "finding-reported", reviewerId: "r2", at: 13, finding: { ...base, title: "Last element dropped" } },
+      { type: "finding-reported", reviewerId: "r1", at: 14, finding: { ...base, title: "Leaky handle" } },
+      { type: "reviewer-finished", reviewerId: "r1", at: 20, outcome: "completed" },
+      { type: "reviewer-finished", reviewerId: "r2", at: 20, outcome: "completed" },
+      { type: "findings-merged", at: 21, into: "F1", merged: ["F2"] },
+      { type: "deliberation-started", at: 30, rounds: 1 },
+      { type: "synthesis-started", at: 40 },
+      { type: "finding-resolved", at: 41, findingId: "F1", status: "agreed", rationale: "All 2 reviewers back it.", dissenters: [] },
+      { type: "finding-resolved", at: 41, findingId: "F3", status: "confirmed", rationale: "1 of 2 back it.", dissenters: [] },
+      { type: "concluded", at: 50, summary: "Two findings stand." },
+      { type: "ruled", at: 60, findingId: "F1", decision: "accepted", note: "" },
+      { type: "ruled", at: 60, findingId: "F3", decision: "accepted", note: "" },
+    );
+    const md = handoffMarkdown(merged);
+    const f1 = md.slice(md.indexOf("## F1:"), md.indexOf("## F3:"));
+    expect(f1).toContain("- Reported by: Claude, high confidence\n- Also found independently by: Codex\n");
+    expect(md.slice(md.indexOf("## F3:"))).not.toContain("Also found independently");
+  });
+
   test("proposal steps are numbered, with files, verification and risks", () => {
     const md = handoffMarkdown(ruled(concluded()));
     expect(md).toContain("1. Change the bound\n2. Add a test");

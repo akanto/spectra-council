@@ -182,9 +182,12 @@ export function verdictSummary(review: Review): string {
   const parts = (["agreed", "confirmed", "disputed", "withdrawn"] as const).filter((status) => count(status) > 0).map((status) => `${count(status)} ${status}`);
   if (unsettled > 0) parts.push(`${unsettled} unsettled`);
   const head = `${findings.length} finding${findings.length === 1 ? "" : "s"}: ${parts.join(", ")}.`;
+  // Findings more than one reviewer reported on its own, before anyone saw the others' findings.
+  const shared = findings.filter((finding) => reportersOf(finding).length > 1).length;
+  const independent = shared > 0 ? ` ${shared} ${shared === 1 ? "was" : "were"} found independently by more than one reviewer.` : "";
   const held = serious > 0 ? ` ${serious} serious finding${serious === 1 ? " stands" : "s stand"}.` : contested > 0 ? " No serious finding is agreed or confirmed." : " No serious finding stands.";
   // Kept as it was at the verdict (the hand-off quotes it), so it states the outcome rather than what is left to do.
   const open = contested > 0 ? ` ${contested} serious finding${contested === 1 ? " is" : "s are"} disputed.` : "";
   const unbacked = unsettled > 0 ? ` ${unsettled === 1 ? "1 finding was" : `${unsettled} findings were`} left unsettled, with no one backing ${unsettled === 1 ? "it" : "them"}.` : "";
-  return head + held + open + unbacked + dropped;
+  return head + independent + held + open + unbacked + dropped;
 }

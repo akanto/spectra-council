@@ -279,6 +279,23 @@ describe("verdictSummary", () => {
     expect(verdictSummary(review)).toBe("1 finding: 1 unsettled. No serious finding stands. 1 finding was left unsettled, with no one backing it. Gemini failed and couldn't continue.");
   });
 
+  test("findings more than one reviewer reported on their own are counted", () => {
+    let review = reduce(newReview("rev1", { target: "/repo", profile: "code", depth: "standard", instructions: "", seats: defaultSeats() }, "mock", 0), { type: "started", at: 1 });
+    for (const reviewerId of ["r1", "r2"]) review = reduce(review, { type: "reviewer-started", reviewerId, at: 2 });
+    review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 3, finding: { ...finding, severity: "high" } });
+    // F2 is r2's own copy of F1; F4 is r1's second report of F3, which adds no second reviewer.
+    review = reduce(review, { type: "finding-reported", reviewerId: "r2", at: 3, finding: { ...finding, severity: "high" } });
+    review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 3, finding: { ...finding, title: "Another one", severity: "low" } });
+    review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 3, finding: { ...finding, title: "Again", severity: "low" } });
+    for (const reviewerId of ["r1", "r2"]) review = reduce(review, { type: "reviewer-finished", reviewerId, at: 4, outcome: "completed" });
+    review = reduce(review, { type: "deliberation-started", at: 5, rounds: 1 });
+    review = reduce(review, { type: "findings-merged", at: 4, into: "F1", merged: ["F2"] });
+    review = reduce(review, { type: "findings-merged", at: 4, into: "F3", merged: ["F4"] });
+    review = reduce(review, { type: "synthesis-started", at: 9 });
+    for (const findingId of ["F1", "F3"]) review = reduce(review, { type: "finding-resolved", at: 10, findingId, status: "agreed", rationale: "r", dissenters: [] });
+    expect(verdictSummary(review)).toBe("2 findings: 2 agreed. 1 was found independently by more than one reviewer. 1 serious finding stands.");
+  });
+
   test("a serious confirmed finding counts", () => {
     expect(verdictSummary(resolve(council("high"), "confirmed"))).toBe("1 finding: 1 confirmed. 1 serious finding stands.");
   });
