@@ -271,7 +271,11 @@ export interface Fix {
   state: FixState;
   handedOffAt: number;
   fixer: Fixer | null;
-  /** Why the fixer didn't fix it, when it said so or ended without saying; cleared by a fix report or a new hand-off. */
+  /**
+   * Why the fixer didn't fix it, when it said so or ended without saying; cleared by a fix report or a new hand-off. A
+   * handed-off fix without one is someone's work in progress, which asking for fixes again leaves alone; with one, it
+   * is handed to a new fixer.
+   */
   problem: string | null;
   /** What the agent said it changed, the latest report. */
   summary: string | null;

@@ -102,7 +102,10 @@ export type ReviewEvent =
   | { type: "ruled"; at: number; findingId: string; decision: Decision | null; note: string }
   /** The hand-off document of these (accepted) findings was written to `path`. */
   | { type: "handoff-written"; at: number; path: string; findingIds: string[]; digest?: string }
-  /** The agent was asked to fix these accepted findings, by the hand-off: this conversation's, or another profile's. */
+  /**
+   * The agent was asked to fix these accepted findings, by the hand-off: this conversation's, or another profile's. Only
+   * those that await a request (awaitsFixRequest) change hands; one waiting for or with its fixer stays as it is.
+   */
   | { type: "fix-requested"; at: number; findingIds: string[]; profile?: string }
   /** A conversation was started on the fixer's profile to fix these findings. */
   | { type: "fix-delegated"; at: number; findingIds: string[]; profile: string; conversationId: string }
@@ -137,6 +140,15 @@ export type ReviewEvent =
   | { type: "agent-heard"; at: number };
 
 const withAsk = (review: Review, index: number, ask: Ask): Review => ({ ...review, asks: (review.asks ?? []).map((each, at) => (at === index ? ask : each)) });
+
+/**
+ * Whether asking for fixes hands this finding (again) to a fixer: it has no fix yet, the council's re-check reopened
+ * its fix, or its fixer didn't fix it (said so, or ended without saying). A hand-off that waits for its fixer or is
+ * being worked on stays with whoever has it, so a second request can't start overlapping work; a fixed or verified one
+ * has nothing to hand off.
+ */
+export const awaitsFixRequest = (finding: Finding): boolean =>
+  !finding.fix || finding.fix.state === "reopened" || (finding.fix.state === "handed-off" && finding.fix.problem !== null);
 
 /** Whether the user asked the agent about this finding in their own words (an `asked` event). */
 const askedAbout = (review: Review, findingId: string) => (review.asks ?? []).some((ask) => ask.findingIds.includes(findingId));
@@ -443,12 +455,13 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (!review.handoff) throw new ReviewError("Write the hand-off before asking for fixes.");
       const ids = new Set(event.findingIds);
       for (const id of ids) if (!review.handoff.findingIds.includes(id)) throw new ReviewError(`${id} isn't in the hand-off.`);
-      // A finding not handed off yet, still waiting for its fix, or reopened is handed (again) to this fixer.
+      // A finding not handed off yet, reopened, or whose fixer failed is handed (again) to this fixer as its new owner,
+      // so a late report from the attempt it replaces no longer matches it. One waiting for or with its fixer keeps it.
       const fixer = event.profile === undefined ? null : { profile: event.profile, conversationId: null };
       return {
         ...review,
         findings: review.findings.map((finding) =>
-          !ids.has(finding.id) || (finding.fix && finding.fix.state !== "reopened" && finding.fix.state !== "handed-off")
+          !ids.has(finding.id) || !awaitsFixRequest(finding)
             ? finding
             : {
                 ...finding,
@@ -469,8 +482,10 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "fix-delegated": {
       for (const id of event.findingIds) {
         const fix = findingOf(review, id).fix;
-        if (fix?.state !== "handed-off" && fix?.state !== "reopened") throw new ReviewError(`${id} isn't waiting for a fix.`);
+        if (fix?.state !== "handed-off") throw new ReviewError(`${id} isn't waiting for a fix.`);
         if (fix.fixer?.profile !== event.profile) throw new ReviewError(`${id} was handed to ${fix.fixer ? fix.fixer.profile : "this conversation's agent"}, not ${event.profile}.`);
+        // Its owner keeps it: only a new request, once that one failed, hands it to another conversation.
+        if (fix.fixer.conversationId !== null) throw new ReviewError(`${id} is with ${event.profile}'s conversation ${fix.fixer.conversationId} already.`);
       }
       const ids = new Set(event.findingIds);
       return {

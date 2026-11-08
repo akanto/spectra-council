@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
 import { isRulable, isStanding, MAX_ACTIVITY, REVIEW_FORMAT } from "../core/model.ts";
-import { newReview, reduce, ReviewError, setupOf, upgradeReview } from "../core/review.ts";
+import { awaitsFixRequest, newReview, reduce, ReviewError, setupOf, upgradeReview } from "../core/review.ts";
 import type { ArgumentInput, FindingInput } from "../core/schemas.ts";
 
 /** Four seats, two taking part: the shape of a review stored before seats could be removed. */
@@ -356,13 +356,57 @@ describe("fixes", () => {
     expect(request(handed(), ["F1"]).findings[1]!.fix).toBeNull();
   });
 
-  test("a request with a profile marks the fixer, and hands a handed-off finding over again", () => {
+  test("a request with a profile marks the fixer, and a repeated one leaves work waiting for or with its fixer alone", () => {
     const first = reduce(handed(), { type: "fix-requested", at: 63, findingIds: ["F1"], profile: "codex" });
     expect(first.findings[0]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 63, fixer: { profile: "codex", conversationId: null }, problem: null });
-    const second = reduce(first, { type: "fix-requested", at: 70, findingIds: ["F1"] });
-    expect(second.findings[0]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 70, fixer: null });
-    const third = reduce(second, { type: "fix-requested", at: 71, findingIds: ["F1"], profile: "gemini" });
-    expect(third.findings[0]!.fix!.fixer).toEqual({ profile: "gemini", conversationId: null });
+    // Waiting for its conversation: neither this conversation's agent nor another profile takes it over.
+    expect(reduce(first, { type: "fix-requested", at: 70, findingIds: ["F1"] }).findings[0]!.fix).toEqual(first.findings[0]!.fix);
+    expect(reduce(first, { type: "fix-requested", at: 70, findingIds: ["F1"], profile: "gemini" }).findings[0]!.fix).toEqual(first.findings[0]!.fix);
+    // Being fixed: its conversation keeps it.
+    const delegated = reduce(first, { type: "fix-delegated", at: 64, findingIds: ["F1"], profile: "codex", conversationId: "c9" });
+    expect(reduce(delegated, { type: "fix-requested", at: 71, findingIds: ["F1"], profile: "codex" }).findings[0]!.fix).toEqual(delegated.findings[0]!.fix);
+    expect(reduce(delegated, { type: "fix-requested", at: 71, findingIds: ["F1"] }).findings[0]!.fix).toEqual(delegated.findings[0]!.fix);
+    // With this conversation's agent: it keeps it too.
+    const chair = handedOffReview();
+    expect(reduce(chair, { type: "fix-requested", at: 70, findingIds: ["F1"], profile: "codex" }).findings[0]!.fix).toEqual(chair.findings[0]!.fix);
+  });
+
+  /** F1 and F2 accepted and in the hand-off. */
+  const handedBoth = () => reduce(rule(accepted(), "F2", "accepted", 62), { type: "handoff-written", at: 62, path: "/repo/h.md", findingIds: ["F1", "F2"] });
+
+  test("accepting another finding while one is being fixed hands off only the new one", () => {
+    let review = reduce(handed(), { type: "fix-requested", at: 63, findingIds: ["F1"], profile: "codex" });
+    review = reduce(review, { type: "fix-delegated", at: 64, findingIds: ["F1"], profile: "codex", conversationId: "c9" });
+    review = rule(review, "F2", "accepted", 65);
+    review = reduce(review, { type: "handoff-written", at: 66, path: "/repo/h.md", findingIds: ["F1", "F2"] });
+    review = reduce(review, { type: "fix-requested", at: 67, findingIds: ["F1", "F2"], profile: "codex" });
+    expect(review.findings[0]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 63, fixer: { profile: "codex", conversationId: "c9" } });
+    expect(review.findings[1]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 67, fixer: { profile: "codex", conversationId: null } });
+    // A delegation can't take F1 from its conversation; F2 goes to a conversation of its own.
+    expect(() => reduce(review, { type: "fix-delegated", at: 68, findingIds: ["F1", "F2"], profile: "codex", conversationId: "c10" })).toThrow("F1 is with codex's conversation c9 already");
+    review = reduce(review, { type: "fix-delegated", at: 68, findingIds: ["F2"], profile: "codex", conversationId: "c10" });
+    expect(review.findings.map((finding) => finding.fix!.fixer!.conversationId)).toEqual(["c9", "c10"]);
+  });
+
+  test("a request after a failed fix hands only the failed findings to a new owner", () => {
+    let review = reduce(handedBoth(), { type: "fix-requested", at: 63, findingIds: ["F1", "F2"], profile: "codex" });
+    review = reduce(review, { type: "fix-delegated", at: 64, findingIds: ["F1", "F2"], profile: "codex", conversationId: "c9" });
+    review = reduce(review, { type: "fix-failed", at: 65, findingIds: ["F1"], reason: "codex: no" });
+    const again = reduce(review, { type: "fix-requested", at: 70, findingIds: ["F1", "F2"], profile: "gemini" });
+    expect(again.findings[0]!.fix).toMatchObject({ state: "handed-off", handedOffAt: 70, fixer: { profile: "gemini", conversationId: null }, problem: null });
+    expect(again.findings[1]!.fix).toEqual(review.findings[1]!.fix);
+  });
+
+  test("which findings a request hands off: new, reopened and failed ones, not ones waiting for or with a fixer, nor fixed ones", () => {
+    expect(awaitsFixRequest(accepted().findings[0]!)).toBe(true);
+    expect(awaitsFixRequest(handedOffReview().findings[0]!)).toBe(false);
+    expect(awaitsFixRequest(reduce(handedOffReview(), { type: "fix-failed", at: 64, findingIds: ["F1"], reason: "no" }).findings[0]!)).toBe(true);
+    expect(awaitsFixRequest(fixedReview().findings[0]!)).toBe(false);
+    let review = reduce(verifying(), { type: "fix-checked", reviewerId: "r1", at: 71, check: check("F1", "reopened") });
+    review = reduce(review, { type: "verification-ended", at: 72 });
+    expect(awaitsFixRequest(review.findings[0]!)).toBe(true);
+    // A reopened finding waits for a new request, not for a delegation.
+    expect(() => reduce(review, { type: "fix-delegated", at: 73, findingIds: ["F1"], profile: "codex", conversationId: "c9" })).toThrow("isn't waiting for a fix");
   });
 
   test("a request leaves fixed and verified findings untouched, even with a profile", () => {

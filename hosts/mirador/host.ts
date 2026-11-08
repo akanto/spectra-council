@@ -18,7 +18,7 @@ import { acceptedFindings, digestOf, handoffFile, handoffMarkdown } from "../../
 import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
-import { newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
+import { awaitsFixRequest, newReview, reduce, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
 import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ticketIdSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
@@ -135,6 +135,9 @@ export interface HostOptions {
   /** How long after a reviewer's conversation started its model is looked up, in turn, until one is found. */
   modelLookupMs?: number[];
 }
+
+/** A finding handed to a fixer profile whose conversation nobody started yet: council_delegate_fix's to start. */
+const awaitsDelegation = (finding: Finding) => finding.fix?.state === "handed-off" && !!finding.fix.fixer && finding.fix.fixer.conversationId === null;
 
 const writeWithFolder = async (path: string, text: string) => {
   await mkdir(dirname(path), { recursive: true });
@@ -516,10 +519,18 @@ export function createCouncilHost({
 
   /** Asks the conversation's agent to fix the accepted findings, writing the hand-off first if it is missing or stale. */
   async function requestFixes(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
-    const review = await currentHandoff(item, context);
+    await currentHandoff(item, context);
+    // As it is now: a fixer may have reported, failed or been started while the hand-off was written.
+    const review = current(item, context);
     const handoff = review.handoff!;
-    const toFix = review.findings.filter((finding) => handoff.findingIds.includes(finding.id) && (!finding.fix || finding.fix.state === "handed-off" || finding.fix.state === "reopened"));
-    if (toFix.length === 0) throw new Error("Every accepted finding is fixed already.");
+    const handed = review.findings.filter((finding) => handoff.findingIds.includes(finding.id));
+    // Work already waiting for or with a fixer stays there: asking again would start a second fixer on it.
+    const toFix = handed.filter(awaitsFixRequest);
+    if (toFix.length === 0) {
+      const pending = handed.filter((finding) => finding.fix?.state === "handed-off").map(({ id }) => id);
+      if (pending.length > 0) throw new Error(`Nothing new to fix: ${pending.join(", ")} ${pending.length === 1 ? "is" : "are"} with the fixer already.`);
+      throw new Error("Every accepted finding is fixed already.");
+    }
     const ids = toFix.sort(bySeverity).map(({ id }) => id);
     const fixer = context.profileSetting(FIXER_SETTING) || null;
     applyTo(item, context, { type: "fix-requested", at: clock.now(), findingIds: ids, ...(fixer ? { profile: fixer } : {}) });
@@ -551,7 +562,11 @@ export function createCouncilHost({
     const profile = waiting[0]!.fix!.fixer!.profile;
     const ids = waiting.filter((finding) => finding.fix!.fixer!.profile === profile).sort(bySeverity).map(({ id }) => id);
     const started = await context.startConversation({ profile, prompt: fixerPrompt(review, ids, review.handoff!.path) });
-    applyTo(item, context, { type: "fix-delegated", at: clock.now(), findingIds: ids, profile: started.profile, conversationId: started.id });
+    // The conversation is this one's to own, but only for findings still waiting for it: one taken out of the fixes
+    // while it started isn't its work (the delegation lock keeps another council_delegate_fix from claiming any).
+    const still = new Set(current(item, context).findings.filter((finding) => awaitsDelegation(finding) && finding.fix!.fixer!.profile === profile).map(({ id }) => id));
+    const owned = ids.filter((id) => still.has(id));
+    if (owned.length > 0) applyTo(item, context, { type: "fix-delegated", at: clock.now(), findingIds: owned, profile: started.profile, conversationId: started.id });
     const said = `Started a conversation on ${started.profile} to fix ${ids.join(", ")} of review ${review.id}. The canvas shows each finding as fixed when it reports back.`;
     const more = waiting.length > ids.length || askWaits;
     return more ? `${said} More waits for a fixer profile (${askWaits ? "the user's ask" : "findings for another profile"}): call council_delegate_fix (review ${review.id}) again.` : `${said} There is nothing more for you to do.`;
@@ -673,7 +688,7 @@ export function createCouncilHost({
           const item = itemFor(context, parsed.data.review);
           const review = current(item, context);
           if (!review.handoff) throw new Error(`Review ${review.id} has no hand-off yet; the user writes it in the canvas.`);
-          const waiting = review.findings.filter((finding) => finding.fix?.fixer && finding.fix.fixer.conversationId === null && (finding.fix.state === "handed-off" || finding.fix.state === "reopened"));
+          const waiting = review.findings.filter(awaitsDelegation);
           const asked = (review.asks ?? []).findIndex((ask) => ask.fixer && ask.fixer.conversationId === null && ask.fixer.endedAt === null);
           if (waiting.length === 0 && asked < 0) throw new Error(`Nothing of review ${review.id} waits for a fixer profile; the user picks one in the conversation header and hands findings or an ask to it.`);
           // Two calls at once would both start a conversation for the same work.

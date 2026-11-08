@@ -406,7 +406,8 @@ describe("the Mirador host", () => {
       const ids = standing(review()).map(({ id }) => id);
       for (const findingId of ids) await act({ kind: "rule", findingId, decision: "accepted" });
       await act({ kind: "fix" });
-      await act({ kind: "fix" });
+      // Asked again with nothing new, nothing changes hands and the file stays as it is.
+      await expect(act({ kind: "fix" })).rejects.toThrow("Nothing new to fix");
       expect(written).toHaveLength(1);
       for (const id of ids) await host.tools.council_mark_fixed!.run({ finding: id, summary: "done", files: ["src/a.ts"] }, context);
       await act({ kind: "verify" });
@@ -423,7 +424,7 @@ describe("the Mirador host", () => {
       expect(text).toContain("What was wrong with it:");
       for (const finding of reopened) expect(text).toContain(finding.fix!.checks.find((check) => check.outcome === "reopened")!.text);
       // Asked again with nothing changed, the file stays as it is.
-      await act({ kind: "fix" });
+      await expect(act({ kind: "fix" })).rejects.toThrow("Nothing new to fix");
       expect(written).toHaveLength(before + 1);
       void canvas;
     });
@@ -584,6 +585,101 @@ describe("the Mirador host", () => {
         for (const id of ids) expect(fixOf(review(), id)).toMatchObject({ state: "handed-off", fixer: null, problem: null });
         expect(canvas.prompts.at(-1)).toContain("council_mark_fixed");
         expect(canvas.prompts.at(-1)).not.toContain("council_delegate_fix");
+      });
+
+      /** Whether a fixer conversation's first message lists this finding to fix. */
+      const lists = (prompt: string, id: string) => prompt.includes(`\n- ${id}: `);
+
+      test("accepting another finding while a fixer works hands the next fixer only that one, and both reports count", async () => {
+        const env = await completed();
+        env.canvas.settings.fixer = "codex";
+        const [first, second] = standing(env.review()).map(({ id }) => id) as [string, string];
+        await env.act({ kind: "rule", findingId: first, decision: "accepted" });
+        await env.act({ kind: "fix" });
+        await env.host.tools.council_delegate_fix!.run({}, env.context);
+        expect(fixOf(env.review(), first).fixer).toEqual({ profile: "codex", conversationId: "conversation-fixer-1" });
+
+        await env.act({ kind: "rule", findingId: second, decision: "accepted" });
+        await env.act({ kind: "fix" });
+        expect(env.canvas.prompts.at(-1)).toContain(`handed ${second} from`);
+        expect(fixOf(env.review(), first)).toMatchObject({ fixer: { profile: "codex", conversationId: "conversation-fixer-1" }, problem: null });
+        expect(fixOf(env.review(), second).fixer).toEqual({ profile: "codex", conversationId: null });
+
+        await env.host.tools.council_delegate_fix!.run({}, env.context);
+        expect(env.canvas.started).toHaveLength(2);
+        expect(lists(env.canvas.started[1]!.prompt, second)).toBe(true);
+        expect(lists(env.canvas.started[1]!.prompt, first)).toBe(false);
+        expect(fixOf(env.review(), first).fixer!.conversationId).toBe("conversation-fixer-1");
+        expect(fixOf(env.review(), second).fixer!.conversationId).toBe("conversation-fixer-2");
+
+        await env.host.replied!(started, { ended: "finished", text: report({ fixed: [{ finding: first, summary: "First", files: [] }] }) }, env.context);
+        await env.host.replied!({ id: "conversation-fixer-2", profile: "codex" }, { ended: "finished", text: report({ fixed: [{ finding: second, summary: "Second", files: [] }] }) }, env.context);
+        expect(fixOf(env.review(), first)).toMatchObject({ state: "fixed", summary: "First" });
+        expect(fixOf(env.review(), second)).toMatchObject({ state: "fixed", summary: "Second" });
+      });
+
+      test("asking again while the work is pending starts nothing new", async () => {
+        const { host, canvas, context, act, review, ids } = await delegated();
+        await expect(act({ kind: "fix" })).rejects.toThrow("with the fixer already");
+        await host.tools.council_delegate_fix!.run({}, context);
+        await expect(act({ kind: "fix" })).rejects.toThrow("with the fixer already");
+        await expect(asyncRun(() => host.tools.council_delegate_fix!.run({}, context))).rejects.toThrow("waits for a fixer");
+        expect(canvas.started).toHaveLength(1);
+        expect(canvas.prompts).toHaveLength(1);
+        for (const id of ids) expect(fixOf(review(), id).fixer).toEqual({ profile: "codex", conversationId: "conversation-fixer-1" });
+        // This conversation's agent keeps its work too.
+        const chair = await handedOff();
+        await expect(chair.act({ kind: "fix" })).rejects.toThrow("with the fixer already");
+        expect(chair.canvas.prompts).toHaveLength(1);
+      });
+
+      test("asking while the fixer's conversation starts hands out only the new work, once it has started", async () => {
+        const env = await completed();
+        env.canvas.settings.fixer = "codex";
+        const [first, second] = standing(env.review()).map(({ id }) => id) as [string, string];
+        await env.act({ kind: "rule", findingId: first, decision: "accepted" });
+        await env.act({ kind: "fix" });
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const slow = { ...env.context, startConversation: async (start: { profile: string; prompt: string }) => (await gate, env.context.startConversation(start)) };
+        const starting = env.host.tools.council_delegate_fix!.run({}, slow);
+
+        await expect(env.act({ kind: "fix" })).rejects.toThrow("with the fixer already");
+        await env.act({ kind: "rule", findingId: second, decision: "accepted" });
+        await env.act({ kind: "fix" });
+        expect(fixOf(env.review(), first).fixer).toEqual({ profile: "codex", conversationId: null });
+        expect(fixOf(env.review(), second).fixer).toEqual({ profile: "codex", conversationId: null });
+        await expect(asyncRun(() => env.host.tools.council_delegate_fix!.run({}, env.context))).rejects.toThrow("being started");
+
+        release();
+        await starting;
+        expect(fixOf(env.review(), first).fixer!.conversationId).toBe("conversation-fixer-1");
+        expect(fixOf(env.review(), second).fixer!.conversationId).toBeNull();
+        await env.host.tools.council_delegate_fix!.run({}, env.context);
+        expect(env.canvas.started).toHaveLength(2);
+        expect(lists(env.canvas.started[1]!.prompt, second)).toBe(true);
+        expect(lists(env.canvas.started[1]!.prompt, first)).toBe(false);
+        expect(fixOf(env.review(), first).fixer!.conversationId).toBe("conversation-fixer-1");
+        expect(fixOf(env.review(), second).fixer!.conversationId).toBe("conversation-fixer-2");
+      });
+
+      test("a retry hands only the failed findings to a new conversation, and the old one's late report is ignored", async () => {
+        const { host, review, canvas, context, act, ids } = await delegated();
+        const [done, failed, ...silent] = ids as [string, string, ...string[]];
+        await host.tools.council_delegate_fix!.run({}, context);
+        await host.replied!(started, { ended: "finished", text: report({ fixed: [{ finding: done, summary: "Done", files: [] }], notFixed: [{ finding: failed, reason: "Too risky" }] }) }, context);
+        await act({ kind: "fix" });
+        for (const id of [failed, ...silent]) expect(fixOf(review(), id)).toMatchObject({ state: "handed-off", fixer: { profile: "codex", conversationId: null }, problem: null });
+        expect(fixOf(review(), done)).toMatchObject({ state: "fixed", summary: "Done" });
+
+        await host.tools.council_delegate_fix!.run({}, context);
+        expect(lists(canvas.started[1]!.prompt, done)).toBe(false);
+        for (const id of [failed, ...silent]) expect(fixOf(review(), id).fixer!.conversationId).toBe("conversation-fixer-2");
+        // The superseded attempt reports late: the retried work isn't its to settle.
+        await host.replied!(started, { ended: "finished", text: report({ fixed: [{ finding: failed, summary: "Stale", files: [] }] }) }, context);
+        expect(fixOf(review(), failed)).toMatchObject({ state: "handed-off", problem: null });
+        await host.replied!({ id: "conversation-fixer-2", profile: "codex" }, { ended: "finished", text: report({ fixed: [{ finding: failed, summary: "Retried", files: [] }] }) }, context);
+        expect(fixOf(review(), failed)).toMatchObject({ state: "fixed", summary: "Retried" });
       });
     });
 

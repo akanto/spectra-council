@@ -1,6 +1,7 @@
 /** After the verdict: the proposed fix, the user's ruling, the fix's progress and the action plan that drives the hand-off. */
 import { useContext, useEffect, useRef, useState } from "react";
 import { isRunning, isRulable, type Ask, type Finding, type Review } from "../core/model.ts";
+import { awaitsFixRequest } from "../core/review.ts";
 import type { Decision, ViewAction } from "../core/schemas.ts";
 import { ASK_MAX } from "../core/schemas.ts";
 import { unticketed, waitingTickets } from "../core/tickets.ts";
@@ -311,7 +312,8 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
   const unruledList = standing.filter((finding) => !finding.ruling);
   const unruled = unruledList.length;
   const bulk = unruledList.filter((finding) => finding.status === "agreed" || finding.status === "confirmed");
-  const pending = accepted.filter((finding) => finding.fix?.state !== "fixed" && finding.fix?.state !== "verified").length;
+  // What a request would hand over: work already with a fixer stays there (newly accepted, reopened or failed only).
+  const pending = accepted.filter(awaitsFixRequest).length;
   const toHand = accepted.filter((finding) => !finding.fix).length;
   const reopened = standing.filter((finding) => finding.fix?.state === "reopened").length;
   const fixed = standing.filter((finding) => finding.fix?.state === "fixed").length;
@@ -328,8 +330,8 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
   const lastAsk = review.asks?.at(-1);
   const who = fixer ?? "agent";
   // The one accent-filled button follows the next step; nothing is primary while the user still has to rule.
-  const next: "verify" | "fix" | null = unruled > 0 ? null : fixed > 0 ? "verify" : toHand + reopened > 0 ? "fix" : null;
-  const fixLabel = toHand === 0 && reopened > 0 ? `Ask ${who} to fix again (${pending})` : `Ask ${who} to fix (${pending})`;
+  const next: "verify" | "fix" | null = unruled > 0 ? null : fixed > 0 ? "verify" : pending > 0 ? "fix" : null;
+  const fixLabel = toHand === 0 && pending > 0 ? `Ask ${who} to fix again (${pending})` : `Ask ${who} to fix (${pending})`;
   const instruction =
     running
       ? null
