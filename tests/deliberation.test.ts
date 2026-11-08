@@ -159,16 +159,21 @@ describe("settle, when reviewers fail or are removed", () => {
     });
   });
 
-  test("with no participant left, nothing settles it", () => {
+  test("with every reviewer failed, the reporter's support still stands and the rationale says so", () => {
     let review = council();
     for (const reviewerId of ["r1", "r2", "r3"]) review = fail(review, reviewerId);
-    expect(settled(review)).toBeNull();
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "1 of 1 back it; Claude couldn't continue, so its last stance counts.", dissenters: [] });
   });
 
-  test("a reporter that failed before arguing doesn't back it; with nobody else backing it, nothing settles it", () => {
+  test("with every reporter removed and nobody else backing it, nothing settles it", () => {
+    let review = argue(council(), "r2", "uncertain", 1);
+    expect(settled(remove(fail(review, "r1"), "r1"))).toBeNull();
+  });
+
+  test("a reporter that failed before arguing still backs it with its report: a timeout takes back nothing", () => {
     let review = argue(council(), "r2", "uncertain", 1);
     review = fail(review, "r1");
-    expect(settled(review)).toBeNull();
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "1 of 3 back it; Codex couldn't tell; Claude couldn't continue, so its last stance counts.", dissenters: [] });
   });
 
   test("a challenger who came round and then failed answered the challenge", () => {
@@ -212,8 +217,8 @@ describe("settle, when reviewers fail or are removed", () => {
     let review = argue(council(), "r2", "supports", 1);
     review = reduce(review, { type: "round-started", at: 9, round: 2 });
     review = fail(fail(review, "r1"), "r2");
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "1 of 2 back it; Codex couldn't continue, so its last stance counts.", dissenters: [] });
-    expect(settled(remove(review, "r2"))).toBeNull();
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; Claude and Codex couldn't continue, so their last stances count.", dissenters: [] });
+    expect(settled(remove(review, "r2"))).toEqual({ status: "confirmed", rationale: "1 of 2 back it; Claude couldn't continue, so its last stance counts.", dissenters: [] });
   });
 });
 
@@ -267,10 +272,11 @@ describe("verdictSummary", () => {
   });
 
   test("a finding the synthesis left unsettled is counted, and a failed reviewer couldn't continue", () => {
-    let review = fail(council("high"), "r1");
+    let review = remove(fail(argue(council("high"), "r2", "uncertain", 1), "r1"), "r1");
+    review = fail(review, "r3");
     review = reduce(review, { type: "synthesis-started", at: 9 });
     expect(settled(review)).toBeNull();
-    expect(verdictSummary(review)).toBe("1 finding: 1 unsettled. No serious finding stands. 1 finding was left unsettled, with no one backing it. Claude failed and couldn't continue.");
+    expect(verdictSummary(review)).toBe("1 finding: 1 unsettled. No serious finding stands. 1 finding was left unsettled, with no one backing it. Gemini failed and couldn't continue.");
   });
 
   test("a serious confirmed finding counts", () => {

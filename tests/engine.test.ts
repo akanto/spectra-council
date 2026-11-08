@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
 import { ReviewSession, type ReviewerRunner } from "../core/engine.ts";
-import { isStanding, type Review } from "../core/model.ts";
+import { isRulable, isStanding, type Review } from "../core/model.ts";
 import { MockRunner, mockScript } from "../core/mock-runner.ts";
 import { PROFILES } from "../core/profiles.ts";
 import { newReview, reduce } from "../core/review.ts";
@@ -224,12 +224,14 @@ describe("ReviewSession", () => {
     expect(final.verdict?.summary).toBe("1 finding: 1 disputed. No serious finding is agreed or confirmed. 1 serious finding is disputed. Codex failed and couldn't continue.");
   });
 
-  test("a finding nobody backs after its reporter fails stays reported, and the verdict counts it unsettled", async () => {
+  test("a reporter that fails keeps its report's support: its finding stands, can be ruled on, and the failure is said", async () => {
     const final = await twoReviewerRun((reviewerId) => (reviewerId === "r1" ? "fail" : { stance: "uncertain", text: "I can't tell from the code." }));
     expect(final.phase).toBe("complete");
     const finding = final.findings[0]!;
-    expect(finding).toMatchObject({ status: "reported", resolution: null, proposal: null });
-    expect(final.verdict?.summary).toBe("1 finding: 1 unsettled. No serious finding stands. 1 finding was left unsettled, with no one backing it. Claude failed and couldn't continue.");
+    expect(finding.status).toBe("confirmed");
+    expect(finding.resolution?.rationale).toContain("couldn't continue, so its last stance counts");
+    expect(isRulable(final, finding)).toBe(true);
+    expect(final.verdict?.summary).toContain("failed and couldn't continue");
   });
 
   async function completeRun() {

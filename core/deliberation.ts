@@ -68,15 +68,15 @@ const names = (reviewers: Reviewer[]) => {
 const its = (reviewers: Reviewer[]) => (reviewers.length === 1 ? "its" : "their");
 
 /**
- * Whether a reviewer's recorded stances count in the synthesis: those of every seated reviewer still at the council,
- * and those of one that failed after taking part in the deliberation (it argued at least once), whose last stances
- * stand as it left them. A removed reviewer has no say, and one that failed before arguing anything (in the independent
- * review, or in its first round) left no stance of its own to keep.
+ * Whether a reviewer's recorded stance on a finding counts in its synthesis: that of every seated reviewer still at the
+ * council, and that of one that failed after recording a stance on it (its report, or an argument), which stands as it
+ * left it: a timeout neither takes back a reporter's support nor answers a challenge. A removed reviewer has no say, and
+ * one that failed with no stance on the finding left nothing of its own to keep.
  */
-export function countsIn(review: Review, reviewer: Reviewer): boolean {
+export function countsIn(reviewer: Reviewer, finding: Finding): boolean {
   if (!reviewer.enabled) return false;
   if (reviewer.status === "deliberating" || reviewer.status === "completed") return true;
-  return reviewer.status === "failed" && review.arguments.some((argument) => argument.reviewerId === reviewer.id);
+  return reviewer.status === "failed" && finding.positions.some((position) => position.reviewerId === reviewer.id);
 }
 
 /**
@@ -87,7 +87,7 @@ export function countsIn(review: Review, reviewer: Reviewer): boolean {
  * - agreed: nobody ever challenged it, and everyone who counts backs it;
  * - confirmed: otherwise, when someone backs it: each challenge was answered (its challenger came round to back it), or
  *   some couldn't tell but nobody objects;
- * - null: nobody backs it (its reporters were removed, or failed before taking part, and no one else backs it).
+ * - null: nobody backs it (its reporters were removed, and no one else backs it).
  * A reviewer that failed during the deliberation keeps its last stance, and the rationale says it couldn't continue: a
  * timeout neither answers a challenge nor takes back support.
  */
@@ -108,7 +108,7 @@ export function settle(review: Review, finding: Finding): Settlement | null {
     };
   }
 
-  const participants = review.reviewers.filter((reviewer) => countsIn(review, reviewer));
+  const participants = review.reviewers.filter((reviewer) => countsIn(reviewer, finding));
   const backers = participants.filter((reviewer) => stanceOf(reviewer.id) === "supports");
   const dissenters = participants.filter((reviewer) => stanceOf(reviewer.id) === "challenges");
   const unsure = participants.filter((reviewer) => stanceOf(reviewer.id) === "uncertain");

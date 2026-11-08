@@ -166,7 +166,7 @@ function FindingDetail({ review, finding, openPath, act, busy, select, next }: {
           const position = finding.positions.find((each) => each.reviewerId === reviewer.id);
           const failed = reviewer.status === "failed";
           // A reviewer that failed after taking part keeps its last stance in the synthesis; show it with the failure.
-          const kept = failed && position && countsIn(review, reviewer) ? position : undefined;
+          const kept = failed && position && countsIn(reviewer, finding) ? position : undefined;
           return (
             <li
               key={reviewer.id}

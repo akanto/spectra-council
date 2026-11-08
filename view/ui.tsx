@@ -188,7 +188,7 @@ export function Positions({ review, finding }: { review: Review; finding: Findin
         const failed = reviewer.status === "failed";
         const stance = position ? `${position.stance === "supports" ? "supports" : position.stance === "challenges" ? "challenges" : "is uncertain"}, ${position.confidence} confidence, ${position.round === 0 ? "reported it" : `round ${position.round}`}` : "";
         const text = failed
-          ? `${reviewer.label} failed and couldn't continue${position && countsIn(review, reviewer) ? `; its last stance counts: ${stance}` : ""}`
+          ? `${reviewer.label} failed and couldn't continue${position && countsIn(reviewer, finding) ? `; its last stance counts: ${stance}` : ""}`
           : position
             ? `${reviewer.label}: ${stance}`
             : `${reviewer.label}: no position yet`;
