@@ -4,7 +4,7 @@
 
 <!-- Demo video goes here. -->
 
-In *Minority Report*, three precogs foresee every crime. When one of them sees it differently, that dissent, the
+In [*Minority Report*](https://www.imdb.com/title/tt0181689/), three precogs foresee every crime. When one of them sees it differently, that dissent, the
 minority report, is quietly thrown away and the system goes with the majority.
 
 Spectra Council does the opposite: the dissent gets argued out, not outvoted.
@@ -12,7 +12,7 @@ Spectra Council does the opposite: the dissent gets argued out, not outvoted.
 ## How it works
 
 1. **Convene.** Point it at a repository, a paper or a folder. Pick what to look for (code, architecture, security,
-   science) and seat up to four agents: Claude, Codex, Gemini, Qwen.
+   science) and seat up to eight agents, say Claude, Codex, Gemini and Qwen, each on one of your Mirador profiles.
 2. **Investigate.** Each agent reviews on its own, without seeing the others. You watch them read, search and report
    findings live.
 3. **Deliberate.** The findings go on the table without names. Agents back them, challenge them, or ask for proof, and
@@ -26,7 +26,7 @@ It's a hearing, not a vote.
 
 ## Where it stands
 
-Early days. Seats can now be real agents on your Mirador profiles, or mocks for demos. You set up a review, watch four seats
+Early days. Seats can now be real agents on your Mirador profiles, or mocks for demos. You set up a review, watch the seats
 work, browse the findings, read them argued out to a verdict, then rule on the findings and see the fixes re-checked.
 The [roadmap](docs/architecture.md) has the details.
 
