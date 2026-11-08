@@ -58,8 +58,9 @@ describe("the Mirador host", () => {
     const outside = await mkdtemp(join(tmpdir(), "spectra-outside-"));
     await writeFile(join(outside, "secret.txt"), "x");
     await symlink(outside, join(folder, "link"));
+    await symlink(join(outside, "not-yet.txt"), join(folder, "dangling"));
     for (const reviewTarget of [folder, join(folder, "report.md")]) {
-      for (const path of ["/absolute/outside.ts", join(outside, "secret.txt"), "../outside.ts", "nested/../../outside.ts", "link/secret.txt", "link"]) {
+      for (const path of ["/absolute/outside.ts", join(outside, "secret.txt"), "../outside.ts", "nested/../../outside.ts", "link/secret.txt", "link", "dangling"]) {
         await expect(resolve(reviewTarget, path)).rejects.toThrow("outside the review target");
       }
     }

@@ -2,7 +2,7 @@
  * The files of a review target, relative to it: a git repository's tracked and unignored files, else a walk of the folder
  * that skips what is usually generated; a single file is itself. Uses Bun, which every host of the engine runs on.
  */
-import { realpath, stat } from "node:fs/promises";
+import { readlink, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const MAX_FILES = 5000;
@@ -48,14 +48,22 @@ export async function listTargetFiles(target: string): Promise<string[]> {
   return files.filter((file) => !SKIPPED.test(file) && !NOT_REVIEWED.test(file)).slice(0, MAX_FILES).sort();
 }
 
-/** The real path of `path`, or of its nearest existing ancestor with the missing tail put back. */
-async function realOrNearest(path: string): Promise<string> {
+/**
+ * The real path of `path`, or of its nearest existing ancestor with the missing tail put back. A dangling symlink on the
+ * way is followed to where it points (realpath fails on it as if it were missing), so it can't pass for a path inside.
+ */
+async function realOrNearest(path: string, links = 0): Promise<string> {
   let existing = path;
   let tail = "";
   for (;;) {
     try {
       return join(await realpath(existing), tail);
     } catch {
+      const link = await readlink(existing).catch(() => null);
+      if (link !== null) {
+        if (links >= 40) throw new Error(`Cannot resolve source path ${path}: too many symbolic links.`);
+        return realOrNearest(join(resolve(dirname(existing), link), tail), links + 1);
+      }
       const parent = dirname(existing);
       if (parent === existing) return path;
       tail = tail ? join(basename(existing), tail) : basename(existing);
