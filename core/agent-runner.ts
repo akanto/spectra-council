@@ -17,10 +17,25 @@ const NOTE_LENGTH = 240;
 const PROBLEM_LENGTH = 160;
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
+const LINK = /(?<!!)\[((?:[^[\]]|\[[^[\]]*\])*)\]\(\s*<?([^()\s>]*)>?(?:\s+"[^"]*")?\s*\)/g;
+
+/** A short label for a link without text: the file's name and line, or the URL without its scheme. */
+function labelOfUrl(url: string): string {
+  const [path = "", anchor = ""] = url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("#");
+  const name = path.split("/").filter(Boolean).pop() ?? path;
+  const line = /^L(\d+)/.exec(anchor)?.[1];
+  return line ? `${name}:${line}` : name;
+}
+
+/** Flattens Markdown links `[text](url)` to `text` (or a short label of the URL when the text is empty). Images stay. */
+export function flattenLinks(text: string): string {
+  return text.replace(LINK, (_all, label: string, url: string) => label.trim() || labelOfUrl(url));
+}
+
 /** The prose before the last ```json block, trimmed and shortened; null when there is none. */
 function proseBefore(text: string): string | null {
   const at = text.lastIndexOf("```json");
-  const prose = (at >= 0 ? text.slice(0, at) : text).trim();
+  const prose = flattenLinks(at >= 0 ? text.slice(0, at) : text).trim();
   if (!prose) return null;
   return prose.length > NOTE_LENGTH ? `${prose.slice(0, NOTE_LENGTH - 1).trimEnd()}…` : prose;
 }

@@ -47,7 +47,7 @@ function header({ review, reviewer, profile }: ReviewerJob, task: string): strin
 /** How to end: the reply shape, the item's JSON Schema and an example. Nothing may follow the block. */
 function ending(what: string, shape: string, itemName: string, schema: z.ZodType, example: unknown): string {
   return [
-    `End your final message with one \`\`\`json block holding ${what}, in this shape: ${shape}. Nothing after the block. You may write short prose before it.`,
+    `End your final message with one \`\`\`json block holding ${what}, in this shape: ${shape}. Nothing after the block. You may write one short sentence of plain prose before it, with no Markdown links.`,
     `Each ${itemName} must fit this JSON Schema:\n\`\`\`\n${schemaOf(schema)}\n\`\`\``,
     `Example:\n\`\`\`json\n${JSON.stringify(example, null, 2)}\n\`\`\``,
   ].join("\n\n");
