@@ -212,6 +212,34 @@ describe("the host", () => {
     expect(review().findings.slice(1).every((finding) => finding.ticket?.id === null)).toBe(true);
   });
 
+  test("council_rule taking back an accepted finding with a filed issue tells the agent to ask the user about it", async () => {
+    const { host, canvas, context, act, review } = await completed(true);
+    await act({ kind: "tickets" });
+    const first = review().findings[0]!.id;
+    await host.tools.council_mark_ticketed!.run({ finding: first, ticket: "proj-1" }, context);
+    const prompts = canvas.prompts.length;
+    const said = await host.tools.council_rule!.run({ finding: first, decision: "deferred" }, context);
+    expect(said).toBe(`Deferred ${first} in review rev1. It has the beads issue proj-1: tell the user, and close or update it only if they want you to.`);
+    expect(review().findings[0]!.ticket?.id).toBe("proj-1");
+    expect(canvas.prompts).toHaveLength(prompts);
+  });
+
+  test("council_rule clearing the ruling of a ticketed finding being fixed names both the issue and the fix taken back", async () => {
+    const { host, canvas, context, act, review } = await completed(true);
+    await act({ kind: "tickets" });
+    const first = review().findings[0]!.id;
+    await host.tools.council_mark_ticketed!.run({ finding: first, ticket: "proj-1" }, context);
+    await act({ kind: "fix" });
+    expect(review().findings[0]!.fix?.state).toBe("handed-off");
+    const prompts = canvas.prompts.length;
+    const said = await host.tools.council_rule!.run({ finding: first, decision: null }, context);
+    expect(said).toBe(
+      `Cleared the ruling on ${first} in review rev1. It has the beads issue proj-1: tell the user, and close or update it only if they want you to. It is out of the fixes now: don't fix it, and tell the user what you already changed for it, if anything.`,
+    );
+    expect(review().findings[0]).toMatchObject({ ruling: null, fix: null, ticket: { id: "proj-1" } });
+    expect(canvas.prompts).toHaveLength(prompts);
+  });
+
   test("council_mark_ticketed refuses ids that are not beads ids", async () => {
     const { host, context, review } = await completed(true);
     const first = review().findings[0]!.id;

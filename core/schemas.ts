@@ -210,6 +210,20 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
 
 export type ViewAction = z.infer<typeof viewActionSchema>;
 
+export const reviewIdSchema = z.string().min(1);
+
+export const stopInput = z.object({
+  review: reviewIdSchema.optional().describe("The review's id; default: this conversation's newest review."),
+});
+
+/** The agent's ruling on a finding, as the user told it; the view's `rule` action is the user's own. */
+export const ruleInput = z.object({
+  review: reviewIdSchema.optional().describe("The review's id; default: this conversation's newest review."),
+  finding: z.string().min(1).describe('The finding ruled on, e.g. "F1".'),
+  decision: decisionSchema.nullable().describe("The user's decision, or null to clear the ruling."),
+  note: z.string().optional().describe("Why, in the user's words, if they gave a reason."),
+});
+
 /**
  * What a real reviewer ends each turn's final message with, as a ```json block: the items of its turn, each checked
  * later on its own against the schema above (a malformed one shows as an error, the rest still count).

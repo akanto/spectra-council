@@ -10,7 +10,7 @@ import { z } from "zod";
 import { AgentRunner, replyFetched, type LateReply } from "../../core/agent-runner.ts";
 import { knobsText } from "../../core/depth.ts";
 import { checkersOf } from "../../core/deliberation.ts";
-import { isProfileAgent, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
+import { isProfileAgent, modelLabel, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, TurnTimeout, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
@@ -21,7 +21,7 @@ import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
-import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ticketIdSchema, viewActionSchema, type Setup } from "../../core/schemas.ts";
+import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, stopInput, ticketIdSchema, viewActionSchema, type Decision, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
 import { askFixerPrompt, askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
@@ -125,6 +125,22 @@ const statusInput = z.object({
 });
 
 const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema) as Record<string, unknown>;
+
+const RULING_VERBS: Record<Decision, string> = { accepted: "Accepted", dismissed: "Dismissed", deferred: "Deferred" };
+
+/** What the agent tells the user after a ruling it recorded: a finding no longer accepted keeps its beads issue, and one out of the fixes stays unfixed. */
+function rulingConsequences(before: Finding, after: Finding | undefined): string[] {
+  const consequences: string[] = [];
+  const ticket = before.ticket?.id;
+  if (ticket && before.ruling?.decision === "accepted" && after?.ruling?.decision !== "accepted") {
+    consequences.push(`It has the beads issue ${ticket}: tell the user, and close or update it only if they want you to.`);
+  }
+  if (before.fix && !after?.fix) {
+    const fixer = before.fix.fixer ? ` It was handed to the "${before.fix.fixer.profile}" profile, whose conversation can't hear this; its report on ${before.id} will be ignored.` : "";
+    consequences.push(`It is out of the fixes now: don't fix it, and tell the user what you already changed for it, if anything.${fixer}`);
+  }
+  return consequences;
+}
 
 export interface HostOptions {
   clock?: Clock;
@@ -823,10 +839,55 @@ export function createCouncilHost({
           return `Recorded ${ticket} for ${finding} in review ${next.id}.${open.length > 0 ? ` Still to file: ${open.join(", ")}.` : ""}`;
         },
       },
+      council_stop: {
+        description:
+          "Stop a running Spectra Council review, or the re-check of its fixes, when the user asks you to. The review stops waiting for its reviewers and ends as stopped (a stopped re-check leaves the review complete); their conversations finish the turn they are in on their own.",
+        input: jsonSchema(stopInput),
+        run(input, context) {
+          const parsed = stopInput.safeParse(input);
+          if (!parsed.success) throw new Error(problemsOf(parsed.error));
+          const item = itemFor(context, parsed.data.review);
+          const session = sessions.get(item.id);
+          if (!session || !isRunning(session.review)) {
+            const review = current(item, context);
+            return `Review ${review.id} isn't running (phase: ${review.phase}); there is nothing to stop.`;
+          }
+          const stopping = session.review.phase === "verification" ? "the re-check of the fixes of review" : "review";
+          session.stop();
+          return `Stopped ${stopping} ${session.review.id}.`;
+        },
+      },
+      council_profiles: {
+        description:
+          "List the Mirador profiles Spectra Council can seat as reviewers, by the exact name council_open's agents take (\"profile:\" and the name), with the model each last ran on where known.",
+        input: jsonSchema(z.object({})),
+        run(_input, context) {
+          const known = profilesFor(context.storage);
+          if (known.length === 0) return "No Mirador profile is known to Spectra Council yet; the user can pick reviewers in the review's setup.";
+          return ["Mirador profiles to seat:", ...known.map((profile) => `- profile:${profile.name}${profile.model ? ` (${modelLabel(profile.model)})` : ""}`)].join("\n");
+        },
+      },
+      council_rule: {
+        description:
+          "Record the user's ruling on a finding of a complete Spectra Council review: accepted, dismissed or deferred, with their reason; null clears it. Only for a decision the user gave you: rulings are theirs, as in the canvas.",
+        input: jsonSchema(ruleInput),
+        run(input, context) {
+          const parsed = ruleInput.safeParse(input);
+          if (!parsed.success) throw new Error(problemsOf(parsed.error));
+          const { review: wanted, finding: findingId, decision, note = "" } = parsed.data;
+          const item = itemFor(context, wanted);
+          const review = current(item, context);
+          const before = review.findings.find((finding) => finding.id === findingId);
+          if (!before) throw new Error(`Review ${review.id} has no finding ${findingId}; its findings are ${review.findings.map(({ id }) => id).join(", ") || "none"}.`);
+          const after = applyTo(item, context, { type: "ruled", at: clock.now(), findingId, decision, note });
+          const ruled = decision === null ? `Cleared the ruling on ${findingId}` : `${RULING_VERBS[decision]} ${findingId}`;
+          return [`${ruled} in review ${after.id}.`, ...rulingConsequences(before, after.findings.find((finding) => finding.id === findingId))].join(" ");
+        },
+      },
     }),
     guidance: {
       instructions:
-        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. Leave agents out to seat the user's profiles; seat mock personas only when the user asks for a mock or demo review. When the canvas asks you to call council_begin, do. council_status reads its progress and findings; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
+        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. Leave agents out to seat the user's profiles, or name them as council_profiles lists them; seat mock personas only when the user asks for a mock or demo review. When the canvas asks you to call council_begin, do; when the user asks you to stop a running review, call council_stop. council_status reads its progress and findings; council_rule records a ruling the user gives you on a finding, never one of your own; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
     },
     async action(item, action, context) {
       const parsed = viewActionSchema.safeParse(action);
