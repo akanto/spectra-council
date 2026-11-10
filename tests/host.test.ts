@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { outcomeOf } from "../core/describe.ts";
 import type { Review } from "../core/model.ts";
 import { createCouncilHost, PROFILES_KEY } from "../hosts/mirador/host.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
@@ -70,7 +71,8 @@ describe("the Mirador host", () => {
     expect(review.findings.some((finding) => finding.title === "Scripted finding" && finding.reviewerId === "r1")).toBe(true);
     // The mock seat ran as a mock, and no conversation was started for the scripted profile seat.
     expect(review.findings.some((finding) => finding.reviewerId === "r2")).toBe(true);
-    expect(canvas.prompts).toHaveLength(0);
+    // The conversation hears only that its review finished: nothing was asked of it, and no conversation started for the seat.
+    expect(canvas.prompts).toEqual([expect.stringContaining("is finished")]);
     expect(canvas.started).toHaveLength(0);
   });
 
@@ -150,7 +152,7 @@ describe("the Mirador host", () => {
     for (const tool of Object.values(host.tools)) expect(tool.input).toMatchObject({ type: "object" });
   });
 
-  test("the view configures and starts a review, which runs to completion and is noted for the agent once", async () => {
+  test("the view configures and starts a review, which runs to completion and tells its agent of the verdict, not again by note", async () => {
     const { host, canvas, context, clock } = setup();
     await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
     const id = canvas.items[0]!.id;
@@ -176,10 +178,221 @@ describe("the Mirador host", () => {
     expect(review.reviewers.filter((reviewer) => reviewer.enabled).every((reviewer) => reviewer.status === "completed")).toBe(true);
     expect(await host.tools.council_status!.run({}, context)).toContain(`${review.findings.length}`);
 
-    const note = host.note!(context)!;
-    expect(note.text).toContain("Spectra Council review rev1 ended (complete)");
-    note.heard();
+    // The finished prompt marked the review heard as it went out: the agent has nothing left to hear by note.
     expect(host.note!(context)).toBeNull();
+  });
+
+  describe("the message that a review is finished", () => {
+    /** A review of this canvas's item, run to its verdict. */
+    async function toTheVerdict(env: ReturnType<typeof setup>) {
+      const { host, canvas, context, clock } = env;
+      await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+      const id = canvas.items[0]!.id;
+      await host.action!(canvas.item(id), { kind: "start" }, context);
+      await clock.runAll();
+      await clock.settle();
+      return canvas.item(id).data;
+    }
+
+    test("comes once to the review's own conversation, counted, and asks for no council tool", async () => {
+      const env = setup();
+      const { canvas } = env;
+      const review = await toTheVerdict(env);
+      expect(review.phase).toBe("complete");
+      expect(canvas.prompts).toHaveLength(1);
+      expect(canvas.promptOptions).toEqual([{ afterTurn: true }]);
+      expect(canvas.prompts[0]).toContain(`Spectra Council review ${review.id} is finished (${outcomeOf(review)})`);
+      expect(canvas.prompts[0]).toContain("Tell the user in one or two lines");
+      expect(canvas.prompts[0]).toContain("without calling any council tool");
+    });
+
+    test("says nothing about a review the user stopped on the way", async () => {
+      const { host, canvas, context, clock } = setup();
+      await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+      const id = canvas.items[0]!.id;
+      await host.action!(canvas.item(id), { kind: "start" }, context);
+      for (let i = 0; i < 3; i++) await clock.step();
+      await host.action!(canvas.item(id), { kind: "stop" }, context);
+      await clock.runAll();
+      await clock.settle();
+      expect(canvas.item(id).data.phase).toBe("stopped");
+      expect(canvas.prompts).toEqual([]);
+      // An ending no prompt carried still reaches the agent by note, once.
+      const note = host.note!(context)!;
+      expect(note.text).toContain("Spectra Council review rev1 ended (stopped)");
+      note.heard();
+      expect(host.note!(context)).toBeNull();
+    });
+
+    test("says nothing when a host only reads the finished review, as after a restart or a rebuilt canvas", async () => {
+      const env = setup();
+      const { canvas, context, clock } = env;
+      await toTheVerdict(env);
+      canvas.prompts = [];
+      const restarted = createCouncilHost({ clock, listFiles: async () => FILES, throttleMs: 0 });
+      expect(restarted.items.council!.listed!(canvas.items[0]!).phase).toBe("complete");
+      await restarted.tools.council_status!.run({}, context);
+      expect(canvas.prompts).toEqual([]);
+    });
+
+    test("goes in the plugin's own voice, through the tool call's context, though the user started the run from the view", async () => {
+      const { host, canvas, context, clock } = setup();
+      const typedByTheUser: string[] = [];
+      const view = { ...context, prompt: async (text: string) => void typedByTheUser.push(text) };
+      await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+      await host.action!(canvas.items[0]!, { kind: "start" }, view);
+      await clock.runAll();
+      await clock.settle();
+      expect(canvas.prompts).toEqual([expect.stringContaining("is finished")]);
+      expect(typedByTheUser).toEqual([]);
+    });
+
+    test("with no tool call since a restart, leaves the verdict to the note", async () => {
+      const { host, canvas, context, clock } = setup();
+      await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+      const restarted = createCouncilHost({ clock, listFiles: async () => FILES, throttleMs: 0, writeFile: async () => {} });
+      await restarted.action!(canvas.items[0]!, { kind: "start" }, context);
+      await clock.runAll();
+      await clock.settle();
+      expect(canvas.items[0]!.data.phase).toBe("complete");
+      expect(canvas.prompts).toEqual([]);
+      expect(restarted.note!(context)!.text).toContain("Spectra Council review rev1 ended (complete)");
+    });
+
+    test("a verdict whose telling couldn't be sent is given back to the note, not lost", async () => {
+      const { host, canvas, context, clock } = setup();
+      const gone = { ...context, prompt: async () => { throw new Error("The conversation is gone."); } };
+      const logged: unknown[][] = [];
+      const real = console.error;
+      console.error = (...args: unknown[]) => logged.push(args);
+      try {
+        await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, gone);
+        const id = canvas.items[0]!.id;
+        await host.action!(canvas.item(id), { kind: "start" }, gone);
+        await clock.runAll();
+        await clock.settle();
+        expect(canvas.item(id).data.phase).toBe("complete");
+        expect(canvas.item(id).data.agentHeardAt).toBeNull();
+        expect(host.note!(context)!.text).toContain("Spectra Council review rev1 ended (complete)");
+        expect(logged.map((args) => String(args[0])).some((text) => text.includes("couldn't be told"))).toBe(true);
+      } finally {
+        console.error = real;
+      }
+    });
+
+    test("a telling that fails late takes back only its own heard mark, not a later run's", async () => {
+      const { host, canvas, context, clock } = setup();
+      let failSend = (_: Error) => {};
+      const slow = { ...context, prompt: () => new Promise<void>((_, reject) => (failSend = reject)) };
+      const real = console.error;
+      console.error = () => {};
+      try {
+        await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, slow);
+        const id = canvas.items[0]!.id;
+        await host.action!(canvas.item(id), { kind: "start" }, slow);
+        await clock.runAll();
+        await clock.settle();
+        const told = canvas.item(id);
+        const laterMark = told.data.agentHeardAt! + 60_000;
+        canvas.items[canvas.items.indexOf(told)] = { ...told, data: { ...told.data, agentHeardAt: laterMark } };
+        failSend(new Error("The conversation is gone."));
+        await clock.settle();
+        expect(canvas.item(id).data.agentHeardAt).toBe(laterMark);
+        expect(host.note!(context)).toBeNull();
+      } finally {
+        console.error = real;
+      }
+    });
+
+    test("a review a restart cut short is never listed as ended: its note says nothing", async () => {
+      const { clock, host, canvas, context } = setup();
+      await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+      const id = canvas.items[0]!.id;
+      await host.action!(canvas.item(id), { kind: "configure", patch: { depth: "quick" } }, context);
+      await host.action!(canvas.item(id), { kind: "start" }, context);
+      for (let i = 0; i < 3; i++) await clock.step();
+      expect(canvas.item(id).data.phase).toBe("independent-review");
+      const restarted = createCouncilHost({ clock: new FakeClock(), listFiles: async () => FILES, throttleMs: 0, writeFile: async () => {} });
+      expect(restarted.note!(context)).toBeNull();
+    });
+
+    test("a run resumed after a restart still tells its verdict, exactly once", async () => {
+      const env = setup();
+      const { canvas, context } = env;
+      await env.host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+      const id = canvas.items[0]!.id;
+      await env.host.action!(canvas.item(id), { kind: "configure", patch: { depth: "quick" } }, context);
+      await env.host.action!(canvas.item(id), { kind: "start" }, context);
+      for (let i = 0; i < 3; i++) await env.clock.step();
+      expect(canvas.item(id).data.phase).toBe("independent-review");
+      // A restart: the work in flight is left behind on the old clock; a new host over the same canvas takes it over.
+      const clock = new FakeClock();
+      const restarted = createCouncilHost({ clock, listFiles: async () => FILES, throttleMs: 0, writeFile: async () => {} });
+      const before = canvas.prompts.length;
+      expect(await restarted.tools.council_begin!.run({ review: "rev1" }, context)).toContain("Resumed review rev1");
+      await clock.runAll();
+      await clock.settle();
+      expect(canvas.item(id).data.phase).toBe("complete");
+      expect(canvas.prompts.slice(before).filter((text) => text.includes("is finished"))).toHaveLength(1);
+      expect(restarted.note!(context)).toBeNull();
+    });
+
+    test("doesn't wait for the turn it starts: the fixes can be re-checked while that turn goes on", async () => {
+      const { host, canvas, context, clock } = setup();
+      const toldInTurnsThatGoOn: string[] = [];
+      const turnGoesOn = {
+        ...context,
+        prompt: (text: string) => {
+          toldInTurnsThatGoOn.push(text);
+          return new Promise<void>(() => {});
+        },
+      };
+      await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, turnGoesOn);
+      const id = canvas.items[0]!.id;
+      const act = (action: unknown) => host.action!(canvas.item(id), action, context);
+      await act({ kind: "start" });
+      await clock.runAll();
+      await clock.settle();
+      const ids = standing(canvas.item(id).data).map((finding) => finding.id);
+      for (const findingId of ids) await act({ kind: "rule", findingId, decision: "accepted" });
+      await act({ kind: "fix" });
+      for (const finding of ids) await host.tools.council_mark_fixed!.run({ finding, summary: "done", files: ["src/a.ts"] }, turnGoesOn);
+      await act({ kind: "verify" });
+      await clock.runAll();
+      await clock.settle();
+      expect(canvas.item(id).data.verifications).toBe(1);
+      expect(toldInTurnsThatGoOn.filter((text) => text.includes("is finished"))).toHaveLength(2);
+    });
+
+    test("says nothing when the user stops a re-check of the fixes, which leaves the review complete", async () => {
+      const { host, canvas, context, clock, review, act } = await completed();
+      for (const finding of standing(review())) await act({ kind: "rule", findingId: finding.id, decision: "accepted" });
+      await act({ kind: "fix" });
+      for (const finding of standing(review())) await host.tools.council_mark_fixed!.run({ finding: finding.id, summary: "done", files: ["src/a.ts"] }, context);
+      await act({ kind: "verify" });
+      await clock.step();
+      expect(review().phase).toBe("verification");
+      await act({ kind: "stop" });
+      await clock.runAll();
+      await clock.settle();
+      expect(review().phase).toBe("complete");
+      expect(canvas.prompts.filter((text) => text.includes("is finished"))).toEqual([]);
+      // Neither channel tells: the verdict this stopped re-check returns to was already heard, so the note stays silent too.
+      expect(host.note!(context)).toBeNull();
+    });
+
+    test("comes again when a re-check of the fixes ends, once for that run", async () => {
+      const { host, canvas, context, clock, review, act } = await completed();
+      for (const finding of standing(review())) await act({ kind: "rule", findingId: finding.id, decision: "accepted" });
+      await act({ kind: "fix" });
+      for (const finding of standing(review())) await host.tools.council_mark_fixed!.run({ finding: finding.id, summary: "done", files: ["src/a.ts"] }, context);
+      await act({ kind: "verify" });
+      await clock.step();
+      await clock.runAll();
+      await clock.settle();
+      expect(review().phase).toBe("complete");
+      expect(canvas.prompts.filter((text) => text.includes("is finished"))).toHaveLength(1);
+    });
   });
 
   test("stop from the view stops a running review", async () => {
@@ -297,6 +510,9 @@ describe("the Mirador host", () => {
     await env.host.action!(env.canvas.item(id), { kind: "start" }, env.context);
     await env.clock.runAll();
     await env.clock.settle();
+    // These tests are about what the review asks of the agent after its verdict, not about the message its verdict brought.
+    env.canvas.prompts = [];
+    env.canvas.promptOptions = [];
     const review = () => env.canvas.item(id).data;
     const act = (action: unknown) => env.host.action!(env.canvas.item(id), action, env.context);
     return { ...env, id, review, act };
@@ -513,7 +729,7 @@ describe("the Mirador host", () => {
     test("verify runs a round, settles the fixes, shows fix counts, and the agent is told again", async () => {
       const env = await completed();
       const { host, canvas, context, clock, review, act } = env;
-      host.note!(context)!.heard();
+      // The verdict's prompt told this conversation and marked the review heard: nothing waits on the note.
       expect(host.note!(context)).toBeNull();
 
       const ids = standing(review()).map(({ id }) => id);
@@ -546,13 +762,11 @@ describe("the Mirador host", () => {
       expect(text).toContain(`${verified} verified`);
       if (reopened > 0) expect(text).toContain(`${reopened} reopened`);
 
-      const note = host.note!(context)!;
-      expect(note).not.toBeNull();
-      expect(note.text).toContain("Spectra Council review rev1 ended (complete)");
-      expect(note.text).toContain("fixes:");
-      note.heard();
+      // The re-check's verdict is told the same way, once, with how the fixes came out, and hears nothing left over on the note.
+      const told = canvas.prompts.filter((text) => text.includes("is finished"));
+      expect(told).toHaveLength(1);
+      expect(told[0]).toContain(`(${text})`);
       expect(host.note!(context)).toBeNull();
-      void canvas;
     });
 
     test("fix after a reopening rewrites the hand-off with the re-check feedback and keeps the warning", async () => {
@@ -722,10 +936,94 @@ describe("the Mirador host", () => {
       });
 
       test("a finished reply without a report fails all its findings", async () => {
-        const { host, review, context, ids } = await delegated();
+        const { host, review, canvas, context, ids } = await delegated();
         await host.tools.council_delegate_fix!.run({}, context);
         await host.replied!(started, { ended: "finished", text: "All done, honest." }, context);
         for (const id of ids) expect(fixOf(review(), id).problem).toContain("without the JSON report");
+        expect(canvas.prompts.at(-1)).toContain("ended without the JSON report");
+      });
+
+      test("a fixer's finished reply tells the review's conversation once what it fixed and what it didn't", async () => {
+        const { host, review, canvas, context, ids } = await delegated();
+        expect(ids.length).toBeGreaterThan(2);
+        await host.tools.council_delegate_fix!.run({}, context);
+        const before = canvas.prompts.length;
+        const [fixed, failed, silent] = ids;
+        await host.replied!(
+          started,
+          { ended: "finished", text: report({ fixed: [{ finding: fixed, summary: "Changed it", files: ["src/a.ts"] }], notFixed: [{ finding: failed, reason: "Too risky" }] }) },
+          context,
+        );
+        expect(canvas.prompts).toHaveLength(before + 1);
+        expect(canvas.promptOptions.at(-1)).toEqual({ afterTurn: true });
+        const told = canvas.prompts.at(-1)!;
+        expect(told).toContain(`Spectra Council review ${review().id}`);
+        expect(told).toContain('the fixer conversation on the "codex" profile is back');
+        expect(told).toContain(`It fixed ${fixed}.`);
+        expect(told).toContain(`${failed}: Too risky`);
+        expect(told).toContain(`${silent}: codex didn't report on it`);
+        expect(told).toMatch(/didn't report on it\. Tell the user/);
+        expect(told).toContain("Tell the user in one or two lines what came of it, without calling any council tool.");
+      });
+
+      test("the tell of an ask names the beads issues the fixer filed", async () => {
+        const { host, review, canvas, context, act } = await completed();
+        canvas.settings.fixer = "codex";
+        const second = standing(review())[1]!.id;
+        await act({ kind: "rule", findingId: second, decision: "accepted" });
+        await act({ kind: "ask", text: "File beads issues for what you can't fix", toFixer: true });
+        await host.tools.council_delegate_fix!.run({}, context);
+        const before = canvas.prompts.length;
+        await host.replied!(started, { ended: "finished", text: report({ tickets: [{ finding: second, ticket: "proj-a1b" }] }) }, context);
+        expect(canvas.prompts).toHaveLength(before + 1);
+        expect(canvas.prompts.at(-1)).toContain(`It filed proj-a1b for ${second}.`);
+        expect(review().findings.find((it) => it.id === second)!.ticket?.id).toBe("proj-a1b");
+      });
+
+      test("a fixer report that couldn't be recorded is named in the telling, not dropped", async () => {
+        const { host, review, canvas, context, act, clock, ids } = await delegated();
+        await host.tools.council_delegate_fix!.run({}, context);
+        const [checked, other] = ids;
+        await host.tools.council_mark_fixed!.run({ finding: checked!, summary: "done", files: [] }, context);
+        await act({ kind: "verify" });
+        await clock.step();
+        expect(review().phase).toBe("verification");
+        const before = canvas.prompts.length;
+        await host.replied!(
+          started,
+          { ended: "finished", text: report({ fixed: [{ finding: checked!, summary: "again", files: [] }, { finding: other!, summary: "x", files: [] }] }) },
+          context,
+        );
+        const told = canvas.prompts.slice(before).join("\n");
+        expect(told).toContain("Part of codex's report wasn't recorded:");
+        expect(told).toContain("being re-checked");
+        expect(told).toContain(`It fixed ${other}.`);
+        expect(canvas.prompts).toHaveLength(before + 1);
+      });
+
+      test("a fixer's reply is recorded without waiting for the turn its telling starts", async () => {
+        const { host, review, context, ids } = await delegated();
+        await host.tools.council_delegate_fix!.run({}, context);
+        const turnGoesOn = { ...context, prompt: () => new Promise<void>(() => {}) };
+        await host.replied!(started, { ended: "finished", text: report({ fixed: [{ finding: ids[0], summary: "x" }] }) }, turnGoesOn);
+        expect(fixOf(review(), ids[0]!).state).toBe("fixed");
+      });
+
+      test("a tell whose conversation was deleted is logged, not thrown", async () => {
+        const { host, review, context, clock, ids } = await delegated();
+        await host.tools.council_delegate_fix!.run({}, context);
+        const gone = { ...context, prompt: async () => { throw new Error("The conversation is gone."); } };
+        const logged: unknown[][] = [];
+        const real = console.error;
+        console.error = (...args: unknown[]) => logged.push(args);
+        try {
+          await host.replied!(started, { ended: "finished", text: report({ fixed: [{ finding: ids[0], summary: "x" }] }) }, gone);
+          await clock.settle();
+        } finally {
+          console.error = real;
+        }
+        expect(fixOf(review(), ids[0]!).state).toBe("fixed");
+        expect(logged.map((args) => String(args[0])).some((text) => text.includes("couldn't be told"))).toBe(true);
       });
 
       test("a stopped or failed reply fails all its findings, even with a report in its text", async () => {
@@ -738,12 +1036,14 @@ describe("the Mirador host", () => {
         }
       });
 
-      test("a reply for an unknown conversation changes nothing", async () => {
-        const { host, review, context } = await delegated();
+      test("a reply for an unknown conversation changes nothing and tells no one", async () => {
+        const { host, review, canvas, context } = await delegated();
         await host.tools.council_delegate_fix!.run({}, context);
         const before = JSON.stringify(review());
+        const prompted = canvas.prompts.length;
         await host.replied!({ id: "other", profile: "codex" }, { ended: "finished", text: null }, context);
         expect(JSON.stringify(review())).toBe(before);
+        expect(canvas.prompts).toHaveLength(prompted);
       });
 
       test("a failed finding is handed to this conversation's agent by a later fix without a fixer", async () => {

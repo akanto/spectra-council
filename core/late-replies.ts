@@ -5,7 +5,7 @@
  * Pure, for the view as well as the host.
  */
 import { isProfileAgent } from "./agents.ts";
-import type { Review, Reviewer } from "./model.ts";
+import { isResumable, type Review, type Reviewer } from "./model.ts";
 
 /** What the agent runner logs as a turn starts: "Asking the alpha profile to review". */
 export const askingText = (profile: string, what: string) => `Asking the ${profile} profile ${what}`;
@@ -18,6 +18,9 @@ export const REVIEW_TURN = "to review";
 
 const ASKING = /^Asking the .+ profile (to .+)$/;
 const STARTED = /^Started conversation (\S+)$/;
+
+/** While the council is at work, a late reply waits for the review to be complete again. */
+const COUNCIL_AT_WORK: readonly Review["phase"][] = ["deliberation", "synthesis", "verification"];
 
 /**
  * The turn a seat ran last (its `what`, e.g. "to review" or "to argue round 2") and the latest conversation it started
@@ -42,7 +45,7 @@ export function lastTurnOf(reviewer: Reviewer): { what: string; conversationId: 
 export function whyNoFetch(review: Review, reviewer: Reviewer): string | null {
   if (!reviewer.enabled || !isProfileAgent(reviewer.agent)) return `${reviewer.label} has no conversation of its own to fetch a reply from.`;
   if (reviewer.status !== "failed") return `${reviewer.label} hasn't failed; only a failed reviewer's reply is fetched.`;
-  if (review.phase === "deliberation" || review.phase === "synthesis" || review.phase === "verification") return `The council is at work; fetch ${reviewer.label}'s reply once the review is complete.`;
+  if (COUNCIL_AT_WORK.includes(review.phase)) return `The council is at work; fetch ${reviewer.label}'s reply once the review is complete.`;
   if (review.phase !== "independent-review" && review.phase !== "complete") return `A reply is fetched while the reviewers review or once the review is complete; it is ${review.phase}.`;
   const turn = lastTurnOf(reviewer);
   if (!turn || turn.what !== REVIEW_TURN) {
@@ -54,3 +57,13 @@ export function whyNoFetch(review: Review, reviewer: Reviewer): string | null {
 
 /** Whether the view offers to fetch this seat's late reply. */
 export const canFetchReply = (review: Review, reviewer: Reviewer) => whyNoFetch(review, reviewer) === null;
+
+export type WhenFetchable = "now" | "once complete" | "once resumed";
+
+/** When a seat's late reply can be fetched: now, once the council at work is done, once the user resumes a run a restart cut short, or never. */
+export function whenFetchable(review: Review, reviewer: Reviewer): WhenFetchable | null {
+  if (canFetchReply(review, reviewer)) return "now";
+  if (!canFetchReply({ ...review, phase: "complete" }, reviewer)) return null;
+  if (COUNCIL_AT_WORK.includes(review.phase)) return "once complete";
+  return isResumable(review) ? "once resumed" : null;
+}

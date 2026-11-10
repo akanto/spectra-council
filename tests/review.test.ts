@@ -571,6 +571,12 @@ describe("verification", () => {
       expect(ended.endedAt).toBe(60);
     }
   });
+
+  test("agent-unheard hands a heard review back to the ended note", () => {
+    const heard = reduce(concluded(), { type: "agent-heard", at: 81 });
+    expect(heard.agentHeardAt).toBe(81);
+    expect(reduce(heard, { type: "agent-unheard" }).agentHeardAt).toBeNull();
+  });
 });
 
 describe("upgradeReview", () => {

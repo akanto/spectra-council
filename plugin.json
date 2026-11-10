@@ -3,6 +3,7 @@
   "title": "Spectra Council",
   "version": "0.2.0",
   "api": 5,
+  "tellsCaller": true,
   "canvas": {
     "host": "hosts/mirador/host.ts",
     "view": "dist/view.js"
@@ -32,6 +33,18 @@
       "hint": "Whose agent fixes a review's accepted findings: another profile (say, pi with a different model) in a conversation of its own. None: this conversation's agent.",
       "choices": "profiles",
       "default": ""
+    },
+    {
+      "id": "turn-limit",
+      "label": "Spectra Council turn limit",
+      "hint": "How long each turn of a review may take before it gives up: a reviewer's review, the grouping, each round, the proposals and each re-check. A review cut short can still be fetched in once its late reply comes; any other turn cut short just fails.",
+      "choices": [
+        { "value": "15", "label": "15 minutes" },
+        { "value": "30", "label": "30 minutes" },
+        { "value": "45", "label": "45 minutes" },
+        { "value": "60", "label": "60 minutes" }
+      ],
+      "default": "15"
     }
   ],
   "build": "bun install --frozen-lockfile && bun run build"

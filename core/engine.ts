@@ -477,6 +477,11 @@ export class ReviewSession {
     await this.#attempt(reviewerId, () => this.#runner.deliberate(job, this.#reporter(reviewerId), this.#abort.signal), false);
   }
 
+  /** Whether the user stopped this session's work: a re-check stopped short is complete again, but without a verdict of its own. */
+  get stopped() {
+    return this.#abort.signal.aborted;
+  }
+
   /** Stops every reviewer; the review ends as stopped. */
   stop() {
     if (!isRunning(this.#review)) return;

@@ -1,6 +1,7 @@
 /** A review in words, for an agent: what the host's tools answer, and what it hears when a review ends. */
 import { knobsText } from "./depth.ts";
-import { argumentsOn, isFinished, seatedReviewers, type Finding, type Review } from "./model.ts";
+import type { WhenFetchable } from "./late-replies.ts";
+import { argumentsOn, isFinished, seatedReviewers, type Finding, type Review, type Reviewer } from "./model.ts";
 import { PROFILES } from "./profiles.ts";
 import { SEVERITIES } from "./schemas.ts";
 
@@ -42,6 +43,52 @@ export function outcomeOf(review: Review): string | undefined {
   const count = `${review.findings.length} finding${review.findings.length === 1 ? "" : "s"}`;
   const tail = serious > 0 ? `, ${serious} serious` : "";
   return isFinished(review) ? `${count}${tail}` : `running · ${count}`;
+}
+
+/**
+ * What the review's own conversation hears when a run of it reaches its verdict: its outcome as the canvas's bar shows it
+ * (how the findings settled, or the fixes after a re-check), how many reviewers failed, and the ask to tell the user.
+ */
+export function finishedPrompt(review: Review): string {
+  const seated = seatedReviewers(review);
+  const failed = seated.filter((reviewer) => reviewer.status === "failed").length;
+  const failures = failed > 0 ? `; ${failed} of its ${seated.length} reviewers failed` : "";
+  return `Spectra Council review ${review.id} is finished (${outcomeOf(review)}${failures}). Tell the user in one or two lines what came of it, without calling any council tool.`;
+}
+
+/**
+ * What the review's own conversation hears when a reviewer's reply comes in after its turn's limit gave up on it: that
+ * the user can take it into the review — now, or in the window `whyNoFetch` will open: once the council at work
+ * reaches its verdict, or, for a run a restart cut short, once the user resumes it — and the ask to tell the user. It's
+ * told once, with the phase as it is then, so a later window says what becomes of the reply if the review never gets
+ * there: a stopped review refuses the fetch.
+ */
+export function lateReplyPrompt(review: Review, reviewer: Reviewer, fetchable: WhenFetchable): string {
+  const when: Record<WhenFetchable, string> = {
+    now: "",
+    "once complete": ` once the review reaches its verdict; if it never gets there, the reply stays only in ${reviewer.label}'s own conversation`,
+    "once resumed": ` once the user resumes it (Mirador restarted while it ran), while the reviewers review or once the review is complete`,
+  };
+  return `Spectra Council review ${review.id}: ${reviewer.label}'s reply came in after its turn had timed out. The user can take it into the review with "Fetch its reply" on the canvas${when[fetchable]}. Tell the user in one line, without calling any council tool.`;
+}
+
+/**
+ * What the conversation that started a fixer hears when it comes back: what it fixed and didn't, with the reasons, the
+ * beads issues it filed for what it couldn't fix, and the ask to tell the user.
+ */
+export function fixerFinishedPrompt(review: Review, profile: string, outcome: { fixed: string[]; notFixed: { finding: string; reason: string }[]; tickets: { finding: string; ticket: string }[]; problem: string | null }): string {
+  const left = outcome.notFixed.map(({ finding, reason }) => `${finding}: ${reason.replace(/\.$/, "")}`).join("; ");
+  const filed = outcome.tickets.map(({ finding, ticket }) => `${ticket} for ${finding}`).join("; ");
+  return [
+    `Spectra Council review ${review.id}: the fixer conversation on the "${profile}" profile is back.`,
+    outcome.fixed.length > 0 ? `It fixed ${outcome.fixed.join(", ")}.` : "",
+    filed ? `It filed ${filed}.` : "",
+    outcome.notFixed.length > 0 ? `It didn't fix ${left}.` : "",
+    outcome.problem ?? "",
+    `Tell the user in one or two lines what came of it, without calling any council tool.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function describeReview(review: Review): string {
