@@ -257,6 +257,11 @@ export function createCouncilHost({
           let id: string | null = null;
           let lookups: ReturnType<typeof setTimeout>[] = [];
           let seen = false;
+          /** Stops a reviewer's conversation as the user's Stop would, through the chair's kept tool context; an older Mirador has no way to. */
+          const stopReviewerConversation = (conversationId: string) => {
+            const tool = toolContexts.get(chairId);
+            void tool?.stopConversation?.(conversationId)?.catch((error: unknown) => console.error(`spectra-council: reviewer conversation ${conversationId} couldn't be stopped:`, error));
+          };
           // The conversation's session reports its model a moment after it starts: look a few times, then at the end.
           const lookUp = () => {
             if (seen || !id) return;
@@ -279,6 +284,8 @@ export function createCouncilHost({
                 if (timedOut && all[gone]) all[gone] = { ...all[gone]!, gaveUp: true };
                 else delete all[gone];
               });
+              // A turn past its limit is kept running on purpose, so its late reply can be fetched.
+              if (!timedOut) stopReviewerConversation(gone);
             }
             reject(signal.reason);
           };
@@ -322,7 +329,12 @@ export function createCouncilHost({
           }
           tool.startConversation({ profile, prompt }).then(
             (started) => {
-              if (signal.aborted) return;
+              // The ask gave up while this conversation was starting, before it could be followed: stop it all the same,
+              // unless a turn past its limit gave up.
+              if (signal.aborted) {
+                if (!(signal.reason instanceof TurnTimeout)) stopReviewerConversation(started.id);
+                return;
+              }
               rememberProfile(storage, started.profile);
               keepInFlight(storage, (all) => (all[started.id] = { chair: chairId, review: reviewId, key, ...(turn !== undefined && { turn: true as const }), profile: started.profile, at: clock.now() }));
               follow(started);
@@ -904,7 +916,7 @@ export function createCouncilHost({
       },
       council_stop: {
         description:
-          "Stop a running Spectra Council review, or the re-check of its fixes, when the user asks you to. The review stops waiting for its reviewers and ends as stopped (a stopped re-check leaves the review complete); their conversations finish the turn they are in on their own.",
+          "Stop a running Spectra Council review, or the re-check of its fixes, when the user asks you to. The review stops waiting for its reviewers and ends as stopped (a stopped re-check leaves the review complete); their conversations are stopped too, except on a Mirador older than plugin API 10, where they finish the turn they are in.",
         input: jsonSchema(stopInput),
         run(input, context) {
           const parsed = stopInput.safeParse(input);

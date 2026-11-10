@@ -45,6 +45,13 @@ export interface CanvasPluginContext<Data = unknown> {
 
 export interface CanvasActionContext<Data = unknown> extends CanvasPluginContext<Data> {
   prompt(text: string, options?: { afterTurn?: boolean }): Promise<void>;
+  /**
+   * Stops the turn of a conversation this plugin's tool started from this conversation, as the user's Stop would; its
+   * `replied` then hears it end as "stopped". Resolves doing nothing for one whose turn already ended or that no longer
+   * exists. Throws for a conversation this plugin didn't start from this one. Plugin API 10 brought it; a Mirador
+   * before plugin API 10 lacks it.
+   */
+  stopConversation?(conversationId: string): Promise<void>;
 }
 
 export interface StartedConversation {
@@ -62,6 +69,13 @@ export interface CanvasToolContext<Data = unknown> extends CanvasPluginContext<D
   prompt(text: string, options?: { afterTurn?: boolean }): Promise<void>;
   /** Starts a conversation in this one's workspace on the named profile (API 5); the host's `replied` hears when it ends. */
   startConversation(start: { profile: string; prompt: string }): Promise<StartedConversation>;
+  /**
+   * Stops the turn of a conversation this plugin's tool started from this conversation, as the user's Stop would; its
+   * `replied` then hears it end as "stopped". Resolves doing nothing for one whose turn already ended or that no longer
+   * exists. Throws for a conversation this plugin didn't start from this one. Plugin API 10 brought it; a Mirador
+   * before plugin API 10 lacks it.
+   */
+  stopConversation?(conversationId: string): Promise<void>;
 }
 
 export interface CanvasTool<Data = unknown> {

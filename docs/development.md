@@ -116,8 +116,9 @@ there is one; a direct write would be lost under the session's next one.
   each conversation and starts reviewers through it. After a Mirador restart there is none: Start, Resume and Re-check
   ask the agent to call `council_begin`, which starts the work.
 - **The agent's other tools.** `council_stop` does what the view's Stop does, but only for a running session: a review
-  a restart left running reads as interrupted, with nothing to stop. Mirador's API can't cancel a conversation the
-  plugin started, so a stop abandons the reviewers' turns, which run on to their end. `council_profiles` lists
+  a restart left running reads as interrupted, with nothing to stop. A stop also stops the reviewers' conversations it
+  started, through `stopConversation` (Mirador's plugin API 10); on a Mirador older than that there is no way to, so
+  their turns run on to their end, and their replies are ignored. `council_profiles` lists
   `profilesFor` (Mirador's records, else the profiles seated before) as `council_open`'s agents name them.
   `council_rule` records a ruling the user gave the agent; what the view's `rule` would prompt the agent with (a filed
   issue on a finding no longer accepted, a fix taken back) comes back in the tool's result instead.
@@ -180,8 +181,9 @@ there is one; a direct write would be lost under the session's next one.
 - **Other runners.** `createCouncilHost`'s `runnerFor` option hands an agent to a runner of the host's own, ahead of
   the mock and profile runners. The installed plugin passes none; the video's host (`video/lib/plugin-host.ts`) plays
   scripted reviewers through it.
-- **Limits.** Stop aborts the review, but the reviewers' conversations run on until their turn ends; their replies are
-  ignored. A turn's limit is its total time (15 minutes), not its idle time.
+- **Limits.** Stop aborts the review and stops the reviewers' conversations too; on a Mirador older than plugin API 10
+  they run on until their turn ends, and their replies are ignored. A turn's limit is its total time (15 minutes), not
+  its idle time.
 
 ## Releasing
 

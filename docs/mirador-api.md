@@ -41,6 +41,12 @@ It keeps the same rule: a conversation a plugin started can't start more.
 
 ## 3. Stopping a started conversation
 
+Done in Mirador's plugin API 10: `stopConversation(conversationId)` on both the tool and the action context. A Mirador
+older than that lacks it, so the plugin keeps `"api": 5` and checks whether it is there. A stop stops each reviewer
+conversation still running; one whose turn already ended is left alone, and so is one the turn's limit gave up on, whose
+late reply the user can still fetch. The stopped conversation's `replied` then hears `ended: "stopped"`, which changes
+nothing and tells no one.
+
 **What:** `stopConversation(id)` on the plugin context.
 
 **Why:** Stop in the canvas aborts the review, but the reviewers' conversations run on until their turn ends. Their replies
