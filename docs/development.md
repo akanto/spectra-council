@@ -88,7 +88,8 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
    neither answers a challenge nor takes back support, and the rationale says it couldn't continue. A finding nobody
    backs (its reporters removed) stays unsettled. `verdictSummary` writes the verdict line (`concluded`).
 5. **Proposals.** Each standing finding's reporter drafts a fix (`fix-proposed`).
-6. **Rulings and fixes.** The user accepts, dismisses or defers each finding (`ruled`). `core/handoff.ts` renders the
+6. **Rulings and fixes.** The user accepts, dismisses or defers each finding (`ruled`), in the canvas or by telling the
+   agent, which records it with `council_rule`. `core/handoff.ts` renders the
    hand-off, rewritten whenever its text would change (`handoff-written` keeps a digest). `fix-requested` hands over
    only what awaits a request (`awaitsFixRequest`: newly accepted, reopened, or failed), so work in progress stays with
    its fixer. The fix is reported with `council_mark_fixed` (`fix-reported`), or by a fixer profile's conversation
@@ -119,6 +120,13 @@ there is one; a direct write would be lost under the session's next one.
 - **Starting conversations.** Only a tool may start one, so the host keeps the tool context of the latest tool call in
   each conversation and starts reviewers through it. After a Mirador restart there is none: Start, Resume and Re-check
   ask the agent to call `council_begin`, which starts the work.
+- **The agent's other tools.** `council_stop` does what the view's Stop does, but only for a running session: a review
+  a restart left running reads as interrupted, with nothing to stop. A stop also stops the reviewers' conversations it
+  started, through `stopConversation` (Mirador's plugin API 10); on a Mirador older than that there is no way to, so
+  their turns run on to their end, and their replies are ignored. `council_profiles` lists
+  `profilesFor` (Mirador's records, else the profiles seated before) as `council_open`'s agents name them.
+  `council_rule` records a ruling the user gave the agent; what the view's `rule` would prompt the agent with (a filed
+  issue on a finding no longer accepted, a fix taken back) comes back in the tool's result instead.
 - **Failures.** A reviewer that fails in the independent review can be retried (`reviewer-retried`) or, at any time,
   removed (`reviewer-removed`): it no longer counts in the synthesis or the verdict. A turn past its limit fails with a
   `TurnTimeout` ("Its turn took longer than 15 minutes"), which is also the reason its ask is aborted with.
@@ -155,8 +163,9 @@ there is one; a direct write would be lost under the session's next one.
 - **Other runners.** `createCouncilHost`'s `runnerFor` option hands an agent to a runner of the host's own, ahead of
   the mock and profile runners. The installed plugin passes none; the video's host (`video/lib/plugin-host.ts`) plays
   scripted reviewers through it.
-- **Limits.** Stop aborts the review, but the reviewers' conversations run on until their turn ends; their replies are
-  ignored. A turn's limit is its total time (15 minutes), not its idle time.
+- **Limits.** Stop aborts the review and stops the reviewers' conversations too; on a Mirador older than plugin API 10
+  they run on until their turn ends, and their replies are ignored. A turn's limit is its total time (15 minutes), not
+  its idle time.
 
 ## Releasing
 

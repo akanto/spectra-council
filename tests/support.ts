@@ -63,6 +63,8 @@ export class FakeCanvas<Data> {
   settings: Record<string, string | null> = {};
   /** The conversations `startConversation` was asked to start. */
   started: { profile: string; prompt: string }[] = [];
+  /** The conversations `stopConversation` was asked to stop, in the order it was asked. */
+  stopped: string[] = [];
   private next = 1;
 
   context(): CanvasToolContext<Data> & CanvasActionContext<Data> {
@@ -90,6 +92,9 @@ export class FakeCanvas<Data> {
       startConversation: async (start) => {
         this.started.push(start);
         return { id: `conversation-fixer-${this.started.length}`, profile: start.profile };
+      },
+      stopConversation: async (conversationId) => {
+        this.stopped.push(conversationId);
       },
     };
   }

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review } from "../core/model.ts";
-import { createCouncilHost } from "../hosts/mirador/host.ts";
+import { createCouncilHost, PROFILES_KEY } from "../hosts/mirador/host.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
 
 const target = await mkdtemp(join(tmpdir(), "spectra-target-"));
@@ -194,6 +194,56 @@ describe("the Mirador host", () => {
     expect(canvas.item(id).data.phase).toBe("stopped");
   });
 
+  test("council_stop stops an active running review and marks it stopped", async () => {
+    const { host, canvas, context, clock } = setup();
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+    const id = canvas.items[0]!.id;
+    await host.action!(canvas.item(id), { kind: "start" }, context);
+    for (let i = 0; i < 3; i++) await clock.step();
+    expect(await host.tools.council_stop!.run({}, context)).toBe("Stopped review rev1.");
+    await clock.runAll();
+    await clock.settle();
+    expect(canvas.item(id).data.phase).toBe("stopped");
+    expect(canvas.item(id).data.reviewers.filter((reviewer) => reviewer.enabled).every((reviewer) => reviewer.status !== "reviewing")).toBe(true);
+  });
+
+  test("council_stop on an idle or finished review reports its current phase without error", async () => {
+    const { host, canvas, context, clock } = setup();
+    await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
+    const id = canvas.items[0]!.id;
+    expect(await host.tools.council_stop!.run({}, context)).toBe("Review rev1 isn't running (phase: setup); there is nothing to stop.");
+    expect(canvas.item(id).data.phase).toBe("setup");
+
+    await host.action!(canvas.item(id), { kind: "start" }, context);
+    await clock.step();
+    const restarted = createCouncilHost({ clock, listFiles: async () => FILES, throttleMs: 0 });
+    expect(await restarted.tools.council_stop!.run({ review: "rev1" }, context)).toContain("(phase: interrupted)");
+
+    await clock.runAll();
+    await clock.settle();
+    expect(await host.tools.council_stop!.run({ review: "rev1" }, context)).toContain("(phase: complete)");
+    expect(canvas.item(id).data.phase).toBe("complete");
+    await expect(asyncRun(() => host.tools.council_stop!.run({ review: "rev9" }, context))).rejects.toThrow("No review rev9");
+  });
+
+  test("council_profiles lists formatted profile entries from storage", async () => {
+    const records = {
+      profiles: () => [
+        { name: "alpha", harness: "claude", model: { name: "Opus 5.5", effort: "high" } },
+        { name: "pi home", harness: "pi", model: null },
+      ],
+      modelOf: () => null,
+      replyOf: () => null,
+    };
+    const fromRecords = createCouncilHost({ clock: new FakeClock(), records });
+    expect(await fromRecords.tools.council_profiles!.run({}, new FakeCanvas<Review>().context())).toBe("Mirador profiles to seat:\n- profile:alpha (Opus 5.5 · high)\n- profile:pi home");
+
+    const { host, canvas, context } = setup();
+    expect(await host.tools.council_profiles!.run({}, context)).toBe("No Mirador profile is known to Spectra Council yet; the user can pick reviewers in the review's setup.");
+    canvas.storage.set(PROFILES_KEY, ["beta", "gamma"]);
+    expect(await host.tools.council_profiles!.run({}, context)).toBe("Mirador profiles to seat:\n- profile:beta\n- profile:gamma");
+  });
+
   test("a review left running by an earlier Mirador shows as interrupted", async () => {
     const { host, canvas, context, clock } = setup();
     await host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, context);
@@ -267,6 +317,58 @@ describe("the Mirador host", () => {
       await expect(act({ kind: "rule", findingId: "F999", decision: "accepted" })).rejects.toThrow("no finding F999");
       await expect(act({ kind: "rule", findingId: first!.id, decision: "maybe" })).rejects.toThrow("Unknown action");
       void second;
+    });
+
+    test("council_rule updates the finding ruling state to accepted/dismissed/deferred and clears it with null", async () => {
+      const { host, canvas, context, review } = await completed();
+      const finding = standing(review())[0]!.id;
+      const rulingOf = () => review().findings.find((it) => it.id === finding)!.ruling;
+      expect(await host.tools.council_rule!.run({ finding, decision: "accepted", note: "the user agrees" }, context)).toBe(`Accepted ${finding} in review rev1.`);
+      expect(rulingOf()).toMatchObject({ decision: "accepted", note: "the user agrees" });
+      expect(await host.tools.council_rule!.run({ review: "rev1", finding, decision: "dismissed" }, context)).toBe(`Dismissed ${finding} in review rev1.`);
+      expect(rulingOf()).toMatchObject({ decision: "dismissed", note: "" });
+      expect(await host.tools.council_rule!.run({ finding, decision: "deferred", note: "later" }, context)).toBe(`Deferred ${finding} in review rev1.`);
+      expect(rulingOf()).toMatchObject({ decision: "deferred", note: "later" });
+      expect(await host.tools.council_rule!.run({ finding, decision: null }, context)).toBe(`Cleared the ruling on ${finding} in review rev1.`);
+      expect(rulingOf()).toBeNull();
+      // The agent made these rulings itself: nothing is prompted back to it.
+      expect(canvas.prompts).toHaveLength(0);
+    });
+
+    test("council_rule refuses an unknown finding, a bad decision and a review without its verdict", async () => {
+      const { host, context, review } = await completed();
+      const known = review().findings.map(({ id }) => id).join(", ");
+      const rule = (input: unknown) => asyncRun(() => host.tools.council_rule!.run(input, context));
+      await expect(rule({ finding: "F999", decision: "accepted" })).rejects.toThrow(`Review rev1 has no finding F999; its findings are ${known}.`);
+      await expect(rule({ finding: "F1", decision: "maybe" })).rejects.toThrow("decision");
+      await expect(rule({ finding: "F1" })).rejects.toThrow("decision");
+      await expect(rule({ review: "nope", finding: "F1", decision: "accepted" })).rejects.toThrow("No review nope");
+
+      const running = setup();
+      await running.host.tools.council_open!.run({ target, agents: ["mock-claude", "mock-codex"] }, running.context);
+      const id = running.canvas.items[0]!.id;
+      await running.host.action!(running.canvas.item(id), { kind: "start" }, running.context);
+      while (running.canvas.item(id).data.findings.length === 0) await running.clock.step();
+      const early = running.canvas.item(id).data.findings[0]!.id;
+      await expect(asyncRun(() => running.host.tools.council_rule!.run({ finding: early, decision: "accepted" }, running.context))).rejects.toThrow("once the council has its verdict");
+      await running.host.tools.council_stop!.run({}, running.context);
+    });
+
+    test("council_rule taking a finding out of the fixes says so, and names the fixer that won't hear", async () => {
+      const env = await completed();
+      env.canvas.settings.fixer = "pi home";
+      const ids = standing(env.review()).map(({ id }) => id);
+      expect(ids.length).toBeGreaterThan(1);
+      for (const findingId of ids) await env.act({ kind: "rule", findingId, decision: "accepted" });
+      await env.act({ kind: "fix" });
+      await env.host.tools.council_delegate_fix!.run({}, env.context);
+      const prompts = env.canvas.prompts.length;
+      const said = await env.host.tools.council_rule!.run({ finding: ids[0]!, decision: "dismissed", note: "not a problem" }, env.context);
+      expect(said).toStartWith(`Dismissed ${ids[0]} in review rev1. It is out of the fixes now: don't fix it`);
+      expect(said).toContain(`It was handed to the "pi home" profile, whose conversation can't hear this; its report on ${ids[0]} will be ignored.`);
+      expect(env.review().findings.find((it) => it.id === ids[0])!.fix).toBeNull();
+      expect(env.review().findings.find((it) => it.id === ids[1])!.fix?.state).toBe("handed-off");
+      expect(env.canvas.prompts).toHaveLength(prompts);
     });
 
     test("a hand-off needs an accepted finding, then is written to the target's .spectra-council folder and recorded", async () => {
@@ -492,6 +594,22 @@ describe("the Mirador host", () => {
       await env.clock.step();
       expect(env.review().phase).toBe("verification");
       await env.act({ kind: "stop" });
+      await env.clock.runAll();
+      await env.clock.settle();
+      expect(env.review().phase).toBe("complete");
+      expect(env.review().findings.filter((it) => it.fix).every((it) => it.fix!.state === "fixed")).toBe(true);
+    });
+
+    test("council_stop stops a running re-check of the fixes, which leaves the review complete", async () => {
+      const env = await completed();
+      const ids = standing(env.review()).map(({ id }) => id);
+      for (const findingId of ids) await env.act({ kind: "rule", findingId, decision: "accepted" });
+      await env.act({ kind: "fix" });
+      for (const id of ids) await env.host.tools.council_mark_fixed!.run({ finding: id, summary: "done", files: [] }, env.context);
+      await env.act({ kind: "verify" });
+      await env.clock.step();
+      expect(env.review().phase).toBe("verification");
+      expect(await env.host.tools.council_stop!.run({}, env.context)).toBe("Stopped the re-check of the fixes of review rev1.");
       await env.clock.runAll();
       await env.clock.settle();
       expect(env.review().phase).toBe("complete");
