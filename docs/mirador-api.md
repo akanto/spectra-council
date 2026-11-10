@@ -89,13 +89,20 @@ activity?(started: StartedConversation, step: { kind: "read" | "search" | "tool"
 
 ## 6. A promise about tool contexts
 
-**What:** if (2) isn't wanted, document that a tool's context stays usable after the tool returns.
+**What:** if (2) isn't wanted, document that a tool's context stays usable after the tool returns, and what a `replied`
+context addresses.
 
 **Why:** The plugin relies on this for deliberation rounds, proposals and re-checks. Each of them starts conversations
-after the tool that began the step has returned.
+after the tool that began the step has returned. And it tells a review's own conversation what came of its fixer or of a
+reviewer's late reply through the `replied` hook's context: that telling must reach the conversation the started
+conversation belongs to, in the plugin's voice. Mirador's API docs promise the first half ("the context is the
+conversation that started it"), and since Mirador 0.8.0 (plugin API 5, the floor `plugin.json` declares) its `prompt`
+speaks in the plugin's voice, though no sentence promises that. The plugin checks the aim where it can (the late reply
+against its recorded chair); a fixer conversation, kept on no record of ours, relies on it.
 
-**Sketch:** a sentence in the API docs, such as: "A `CanvasToolContext` stays valid for `startConversation`, `change` and
-`prompt` after its tool returns, for as long as the conversation exists in this Mirador process."
+**Sketch:** sentences in the API docs, such as: "A `CanvasToolContext` stays valid for `startConversation`, `change` and
+`prompt` after its tool returns, for as long as the conversation exists in this Mirador process." And: "`replied`'s
+context's `prompt` speaks in the plugin's voice."
 
 ## 7. A started conversation's reply, on demand
 
@@ -107,3 +114,11 @@ and keeps a reply that comes later, but a reply that came while Mirador or the p
 database, which `hosts/mirador/records.ts` reads (`replyOf`) to let the user fetch it into the review.
 
 **Sketch:** `CanvasPluginContext.replyOf(conversationId): ConversationReply | { ended: "running" } | null`.
+
+## 8. No turn-end ping for a conversation whose plugin tells its caller
+
+Done in Mirador after 0.12.0: a plugin whose `plugin.json` says `"tellsCaller": true`, and which has a `replied` hook,
+tells the conversation that started a conversation how its first turn ended, so Mirador leaves out its own "turn ended"
+notification for that turn. An older Mirador ignores the field, so the plugin keeps `"api": 5`; there the user gets both
+the ping and the review's own telling. The field is an opt-in because a plugin with `replied` that doesn't tell its
+caller (Spectra Council 0.2.0 and earlier) would otherwise end silently.

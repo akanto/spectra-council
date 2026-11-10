@@ -288,6 +288,10 @@ describe("the host", () => {
     expect(review().findings[0]!.fix).toMatchObject({ state: "fixed", summary: "Fixed it", files: ["a.ts"] });
     expect(review().findings[1]!.ticket?.id).toBe("proj-9");
     expect(review().asks![0]!.fixer).toMatchObject({ endedAt: expect.any(Number), problem: null });
+    // The conversation that owns the review is told once what came of the ask, the filed issue named.
+    expect(canvas.prompts.at(-1)).toContain('Spectra Council review rev1: the fixer conversation on the "codex" profile is back. It fixed ' + first + ".");
+    expect(canvas.prompts.at(-1)).toContain(`It filed proj-9 for ${second}.`);
+    expect(canvas.prompts.at(-1)).toContain("without calling any council tool");
   });
 
   test("a fixer's reply to an ask that comes during a re-check is recorded, and a refused part says so", async () => {

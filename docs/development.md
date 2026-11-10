@@ -107,7 +107,8 @@ there is one; a direct write would be lost under the session's next one.
 - **Turns.** Every turn (review, grouping, each round, proposals, each re-check) starts a fresh conversation per seat
   with a self-contained prompt (`core/agent-turns.ts`): the target, a read-only rule, the profile's brief, the user's
   instructions, the task, and the JSON reply shape with its schema and an example. Turns run in parallel, 15 minutes
-  each at most (`TURN_LIMIT_MS`).
+  each at most (`TURN_LIMIT_MS`), or what the conversation's profile sets as its **Spectra Council turn limit**
+  (`turnLimitOf`, `hosts/mirador/host.ts`).
 - **Replies.** The reply ends with a JSON block (`lastJson`, `core/replies.ts`) checked against the turn's schema in
   `core/schemas.ts`. A malformed item shows as an error and the rest still counts. A reply with no usable block is asked
   about once more in a new conversation (`repairPrompt`); a second miss fails the turn.
@@ -120,19 +121,42 @@ there is one; a direct write would be lost under the session's next one.
   `profilesFor` (Mirador's records, else the profiles seated before) as `council_open`'s agents name them.
   `council_rule` records a ruling the user gave the agent; what the view's `rule` would prompt the agent with (a filed
   issue on a finding no longer accepted, a fix taken back) comes back in the tool's result instead.
+- **Telling the user.** A run that reaches its verdict prompts the review's own conversation once (`finishedPrompt`,
+  `hosts/mirador/host.ts`), asking its agent to tell the user in a line or two: the outcome the canvas's bar shows, and
+  how many reviewers failed. A re-check of fixes that ends complete tells again; one the user stopped tells nothing by
+  either channel: the review returns to the verdict its conversation already heard, its heard mark stays set, and the
+  note only lists what nobody heard. The prompt goes in the plugin's own voice, through the conversation's kept tool
+  context (a view action's would read as the user's), and isn't awaited: it resolves only when the turn it starts ends.
+  It marks the review heard first, so the note never repeats the verdict on that turn: the note carries only what ended
+  without a prompt — a stop, a late finding, or a verdict with no tool context since a restart. A restart doesn't lose a
+  verdict marked so: Mirador records the prompt as it takes it, in the conversation's queue, which it keeps across a
+  restart and sends from the next host, or as the message of the turn it starts (on a Codex conversation whose session
+  it held back, only once that session opens). A send that fails takes back the mark it set, but not a later run's. A
+  review a restart cut short tells nothing by either channel until the user resumes it: the `interrupted` stamp
+  `settled` computes is a read-time view never written back, and the note only lists reviews stored as ended; once
+  resumed, the run tells its verdict as usual. A fixer conversation's reply is told the same way
+  (`fixerFinishedPrompt`): once per reply, what it fixed and what it didn't with the reasons, and the beads issues it
+  filed. Only a launch prompts, so a restart, a replay or a rebuilt canvas says nothing. These need Mirador 0.8.0
+  (plugin API 5, the floor `plugin.json` declares), where `replied`'s context is the conversation that started the one
+  replying, its `prompt` speaks in the plugin's voice, and a reply owed across a restart is delivered. `"tellsCaller":
+  true` in `plugin.json` has a Mirador newer than 0.12.0 leave out its own ping for each started conversation's first
+  turn end (`docs/mirador-api.md`, 8); an older one ignores the field and pings as well, so there the user hears both.
 - **Failures.** A reviewer that fails in the independent review can be retried (`reviewer-retried`) or, at any time,
   removed (`reviewer-removed`): it no longer counts in the synthesis or the verdict. A turn past its limit fails with a
   `TurnTimeout` ("Its turn took longer than 15 minutes"), which is also the reason its ask is aborted with.
 - **Late replies.** A seat that failed its own review turn (timed out, say) can take the reply its conversation gave
-  after all: the view offers "Fetch its reply" while the reviewers review and once the review is complete
-  (`whyNoFetch`, `core/late-replies.ts`). The seat's activity names the turn and its conversation (`Asking the …
-  profile to review`, `Started conversation <id>`), so reviews stored before this work too. A conversation the limit
-  gave up on stays in the host's in-flight records (`gaveUp`): never taken over by a resume or retry, but its reply is
-  kept when Mirador sends it. The fetch uses that reply, else reads the conversation's latest turn from Mirador's
-  database (`replyOf`, `hosts/mirador/records.ts`, the agent's last message as Mirador's own `replyOf` reads it). A
-  turn still running, ended badly or without a valid JSON block changes nothing: the view says why. Otherwise
-  `replyFetched` (`core/agent-runner.ts`) reads it as the runner reads a review reply, and `reply-fetched` completes
-  the seat with its findings (capped as usual), then:
+  after all: the view offers "Fetch its reply" while the reviewers review and once the review is complete (`whyNoFetch`,
+  `core/late-replies.ts`). The seat's activity names the turn and its conversation (`Asking the … profile to review`,
+  `Started conversation <id>`), so reviews stored before this work too. A conversation the limit gave up on stays in the
+  host's in-flight records (`gaveUp`): never taken over by a resume or retry, but its reply is kept when Mirador sends
+  it. A kept reply that finished is told once to the review's conversation (`lateReplyPrompt`): the user can fetch it
+  now, or once the review reaches its verdict when the council is at work (`whenFetchable`); told once, that window says
+  the reply stays only in the seat's own conversation if the review never gets there, as a stopped review refuses the
+  fetch. The fetch uses that reply, else reads the conversation's latest turn from Mirador's database (`replyOf`,
+  `hosts/mirador/records.ts`, the agent's last message as Mirador's own `replyOf` reads it). A turn still running, ended
+  badly or without a valid JSON block changes nothing: the view says why. Otherwise `replyFetched`
+  (`core/agent-runner.ts`) reads it as the runner reads a review reply, and `reply-fetched` completes the seat with its
+  findings (capped as usual), then:
   - **during the independent review**, they count as its review's, and the run goes on as before;
   - **on a complete review that ended without a deliberation**, when with the reply at least two reviewers finished
     and nothing was done with the verdict yet (no ruling, hand-off, fix, ticket, ask or re-check: `whyNoReopen`), the

@@ -84,6 +84,14 @@ export interface CanvasHost<Data = unknown> {
   guidance?: { instructions?: string; often?: string };
   action?(item: PluginItem<Data>, action: unknown, context: CanvasActionContext<Data>): unknown;
   note?(context: CanvasPluginContext<Data>): CanvasPluginNote | null;
+  /**
+   * Once, when a conversation a tool started ends its first turn, or the turn a restart of Mirador resumed it in. Its
+   * `context` addresses the conversation the started one belongs to — the one whose tool started it — and its `prompt`
+   * speaks in the plugin's voice (Mirador 0.8.0 on, plugin API 5): the plugin relies on both to tell a review's own
+   * conversation what came of its fixer or of a reviewer's late reply. A fixer conversation is kept on no record of
+   * ours, so for it this is the only pin on the telling's aim. With `tellsCaller` in plugin.json, a Mirador newer than
+   * 0.12.0 doesn't notify the user of that turn's end; an older one ignores the field and notifies as well.
+   */
   replied?(started: StartedConversation, reply: ConversationReply, context: CanvasActionContext<Data>): void | Promise<void>;
 }
 

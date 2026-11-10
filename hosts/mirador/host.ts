@@ -11,11 +11,11 @@ import { AgentRunner, replyFetched, type LateReply } from "../../core/agent-runn
 import { knobsText } from "../../core/depth.ts";
 import { checkersOf } from "../../core/deliberation.ts";
 import { isProfileAgent, modelLabel, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
-import { describeReview, outcomeOf } from "../../core/describe.ts";
-import { ReviewSession, routeByAgent, systemClock, TurnTimeout, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
+import { describeReview, finishedPrompt, fixerFinishedPrompt, lateReplyPrompt, outcomeOf } from "../../core/describe.ts";
+import { ReviewSession, routeByAgent, systemClock, TURN_LIMIT_MS, TurnTimeout, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
 import { acceptedFindings, digestOf, handoffFile, handoffMarkdown } from "../../core/handoff.ts";
-import { lastTurnOf, whyNoFetch } from "../../core/late-replies.ts";
+import { lastTurnOf, whenFetchable, whyNoFetch } from "../../core/late-replies.ts";
 import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
@@ -38,6 +38,14 @@ const DEFAULT_SEATS = 2;
 
 /** The profile setting that names who fixes a review's accepted findings; none means this conversation's agent. */
 export const FIXER_SETTING = "fixer";
+
+/** The profile setting for how many minutes a reviewer's turn may take; none, or one that isn't a number, keeps `TURN_LIMIT_MS`. */
+export const TURN_LIMIT_SETTING = "turn-limit";
+
+export function turnLimitOf(context: Pick<CanvasPluginContext<unknown>, "profileSetting">): number {
+  const minutes = Number(context.profileSetting(TURN_LIMIT_SETTING));
+  return minutes > 0 ? minutes * 60_000 : TURN_LIMIT_MS;
+}
 
 /** Where the plugin's storage keeps the reviewer conversations in flight, by conversation id. */
 export const IN_FLIGHT_KEY = "inFlight";
@@ -168,6 +176,21 @@ const writeWithFolder = async (path: string, text: string) => {
   await mkdir(dirname(path), { recursive: true });
   await Bun.write(path, text);
 };
+
+/**
+ * Tells a conversation something after its turn, without waiting: the prompt resolves only once the turn it starts ends,
+ * which nothing here should wait for. Resolves whether the message got through: a conversation deleted meanwhile hears
+ * nothing, which is logged and, for a verdict, given back to the note.
+ */
+async function promptAfterTurn(context: Pick<CanvasToolContext<Review>, "prompt" | "conversationId">, text: string, what: string): Promise<boolean> {
+  try {
+    await context.prompt(text, { afterTurn: true });
+    return true;
+  } catch (error) {
+    console.error(`spectra-council: ${what}, but its conversation ${context.conversationId} couldn't be told:`, error);
+    return false;
+  }
+}
 
 export function createCouncilHost({
   clock = systemClock,
@@ -420,17 +443,57 @@ export function createCouncilHost({
     return item;
   }
 
+  /** A run came to a verdict of its own: not one the user stopped, which a stopped re-check leaves complete all the same. */
+  const cameToItsVerdict = (session: ReviewSession, ended: Review) => ended.phase === "complete" && !session.stopped;
+
+  /**
+   * Tells the conversation a review belongs to that a run of it came to its verdict: the user hears it from that
+   * conversation's own agent, rather than from a ping per reviewer's turn. It goes in the plugin's own voice, through the
+   * tool context kept for that conversation, as a view action's would be the user's; with none since a restart, the ended
+   * note tells the agent instead. The review is marked heard first, so the turn the prompt starts doesn't come with that
+   * note repeating the verdict. A restart doesn't lose a verdict marked so: Mirador records the prompt as it takes it, in
+   * the conversation's queue, which it keeps across a restart and sends from the next host (resumeAfterRestart in
+   * Mirador's host/conversations.ts), or as the user message of the turn it starts — on a Codex conversation whose
+   * session it held back, only once that session opens. Only a send that failed takes the mark back, and only its own,
+   * not a later run's; there a rare duplicate is preferred over a verdict nobody ever hears.
+   */
+  function announceFinished(item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review) {
+    const tool = toolContexts.get(context.conversationId);
+    if (!tool) return;
+    const heardAt = clock.now();
+    applyTo(item, context, { type: "agent-heard", at: heardAt });
+    void promptAfterTurn(tool, finishedPrompt(review), `review ${review.id} is complete`).then((sent) => {
+      if (sent) return;
+      const latest = context.items().find((each) => each.id === item.id);
+      if (latest && current(latest, context).agentHeardAt === heardAt) applyTo(latest, context, { type: "agent-unheard" });
+    });
+  }
+
+  /** Tells a review's conversation that a reviewer's reply came in after its turn's limit gave up on it, when the user can fetch it. */
+  function tellOfLateReply(reviewId: string, conversationId: string, context: CanvasActionContext<Review>) {
+    const item = councilItems(context).find(({ data }) => data.id === reviewId);
+    if (!item) return;
+    const review = current(item, context);
+    const reviewer = review.reviewers.find((each) => lastTurnOf(each)?.conversationId === conversationId);
+    if (!reviewer) return;
+    const fetchable = whenFetchable(review, reviewer);
+    if (fetchable) void promptAfterTurn(context, lateReplyPrompt(review, reviewer, fetchable), `review ${review.id} has ${reviewer.label}'s late reply`);
+  }
+
   /** Runs a session's work (the review, or a verification round) in the background, writing the item as it goes. */
   function launch(item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review, work: (session: ReviewSession) => Promise<Review>) {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const out = writer(context, item.id);
     const mock = new MockRunner(listFiles, clock);
-    const agents = new AgentRunner(conversationsOf(context.conversationId, review.id, context.storage), clock);
+    const agents = new AgentRunner(conversationsOf(context.conversationId, review.id, context.storage), clock, turnLimitOf(context));
     const runner = routeByAgent((agent) => runnerFor(agent) ?? (isProfileAgent(agent) ? agents : mock));
     const session = new ReviewSession(review, { runner, clock, onChange: (next) => out.write(next) });
     sessions.set(item.id, session);
     // The engine ends each reviewer itself, failed or not; the work rejects only on a bug, which is logged.
     work(session)
+      .then((ended) => {
+        if (cameToItsVerdict(session, ended)) announceFinished(item, context, ended);
+      })
       .catch((error) => console.error(`spectra-council: review ${review.id} failed:`, error))
       .finally(() => {
         out.flush();
@@ -968,7 +1031,8 @@ export function createCouncilHost({
     },
     /**
      * A conversation the plugin started ended its turn: a reviewer's goes back to its runner; a fixer's shows what it
-     * says it fixed as fixed, and the rest says why not.
+     * says it fixed as fixed, and the rest says why not. The review's own conversation is told once what came of it,
+     * so its agent can say so to the user; one no review owns changes nothing and says nothing.
      */
     replied(started, reply, context) {
       const reviewer = pending.get(started.id);
@@ -977,11 +1041,19 @@ export function createCouncilHost({
         reviewer(reply);
         return;
       }
-      // A reviewer's conversation that ended while no review waited for it (Mirador restarted): kept for a resume.
-      if (inFlight(context.storage)[started.id]) {
+      // A reviewer's conversation that ended while no review waited for it: kept for a resume after a restart, or, when its
+      // turn's limit gave up on it, for the user to fetch, which the review's conversation hears of.
+      const flight = inFlight(context.storage)[started.id];
+      if (flight) {
         keepInFlight(context.storage, (all) => {
           if (all[started.id]) all[started.id] = { ...all[started.id]!, reply };
         });
+        // The tell addresses the chair the record names; a context aimed elsewhere would prompt a stranger's conversation,
+        // so the reply stays kept and the misaim is only logged.
+        if (flight.gaveUp && reply.ended === "finished") {
+          if (flight.chair === context.conversationId) tellOfLateReply(flight.review, started.id, context);
+          else console.error(`spectra-council: ${started.id}'s reply came through conversation ${context.conversationId}, not its review's own ${flight.chair}; its reply is kept, untold.`);
+        }
         return;
       }
       const ended = reply.ended === "stopped" ? "was stopped" : "failed";
@@ -994,14 +1066,23 @@ export function createCouncilHost({
         const report = reply.ended === "finished" ? parseFixerReport(reply.text) : null;
         // A re-check may be running: the events go through its session, like the agent's own reports.
         const refused: string[] = [];
+        const fixed: string[] = [];
+        const notFixed: { finding: string; reason: string }[] = [];
         const apply = (event: ReviewEvent) => {
           try {
             applyTo(item, context, event);
+            return true;
           } catch (error) {
             console.error(`spectra-council: a fixer report for review ${review.id} was refused:`, error);
             refused.push(error instanceof Error ? error.message : String(error));
+            return false;
           }
         };
+        // Only what was recorded reaches the telling: a refused part is in `problem`'s words instead, on both paths.
+        const refusedProblem = () => (refused.length > 0 ? `Part of ${started.profile}'s report wasn't recorded: ${refused.join(" ")}` : null);
+        const tickets: { finding: string; ticket: string }[] = [];
+        const tell = (problem: string | null) =>
+          void promptAfterTurn(context, fixerFinishedPrompt(review, started.profile, { fixed, notFixed, tickets, problem }), `review ${review.id} has its fixer's report`);
         if (askIndex >= 0) {
           // The user's own ask: what it reports about the findings asked about counts; the user said what to do.
           const about = new Set(review.asks![askIndex]!.findingIds);
@@ -1010,31 +1091,39 @@ export function createCouncilHost({
             const fixer = review.findings.find((finding) => finding.id === id)?.fix?.fixer;
             return !!fixer?.conversationId && fixer.conversationId !== started.id;
           };
-          for (const fixed of report?.fixed ?? []) if (about.has(fixed.finding)) apply({ type: "fix-reported", at, findingId: fixed.finding, summary: fixed.summary, files: fixed.files });
-          for (const failed of report?.notFixed ?? []) if (about.has(failed.finding) && !elsewhere(failed.finding)) apply({ type: "fix-failed", at, findingIds: [failed.finding], reason: `${started.profile}: ${failed.reason}` });
-          for (const filed of report?.tickets ?? []) if (about.has(filed.finding)) apply({ type: "ticketed", at, findingId: filed.finding, ticket: filed.ticket });
+          for (const entry of report?.fixed ?? []) {
+            if (!about.has(entry.finding)) continue;
+            if (apply({ type: "fix-reported", at, findingId: entry.finding, summary: entry.summary, files: entry.files })) fixed.push(entry.finding);
+          }
+          for (const entry of report?.notFixed ?? []) {
+            if (!about.has(entry.finding) || elsewhere(entry.finding)) continue;
+            if (apply({ type: "fix-failed", at, findingIds: [entry.finding], reason: `${started.profile}: ${entry.reason}` })) notFixed.push({ finding: entry.finding, reason: entry.reason });
+          }
+          for (const filed of report?.tickets ?? []) {
+            if (!about.has(filed.finding)) continue;
+            if (apply({ type: "ticketed", at, findingId: filed.finding, ticket: filed.ticket })) tickets.push(filed);
+          }
           const problem =
             reply.ended !== "finished"
               ? `${started.profile}'s conversation ${ended} before it reported.`
               : !report
                 ? `${started.profile} ended without the JSON report; read its conversation to see what it did.`
-                : refused.length > 0
-                  ? `Part of ${started.profile}'s report wasn't recorded: ${refused.join(" ")}`
-                  : null;
+                : refusedProblem();
           apply({ type: "ask-answered", at, ask: askIndex, problem });
+          tell(problem);
           continue;
         }
         const ids = new Set(mine.map(({ id }) => id));
         const heard = new Set<string>();
-        for (const fixed of report?.fixed ?? []) {
-          if (!ids.has(fixed.finding)) continue;
-          heard.add(fixed.finding);
-          apply({ type: "fix-reported", at, findingId: fixed.finding, summary: fixed.summary, files: fixed.files });
+        for (const entry of report?.fixed ?? []) {
+          if (!ids.has(entry.finding)) continue;
+          heard.add(entry.finding);
+          if (apply({ type: "fix-reported", at, findingId: entry.finding, summary: entry.summary, files: entry.files })) fixed.push(entry.finding);
         }
-        for (const failed of report?.notFixed ?? []) {
-          if (!ids.has(failed.finding) || heard.has(failed.finding)) continue;
-          heard.add(failed.finding);
-          apply({ type: "fix-failed", at, findingIds: [failed.finding], reason: `${started.profile}: ${failed.reason}` });
+        for (const entry of report?.notFixed ?? []) {
+          if (!ids.has(entry.finding) || heard.has(entry.finding)) continue;
+          heard.add(entry.finding);
+          if (apply({ type: "fix-failed", at, findingIds: [entry.finding], reason: `${started.profile}: ${entry.reason}` })) notFixed.push({ finding: entry.finding, reason: entry.reason });
         }
         const silent = [...ids].filter((id) => !heard.has(id));
         if (silent.length > 0) {
@@ -1044,11 +1133,15 @@ export function createCouncilHost({
               : report
                 ? `${started.profile} didn't report on it.`
                 : `${started.profile} ended without the JSON report; read its conversation to see what it changed.`;
-          apply({ type: "fix-failed", at, findingIds: silent, reason });
+          if (apply({ type: "fix-failed", at, findingIds: silent, reason })) for (const id of silent) notFixed.push({ finding: id, reason });
         }
+        tell(refusedProblem());
       }
     },
-    /** A review that ended since the agent last heard: it hears with the user's next message, once. */
+    /**
+     * A review that ended since the agent last heard: it hears with the user's next message, once. A run that reached
+     * its verdict marks itself heard as its finished prompt goes out, so this carries the endings that came without one.
+     */
     note(context) {
       const ended = councilItems(context).filter(({ data }) => data.startedAt !== null && isFinished(data) && data.agentHeardAt === null);
       if (ended.length === 0) return null;

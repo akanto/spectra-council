@@ -162,7 +162,9 @@ export type ReviewEvent =
   /** The host lost the run, as when Mirador restarted while it went on. */
   | { type: "interrupted"; at: number }
   /** The host's agent was told how the review ended. */
-  | { type: "agent-heard"; at: number };
+  | { type: "agent-heard"; at: number }
+  /** The telling was lost before it reached the agent: the ended note may carry the review again. */
+  | { type: "agent-unheard" };
 
 const withAsk = (review: Review, index: number, ask: Ask): Review => ({ ...review, asks: (review.asks ?? []).map((each, at) => (at === index ? ask : each)) });
 
@@ -722,6 +724,8 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     }
     case "agent-heard":
       return { ...review, agentHeardAt: event.at };
+    case "agent-unheard":
+      return { ...review, agentHeardAt: null };
     default:
       return applyReviewerEvent(review, event);
   }
