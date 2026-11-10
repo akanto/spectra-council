@@ -50,6 +50,8 @@ To try it without spending tokens, ask for a mock review: stand-in reviewers tha
   finding. Or send your own instruction with the findings ("fix only the security ones, and add tests").
 - **The fixer**: choose another profile as the **Spectra Council fixer** in the conversation header, and the fixes run
   in a conversation of its own.
+- **Slow reviewers**: a reviewer's turn gives up after 15 minutes. Choose a longer **Spectra Council turn limit** in
+  the conversation header for slow models.
 - **Restarts**: reviews are Mirador canvas items. One that was running when Mirador stopped can be resumed, and it picks
   up the reviewer conversations still running.
 - **Safety**: reviewers are told to only read the target. They run with your chat's permission mode, on each profile's

@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { replyFetched, type LateReply } from "../core/agent-runner.ts";
 import { verdictSummary } from "../core/deliberation.ts";
+import { lateReplyPrompt } from "../core/describe.ts";
 import { ReviewSession, type ReviewerRunner } from "../core/engine.ts";
-import { canFetchReply, lastTurnOf, whyNoFetch } from "../core/late-replies.ts";
+import { canFetchReply, lastTurnOf, whenFetchable, whyNoFetch } from "../core/late-replies.ts";
 import { isRulable, type Review } from "../core/model.ts";
 import { newReview, reduce, reopensWith, ReviewError, type ReplyFetched } from "../core/review.ts";
 import type { FindingInput } from "../core/schemas.ts";
-import { createCouncilHost, IN_FLIGHT_KEY } from "../hosts/mirador/host.ts";
+import { createCouncilHost, IN_FLIGHT_KEY, TURN_LIMIT_SETTING, turnLimitOf } from "../hosts/mirador/host.ts";
 import type { MiradorRecords } from "../hosts/mirador/records.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
 
@@ -73,6 +74,33 @@ describe("a seat's last turn and whether its reply can be fetched", () => {
     const deliberating = { ...concluded(), phase: "deliberation" as const };
     expect(whyNoFetch(deliberating, deliberating.reviewers[1]!)).toContain("once the review is complete");
     const stopped = { ...concluded(), phase: "stopped" as const };
+    expect(whyNoFetch(stopped, stopped.reviewers[1]!)).toContain("it is stopped");
+  });
+
+  test("when it can be fetched: now, once the council at work is done, once a cut-short run is resumed, or not at all", () => {
+    const review = concluded();
+    expect(whenFetchable(review, review.reviewers[1]!)).toBe("now");
+    for (const phase of ["deliberation", "synthesis", "verification"] as const) {
+      const atWork = { ...review, phase };
+      expect(whenFetchable(atWork, atWork.reviewers[1]!)).toBe("once complete");
+    }
+    const stopped = { ...review, phase: "stopped" as const };
+    expect(whenFetchable(stopped, stopped.reviewers[1]!)).toBeNull();
+    const deliberating = { ...review, phase: "deliberation" as const };
+    const inRound = { ...deliberating.reviewers[1]!, activity: [...deliberating.reviewers[1]!.activity, { seq: 9, at: 9, kind: "status" as const, text: "Asking the beta profile to argue round 2" }] };
+    expect(whenFetchable(deliberating, inRound)).toBeNull();
+    const cutShort = reduce(timedOut(), { type: "interrupted", at: 7 });
+    expect(whenFetchable(cutShort, cutShort.reviewers[1]!)).toBe("once resumed");
+    const inRoundCutShort = { ...cutShort.reviewers[1]!, activity: [...cutShort.reviewers[1]!.activity, { seq: 9, at: 9, kind: "status" as const, text: "Asking the beta profile to argue round 2" }] };
+    expect(whenFetchable(cutShort, inRoundCutShort)).toBeNull();
+  });
+
+  test("a window told while the council works says what a stop leaves, since a stopped review refuses the fetch", () => {
+    const deliberating = { ...concluded(), phase: "deliberation" as const };
+    const seat = deliberating.reviewers[1]!;
+    expect(lateReplyPrompt(deliberating, seat, whenFetchable(deliberating, seat)!)).toContain(`once the review reaches its verdict; if it never gets there, the reply stays only in ${seat.label}'s own conversation`);
+    const stopped = { ...deliberating, phase: "stopped" as const };
+    expect(whenFetchable(stopped, stopped.reviewers[1]!)).toBeNull();
     expect(whyNoFetch(stopped, stopped.reviewers[1]!)).toContain("it is stopped");
   });
 
@@ -253,11 +281,12 @@ type Env = ReturnType<typeof boot>;
 
 /**
  * Answers each conversation the canvas starts, but those `hold` keeps waiting, moving the clock only when none waits to
- * be answered; returns once the clock is idle.
+ * be answered; returns once the clock is idle, or as soon as `until` holds.
  */
-async function drive({ clock, canvas, context, host }: Env, hold: (profile: string) => boolean = () => false, done = new Set<number>()) {
+async function drive({ clock, canvas, context, host }: Env, hold: (profile: string) => boolean = () => false, done = new Set<number>(), until = () => false) {
   for (let i = 0; i < 1_000; i++) {
     await clock.settle();
+    if (until()) return done;
     const next = canvas.started.findIndex((started, index) => !done.has(index) && !hold(started.profile));
     if (next >= 0) {
       done.add(next);
@@ -279,6 +308,13 @@ async function betaTimesOut(env: Env, agents = ["profile:alpha", "profile:beta"]
   return { id, done, beta: "conversation-fixer-2", betaPrompt: env.canvas.started[1]!.prompt };
 }
 
+/** The late reply of the first conversation the canvas started on this profile: its own review turn's. */
+async function lateReplyOf(env: Env, profile: string, ended: "finished" | "failed" = "finished") {
+  const index = env.canvas.started.findIndex((started) => started.profile === profile);
+  const text = ended === "finished" ? answer(profile, env.canvas.started[index]!.prompt) : null;
+  await env.host.replied!({ id: `conversation-fixer-${index + 1}`, profile }, { text, ended }, env.context);
+}
+
 const inFlight = (canvas: FakeCanvas<Review>) => (canvas.storage.get(IN_FLIGHT_KEY) ?? {}) as Record<string, { gaveUp?: true; reply?: unknown }>;
 
 describe("the host: a seat the limit gave up on", () => {
@@ -293,6 +329,117 @@ describe("the host: a seat the limit gave up on", () => {
 
     await env.host.replied!({ id: beta, profile: "beta" }, { text: answer("beta", betaPrompt), ended: "finished" }, env.context);
     expect(inFlight(env.canvas)[beta]!.reply).toBeDefined();
+  });
+
+  test("gives up after the turn limit the conversation's profile sets, else after 15 minutes", async () => {
+    const canvas = new FakeCanvas<Review>();
+    canvas.settings[TURN_LIMIT_SETTING] = "30";
+    const env = boot(canvas);
+    const startedAt = env.clock.time;
+    const { id } = await betaTimesOut(env);
+    const beta = env.canvas.item(id).data.reviewers[1]!;
+    expect(beta.problem).toBe("Its turn took longer than 30 minutes");
+    expect(beta.endedAt! - startedAt).toBeGreaterThanOrEqual(30 * 60_000);
+    expect(turnLimitOf({ profileSetting: () => null })).toBe(15 * 60_000);
+    expect(turnLimitOf({ profileSetting: () => "soon" })).toBe(15 * 60_000);
+  });
+
+  test("its late reply is told once to the review's conversation, naming its seat, for the user to fetch", async () => {
+    const env = boot();
+    await env.host.tools.council_open!.run({ target, agents: ["profile:alpha", "profile:beta", "profile:gamma"], depth: "quick" }, env.context);
+    const id = env.canvas.items[0]!.id;
+    await env.host.action!(env.canvas.item(id), { kind: "start" }, env.context);
+    await drive(env, (profile) => profile !== "gamma");
+    const review = env.canvas.item(id).data;
+    expect(review.reviewers.map((reviewer) => reviewer.status)).toEqual(["failed", "failed", "completed"]);
+    const before = env.canvas.prompts.length;
+
+    await lateReplyOf(env, "beta");
+    expect(env.canvas.prompts.slice(before)).toEqual([
+      `Spectra Council review ${review.id}: ${review.reviewers[1]!.label}'s reply came in after its turn had timed out. The user can take it into the review with "Fetch its reply" on the canvas. Tell the user in one line, without calling any council tool.`,
+    ]);
+    expect(env.canvas.promptOptions.at(-1)).toEqual({ afterTurn: true });
+  });
+
+  test("a late reply heard through a context aimed at another conversation is kept and logged, not told; its chair still hears it once", async () => {
+    const env = boot();
+    const { beta } = await betaTimesOut(env);
+    const before = env.canvas.prompts.length;
+    const logged: string[] = [];
+    const real = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+    try {
+      const misaimed = { ...env.context, conversationId: "conversation-other" };
+      await env.host.replied!({ id: beta, profile: "beta" }, { text: answer("beta", env.canvas.started[1]!.prompt), ended: "finished" }, misaimed);
+    } finally {
+      console.error = real;
+    }
+    expect(logged.join("\n")).toContain("conversation-other");
+    expect(inFlight(env.canvas)[beta]!.reply).toBeDefined();
+    expect(env.canvas.prompts).toHaveLength(before);
+    await lateReplyOf(env, "beta");
+    expect(env.canvas.prompts).toHaveLength(before + 1);
+  });
+
+  test("its late reply is told once after a restart too, off the re-read gaveUp record", async () => {
+    const env = boot();
+    const { id, beta, betaPrompt } = await betaTimesOut(env);
+    // The record survives the way real storage does it: as plain JSON, sharing no object identity with this process.
+    env.canvas.storage.set(IN_FLIGHT_KEY, JSON.parse(JSON.stringify(env.canvas.storage.get(IN_FLIGHT_KEY))));
+    const second = boot(env.canvas);
+    const review = env.canvas.item(id).data;
+    const before = env.canvas.prompts.length;
+    await second.host.replied!({ id: beta, profile: "beta" }, { text: answer("beta", betaPrompt), ended: "finished" }, second.context);
+    const told = env.canvas.prompts.slice(before);
+    expect(told).toHaveLength(1);
+    expect(told[0]).toContain(`Spectra Council review ${review.id}: ${review.reviewers[1]!.label}'s reply came in after its turn had timed out`);
+    expect(inFlight(env.canvas)[beta]!.reply).toBeDefined();
+  });
+
+  test("a late reply that ended badly is kept, but tells no one", async () => {
+    const env = boot();
+    const { beta } = await betaTimesOut(env);
+    const before = env.canvas.prompts.length;
+    await lateReplyOf(env, "beta", "failed");
+    expect(inFlight(env.canvas)[beta]!.reply).toBeDefined();
+    expect(env.canvas.prompts).toHaveLength(before);
+  });
+
+  test("a late reply that comes while the council deliberates is told to fetch once the review reaches its verdict", async () => {
+    const env = boot();
+    await env.host.tools.council_open!.run({ target, agents: ["profile:alpha", "profile:beta", "profile:gamma"], depth: "quick" }, env.context);
+    const id = env.canvas.items[0]!.id;
+    await env.host.action!(env.canvas.item(id), { kind: "start" }, env.context);
+    const holdBeta = (profile: string) => profile === "beta";
+    const done = await drive(env, holdBeta, new Set(), () => env.canvas.item(id).data.phase === "deliberation");
+    const before = env.canvas.prompts.length;
+
+    await lateReplyOf(env, "beta");
+    const label = env.canvas.item(id).data.reviewers[1]!.label;
+    expect(env.canvas.prompts.slice(before)).toEqual([
+      expect.stringContaining(`"Fetch its reply" on the canvas once the review reaches its verdict; if it never gets there, the reply stays only in ${label}'s own conversation.`),
+    ]);
+    await drive(env, holdBeta, done);
+    expect(env.canvas.item(id).data.phase).toBe("complete");
+  });
+
+  test("a late reply that lands while a restart has the review interrupted is told once, to take in after the resume", async () => {
+    const env = boot();
+    await env.host.tools.council_open!.run({ target, agents: ["profile:alpha", "profile:beta", "profile:gamma"], depth: "quick" }, env.context);
+    const id = env.canvas.items[0]!.id;
+    await env.host.action!(env.canvas.item(id), { kind: "start" }, env.context);
+    await drive(env, (profile) => profile === "beta", new Set(), () => env.canvas.item(id).data.phase === "deliberation");
+    // Mirador restarted mid-run: a new host finds the stored run with no session of its own and reads it as interrupted.
+    const second = boot(env.canvas);
+    const index = env.canvas.started.findIndex((started) => started.profile === "beta");
+    const beta = `conversation-fixer-${index + 1}`;
+    const before = env.canvas.prompts.length;
+    await second.host.replied!({ id: beta, profile: "beta" }, { text: answer("beta", env.canvas.started[index]!.prompt), ended: "finished" }, second.context);
+    const told = env.canvas.prompts.slice(before);
+    expect(told).toHaveLength(1);
+    expect(told[0]).toContain('"Fetch its reply" on the canvas once the user resumes it (Mirador restarted while it ran), while the reviewers review or once the review is complete.');
+    expect(inFlight(env.canvas)[beta]!.reply).toBeDefined();
+    expect(env.canvas.item(id).data.phase).toBe("deliberation");
   });
 
   test("its kept reply, fetched, reopens the review: grouped, deliberated and concluded as a run", async () => {
