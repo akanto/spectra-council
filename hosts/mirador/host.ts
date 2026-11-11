@@ -11,7 +11,7 @@ import { AgentRunner, replyFetched, type LateReply } from "../../core/agent-runn
 import { promptTitle } from "../../core/agent-turns.ts";
 import { knobsText } from "../../core/depth.ts";
 import { checkersOf, uncheckableFixes } from "../../core/deliberation.ts";
-import { choiceOf, choiceText, expectedModel, isProfileAgent, modelLabel, offered, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
+import { choiceOf, choiceText, expectedModel, isProfileAgent, modelLabel, offered, profileAgent, profileName, runnerKindOf, seatOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, finishedPrompt, fixerFinishedPrompt, lateReplyPrompt, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, TURN_LIMIT_MS, TurnTimeout, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
@@ -22,7 +22,7 @@ import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
-import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, viewPrefsSchema, DEFAULT_VIEW_PREFS, type Decision, type Setup, type ViewPrefs } from "../../core/schemas.ts";
+import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, viewPrefsSchema, DEFAULT_VIEW_PREFS, type Decision, type Seat, type Setup, type ViewPrefs } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
 import { askFixerPrompt, askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
@@ -34,8 +34,11 @@ export const ITEM_TYPE = "council";
 export const PROFILES_KEY = "seatedProfiles";
 const REMEMBERED_PROFILES = 12;
 
-/** How many of the user's profiles council_open seats when the agent names no reviewers. */
+/** How many of the user's profiles council_open seats when the agent names no reviewers and the user never started a review. */
 const DEFAULT_SEATS = 2;
+
+/** Where the plugin's storage keeps the profile seats of the review the user last started, which council_open seats by default. */
+export const LAST_SEATS_KEY = "lastStartedSeats";
 
 /** The profile setting that names who fixes a review's accepted findings; none means this conversation's agent. */
 export const FIXER_SETTING = "fixer";
@@ -98,7 +101,7 @@ const openInput = z.object({
     .min(1)
     .max(MAX_SEATS)
     .optional()
-    .describe(`The reviewers to seat, in order, 1 to ${MAX_SEATS}: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen, mock-glm). A profile seat runs on its profile's model and effort; only when the user names a model or effort for it, pass it as an object with model and effort. Seat mocks only when the user asks for a mock or demo review: their findings are illustrative, not an analysis. Default: the user's first two Mirador profiles, or none for the user to pick when no profile is known. The user can add and remove reviewers and choose their models in the setup.`),
+    .describe(`The reviewers to seat, in order, 1 to ${MAX_SEATS}: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen, mock-glm). A profile seat runs on its profile's model and effort; only when the user names a model or effort for it, pass it as an object with model and effort. Seat mocks only when the user asks for a mock or demo review: their findings are illustrative, not an analysis. Default: the reviewers of the unstarted review this one replaces, else the profiles the user last started a review with, else their first two Mirador profiles, or none for the user to pick when no profile is known. The user can add and remove reviewers and choose their models in the setup.`),
   instructions: z.string().optional().describe("What the user asked the reviewers to pay attention to, in their words."),
   title: z.string().min(1).optional().describe('The review\'s title, e.g. "Architecture review of the payment service".'),
 });
@@ -223,12 +226,38 @@ export function createCouncilHost({
   const toolContexts = new Map<string, CanvasToolContext<Review>>();
   /** Reviewer conversations waiting for their turn to end, by conversation id; `replied` settles them. */
   const pending = new Map<string, (reply: ConversationReply) => void>();
+  /**
+   * The items whose Start asked the agent to call council_begin: of the reviews in setup, only these may it start. Lost
+   * on a restart, after which the user presses Start again.
+   */
+  const startsAsked = new Set<string>();
 
   /** Notes a profile the council seated, most recent first, for the setup to offer. */
   function rememberProfile(storage: CanvasPluginContext<Review>["storage"], name: string) {
     const known = storage.get(PROFILES_KEY);
     const before = Array.isArray(known) ? known.filter((each): each is string => typeof each === "string") : [];
     storage.set(PROFILES_KEY, [name, ...before.filter((each) => each.toLowerCase() !== name.toLowerCase())].slice(0, REMEMBERED_PROFILES));
+  }
+
+  /** Keeps the profile seats of a review the user started, for council_open to seat by default; a mock demo keeps none. */
+  function rememberStartedSeats(storage: CanvasPluginContext<Review>["storage"], review: Review) {
+    const seats = seatedReviewers(review).filter((reviewer) => isProfileAgent(reviewer.agent)).map(seatOf);
+    if (seats.length > 0) storage.set(LAST_SEATS_KEY, seats);
+  }
+
+  /**
+   * The seats council_open gives a review when the agent names none: the profile seats the user last started a review
+   * with, of the profiles still there; else the user's first two profiles.
+   */
+  function seatsByDefault(storage: CanvasPluginContext<Review>["storage"]): Seat[] {
+    const remembered = z.array(seatSchema).safeParse(storage.get(LAST_SEATS_KEY));
+    const known = new Set(records.profiles().map((profile) => profile.name.toLowerCase()));
+    const stillThere = (seat: Seat) => isProfileAgent(seat.agent) && (known.size === 0 || known.has(profileName(seat.agent).toLowerCase()));
+    const lastStarted = remembered.success ? remembered.data.filter(stillThere) : [];
+    if (lastStarted.length > 0) return lastStarted;
+    return profilesFor(storage)
+      .slice(0, DEFAULT_SEATS)
+      .map((profile) => ({ agent: profileAgent(profile.name), enabled: true }));
   }
 
   /** Conversations taken over after a restart in this process, so two asks don't take the same one. */
@@ -370,6 +399,12 @@ export function createCouncilHost({
       .items()
       .filter((item) => item.type === ITEM_TYPE)
       .map((item) => ({ ...item, data: upgradeReview(item.data) }));
+
+  /** The conversation's newest review the user hasn't started and still has open: a new council_open takes its place. */
+  const unstartedReview = (context: CanvasPluginContext<Review>) =>
+    councilItems(context)
+      .filter((item) => item.data.phase === "setup" && !item.dismissed && !sessions.has(item.id) && !startsAsked.has(item.id))
+      .at(-1);
 
   /** Writes a running review's item at most every throttleMs; the end of a review is written at once. */
   function writer(context: CanvasPluginContext<Review>, itemId: string) {
@@ -537,18 +572,33 @@ export function createCouncilHost({
       });
   }
 
+  /** Why a start or a change of setup isn't for the review the item holds: the agent opened another one in its place. */
+  const replacedBy = (shown: string, now: Review) => `Review ${shown} was replaced by review ${now.id}, which the agent opened in its place; check that one's setup and start it.`;
+
+  /**
+   * The item's review, refused when the view sent its action for a review the agent has replaced in its place since the
+   * view showed it. Mirador hands the item as it stands now, so only the review the user acted on tells the two apart.
+   */
+  function shownReview(item: PluginItem<Review>, shown: string | undefined): Review {
+    const review = settled(item);
+    if (shown !== undefined && shown !== review.id) throw new Error(replacedBy(shown, review));
+    return review;
+  }
+
   /**
    * The review of an item, if it can start now (in setup) or resume (cut short by a restart); otherwise says why not.
    */
-  async function startable(item: PluginItem<Review>): Promise<Review> {
+  async function startable(item: PluginItem<Review>, context: CanvasPluginContext<Review>, shown?: string): Promise<Review> {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
-    const review = settled(item);
+    const review = shownReview(item, shown);
     if (hasFixedFinding(review)) return checkable(review);
     if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before starting the review.");
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
       throw new Error(`There is no file or folder at ${review.target}; give the absolute path of what to review.`);
     }
+    const inItsPlace = current(item, context);
+    if (inItsPlace.id !== review.id) throw new Error(replacedBy(review.id, inItsPlace));
     return review;
   }
 
@@ -564,20 +614,30 @@ export function createCouncilHost({
   const hasFixedFinding = (review: Review) => review.phase === "complete" && review.findings.some((finding) => finding.fix?.state === "fixed");
 
   /** Runs a review in setup, resumes one a restart cut short, or re-checks the fixes of a complete one. */
-  const begin = (item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review) =>
+  function begin(item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review) {
     launch(item, context, review, (session) => (hasFixedFinding(review) ? session.verify() : review.phase === "setup" ? session.run() : session.resume()));
+    startsAsked.delete(item.id);
+    if (review.phase === "setup") rememberStartedSeats(context.storage, review);
+  }
 
   /**
    * The user's Start or Resume: runs the review, or, with profile seats and no tool context to start them from, asks the
    * agent to.
    */
-  async function start(item: PluginItem<Review>, context: CanvasActionContext<Review>) {
-    const review = await startable(item);
+  async function start(item: PluginItem<Review>, context: CanvasActionContext<Review>, shown?: string) {
+    const review = await startable(item, context, shown);
     const profiles = seatedReviewers(review).filter((reviewer) => isProfileAgent(reviewer.agent));
     if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
       const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
       const what = review.phase === "setup" ? "started" : "resumed";
-      await context.prompt(`The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
+      // Before the prompt, which resolves only once the turn it starts has ended, by when the agent has called council_begin.
+      startsAsked.add(item.id);
+      try {
+        await context.prompt(`The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
+      } catch (error) {
+        startsAsked.delete(item.id);
+        throw error;
+      }
       return { prompted: true };
     }
     begin(item, context, review);
@@ -844,7 +904,7 @@ export function createCouncilHost({
     tools: keepingContext({
       council_open: {
         description:
-          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile), by default the first two; deterministic mock personas only when the user asks for a mock or demo review. Read a review's progress and findings with council_status.",
+          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile), by default the ones the user last started a review with; deterministic mock personas only when the user asks for a mock or demo review. A review in this conversation that the user hasn't started yet is replaced by the new one, in its tab, keeping its reviewers unless you name others; to run two at once, the user starts the first before you open the second. Read a review's progress and findings with council_status.",
         input: jsonSchema(openInput),
         async run(input, context) {
           const parsed = openInput.safeParse(input);
@@ -852,29 +912,42 @@ export function createCouncilHost({
           const { target, profile = "general", depth = "standard", rounds, maxFindings, agents, instructions = "", title } = parsed.data;
           if (!isAbsolute(target)) throw new Error(`The target must be an absolute path; got ${target}.`);
           if ((await targetKind(target)) === null) throw new Error(`There is no file or folder at ${target}.`);
+          const replaced = unstartedReview(context);
+          const keptSeats = agents || !replaced ? [] : seatedReviewers(replaced.data).filter((reviewer) => isProfileAgent(reviewer.agent)).map(seatOf);
           // Real agents unless asked otherwise: mocks only when the agent names them.
-          const seats = (agents ?? profilesFor(context.storage).slice(0, DEFAULT_SEATS).map((known) => profileAgent(known.name))).map((seat) =>
-            typeof seat === "string" ? { agent: seat, enabled: true } : { agent: seat.agent, enabled: true, ...choiceOf(seat) },
-          );
+          const seats: Seat[] = agents
+            ? agents.map((seat) => (typeof seat === "string" ? { agent: seat, enabled: true } : { agent: seat.agent, enabled: true, ...choiceOf(seat) }))
+            : keptSeats.length > 0
+              ? keptSeats
+              : seatsByDefault(context.storage);
           const setup: Setup = { target, profile, depth, seats, instructions, ...(rounds === undefined ? {} : { deliberationRounds: rounds }), ...(maxFindings === undefined ? {} : { maxFindings }) };
           const review = identified(newReview(newId(), setup, runnerKindOf(seats), clock.now()));
-          const item = context.publish({ type: ITEM_TYPE, title: title ?? `${PROFILES[profile].title} review · ${basename(target)}`, data: review });
+          const heading = title ?? `${PROFILES[profile].title} review · ${basename(target)}`;
+          const item = replaced ? context.change(replaced.id, { title: heading, data: review }) : context.publish({ type: ITEM_TYPE, title: heading, data: review });
           const seated = seatedReviewers(review).map((reviewer) =>
             isProfileAgent(reviewer.agent) ? `${reviewer.label} (${[`${profileName(reviewer.agent)} profile`, choiceText(reviewer.choice)].filter(Boolean).join(", ")})` : reviewer.label,
           );
-          const seating = seated.length > 0 ? `seating ${seated.join(", ")}` : "with no reviewer seated yet (no Mirador profile is known)";
-          return `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup, ${seating}, ${knobsText(review)}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
+          const seating = seated.length > 0 ? `seating ${seated.join(", ")}${keptSeats.length > 0 ? ` (kept from review ${replaced!.data.id})` : ""}` : "with no reviewer seated yet (no Mirador profile is known)";
+          const opened = replaced
+            ? `Opened Spectra Council review ${review.id} in place of review ${replaced.data.id}, which the user hadn't started and is gone now: same tab (item ${item.id}), in setup`
+            : `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup`;
+          return `${opened}, ${seating}, ${knobsText(review)}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
         },
       },
       council_begin: {
         description:
-          "Start a Spectra Council review the user pressed Start (or Resume) on, when it asks you to: starts a conversation for each seat on its Mirador profile. Also starts the re-check of fixes of a complete review, when the canvas asks. Only call it when the canvas asks; the review then runs on its own and you hear when it ends.",
+          "Start a Spectra Council review the user pressed Start (or Resume) on, when it asks you to: starts a conversation for each seat on its Mirador profile. Also starts the re-check of fixes of a complete review, when the canvas asks. Only call it when the canvas asks: it refuses a review in setup that the user hasn't pressed Start on. The review then runs on its own and you hear when it ends.",
         input: jsonSchema(beginInput),
         async run(input, context) {
           const parsed = beginInput.safeParse(input);
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
           const item = itemFor(context, parsed.data.review);
-          const review = await startable(item);
+          const review = await startable(item, context);
+          if (review.phase === "setup" && !startsAsked.has(item.id)) {
+            throw new Error(
+              `The user hasn't pressed Start on review ${review.id}. They start it in the canvas once they've chosen its reviewers, and it runs without you then: tell them it's ready there. Call council_begin only when the canvas asks you to.`,
+            );
+          }
           begin(item, context, review);
           const seated = seatedReviewers(review).map((reviewer) => (isProfileAgent(reviewer.agent) ? `${reviewer.label} (${profileName(reviewer.agent)} profile)` : reviewer.label));
           if (hasFixedFinding(review)) return `Started the re-check of the fixes of review ${review.id}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
@@ -1005,17 +1078,17 @@ export function createCouncilHost({
     }),
     guidance: {
       instructions:
-        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. Leave agents out to seat the user's profiles, or name them as council_profiles lists them; seat mock personas only when the user asks for a mock or demo review. When the canvas asks you to call council_begin, do; when the user asks you to stop a running review, call council_stop. council_status reads its progress and findings; council_rule records a ruling the user gives you on a finding, never one of your own; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
+        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. Leave agents out to seat the user's profiles, or name them as council_profiles lists them; seat mock personas only when the user asks for a mock or demo review. Opening another while one is unstarted replaces it. Never start a review yourself: call council_begin only when the canvas asks you to; when the user asks you to stop a running review, call council_stop. council_status reads its progress and findings; council_rule records a ruling the user gives you on a finding, never one of your own; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
     },
     async action(item, action, context) {
       const parsed = viewActionSchema.safeParse(action);
       if (!parsed.success) throw new Error(`Unknown action: ${problemsOf(parsed.error)}`);
       switch (parsed.data.kind) {
         case "configure":
-          context.change(item.id, { data: identified(reduceOrSay(settled(item), { type: "configured", patch: parsed.data.patch })) });
+          context.change(item.id, { data: identified(reduceOrSay(shownReview(item, parsed.data.review), { type: "configured", patch: parsed.data.patch })) });
           return null;
         case "start":
-          return start(item, context);
+          return start(item, context, parsed.data.review);
         case "rule": {
           const { findingId, decision, note } = parsed.data;
           const before = settled(item).findings.find((finding) => finding.id === findingId);

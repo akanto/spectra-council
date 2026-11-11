@@ -259,7 +259,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
       )}
 
       {review.phase === "setup" ? (
-        <Setup review={review} bridge={bridge} busy={busy} configure={(patch: SetupPatch) => void send({ kind: "configure", patch }).catch(() => {})} start={() => send({ kind: "start" })} />
+        <Setup key={review.id} review={review} bridge={bridge} busy={busy} configure={(patch: SetupPatch) => void send({ kind: "configure", review: review.id, patch }).catch(() => {})} start={() => send({ kind: "start", review: review.id })} />
       ) : (
         <>
           <nav className="tabs" role="tablist" aria-label="Review views" onKeyDown={onTabKey}>
