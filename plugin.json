@@ -1,7 +1,7 @@
 {
   "name": "spectra-council",
   "title": "Spectra Council",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "api": 8,
   "tellsCaller": true,
   "canvas": {
