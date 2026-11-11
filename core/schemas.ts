@@ -182,10 +182,13 @@ export const viewPrefsSchema = z.object({
 export type ViewPrefs = z.infer<typeof viewPrefsSchema>;
 export const DEFAULT_VIEW_PREFS: ViewPrefs = { flowHidden: false };
 
-/** What the user does in the view. */
+export const reviewIdSchema = z.string().min(1);
+
+/** What the user does in the view. `review` is the review the view shows, so an action sent for one the agent has
+ * replaced in its place doesn't land on the review that took it. */
 export const viewActionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("configure"), patch: setupPatchSchema }),
-  z.object({ kind: z.literal("start") }),
+  z.object({ kind: z.literal("configure"), review: reviewIdSchema.optional(), patch: setupPatchSchema }),
+  z.object({ kind: z.literal("start"), review: reviewIdSchema.optional() }),
   z.object({ kind: z.literal("stop") }),
   /** The user's ruling on a finding after the verdict; a null decision clears it. */
   z.object({ kind: z.literal("rule"), findingId: z.string().min(1), decision: decisionSchema.nullable(), note: z.string().default("") }),
@@ -232,8 +235,6 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
 ]);
 
 export type ViewAction = z.infer<typeof viewActionSchema>;
-
-export const reviewIdSchema = z.string().min(1);
 
 export const stopInput = z.object({
   review: reviewIdSchema.optional().describe("The review's id; default: this conversation's newest review."),

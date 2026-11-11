@@ -290,6 +290,37 @@ for (const setup of setups) describe.skipIf(!setup.run)(`the view ${setup.name}`
     expect(await start.isEnabled()).toBe(true);
   });
 
+  test("a review opened in place of an unstarted one shows its own setup, not the old one's half-made choices", async () => {
+    const setupOn = (id: string, agent: string) => newReview(id, { target: harness.target, profile: "code", depth: "quick", instructions: "", seats: [{ agent, enabled: true }] }, "mirador", 0);
+    harness.setReview(setupOn("unstarted", "profile:alpha"));
+    await freshPage();
+    await root.getByRole("combobox", { name: "Agent for reviewer 1" }).selectOption({ label: "Other profile…" });
+    const name = root.getByRole("textbox", { name: "Mirador profile for reviewer 1" });
+    await name.waitFor();
+    harness.setReview(setupOn("in-its-place", "profile:beta"));
+    await name.waitFor({ state: "detached" });
+    expect(await root.getByRole("combobox", { name: "Agent for reviewer 1" }).inputValue()).toBe("profile:beta");
+  });
+
+  test("instructions typed just before a review is replaced stay with the review they were typed in", async () => {
+    const setupOn = (id: string) => newReview(id, { target: harness.target, profile: "code", depth: "quick", instructions: "", seats: [{ agent: "mock-claude", enabled: true }] }, "mock", 0);
+    const typed = "Mind the cache.";
+    harness.setReview(setupOn("typed-on"));
+    await freshPage();
+    const instructions = root.getByRole("textbox", { name: /Instructions/ });
+    await instructions.fill("");
+    await instructions.type(typed);
+    for (let i = 0; i < 50 && harness.review().instructions !== typed; i++) await page.waitForTimeout(50);
+    expect(harness.review().instructions).toBe(typed);
+    // Typed on again, and the agent opens another review before the pause that commits what was typed: the words stay
+    // with the review they were typed in, and the user hears no error about them.
+    await instructions.type(" and the queue");
+    harness.setReview(setupOn("in-its-place"));
+    await page.waitForTimeout(900);
+    expect([harness.review().id, harness.review().instructions]).toEqual(["in-its-place", ""]);
+    expect(await root.getByRole("alert").count()).toBe(0);
+  });
+
   test("reviewer detail opens at its header and follows live activity beyond the retained limit", async () => {
     const review = fixture(harness.target, "failed");
     for (const reviewer of review.reviewers) {
