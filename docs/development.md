@@ -22,6 +22,7 @@ bun test tests                        # reducer, engine, deliberation, mock revi
 bun run build                         # dist/view.js; SPECTRA_MINIFY=0 for a readable bundle
 bun run harness [target]              # the view against a stand-in for Mirador: http://127.0.0.1:4830 (?theme=dark)
 bun scripts/screenshots.ts            # with the harness running: a mock review in Chrome, screenshots in .harness/
+                                      # and the plugin catalog's pictures in screenshots/
 bun run e2e                           # build, then a mock review in Chrome and in WebKit framed as Mirador frames it
 bun run api-compat                    # hosts/mirador/api.ts against Mirador's plugin API types
 ```

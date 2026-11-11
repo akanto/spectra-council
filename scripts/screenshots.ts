@@ -2,7 +2,8 @@
  * Drives the harness in Chrome through a review and screenshots each view into .harness/: setup, the workspace while it
  * runs, a reviewer's activity, the council's deliberation, the verdict, rulings, the fixes and their re-check, and the
  * findings, in the light and the dark theme,
- * at about the width the canvas has beside the chat. Start the harness first.
+ * at about the width the canvas has beside the chat; the dark tour also takes the plugin catalog's pictures into
+ * screenshots/. Start the harness first.
  *
  *   bun scripts/screenshots.ts [http://127.0.0.1:4830]
  */
@@ -13,6 +14,9 @@ import { chromium, type Page } from "playwright-core";
 const base = process.argv[2] ?? "http://127.0.0.1:4830";
 const out = join(import.meta.dir, "..", ".harness");
 await mkdir(out, { recursive: true });
+// The plugin catalog's pictures: the dark tour also takes these, at the catalog's 1440x900, into screenshots/.
+const catalogOut = join(import.meta.dir, "..", "screenshots");
+await mkdir(catalogOut, { recursive: true });
 
 const browser = await chromium.launch({ channel: "chrome" });
 const errors: string[] = [];
@@ -23,6 +27,19 @@ async function tour(theme: "light" | "dark") {
   page.on("pageerror", (error) => errors.push(`${theme}: ${error.message}`));
   page.on("console", (message) => message.type() === "error" && errors.push(`${theme}: ${message.text()}`));
   const shot = (name: string) => page.screenshot({ path: join(out, `${theme}-${name}.png`), fullPage: true });
+  /** `top`: the element to start the picture at; else the page's top. */
+  const catalogShot = async (name: string, top?: string) => {
+    if (theme !== "dark") return;
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.waitForTimeout(300);
+    await page.evaluate((selector) => {
+      const element = selector ? document.querySelector(selector) : null;
+      window.scrollTo(0, element ? element.getBoundingClientRect().top + window.scrollY - 16 : 0);
+    }, top ?? null);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: join(catalogOut, `${name}.png`) });
+    await page.setViewportSize({ width: 960, height: 900 });
+  };
 
   await page.goto(`${base}/?theme=${theme}`);
   await page.getByText("Start review").waitFor();
@@ -42,6 +59,7 @@ async function tour(theme: "light" | "dark") {
   await page.locator(".pill.phase-independent-review").waitFor();
   await page.waitForTimeout(7000);
   await shot("2-running");
+  await catalogShot("workspace");
 
   await page.locator(".seat-panel").first().click();
   await page.waitForTimeout(400);
@@ -54,6 +72,7 @@ async function tour(theme: "light" | "dark") {
   await page.getByRole("tab", { name: /Council/ }).click();
   await page.waitForTimeout(300);
   await shot("4-deliberation");
+  await catalogShot("council");
 
   await page.locator(".pill.phase-complete").waitFor({ timeout: 180_000 });
   await page.waitForTimeout(500);
@@ -73,6 +92,7 @@ async function tour(theme: "light" | "dark") {
   await items.nth(0).click();
   await page.waitForTimeout(300);
   await shot("6-ruling");
+  await catalogShot("ruling", ".action-plan");
 
   await page.getByRole("button", { name: /Write hand-off/ }).click();
   await page.locator(".handoff-path").waitFor();

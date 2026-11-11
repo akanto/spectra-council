@@ -4,11 +4,11 @@
     <linearGradient id="table" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbf8f1"/><stop offset="1" stop-color="#efe9dc"/></linearGradient>
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
-  <circle cx="512" cy="222" r="56" fill="#ffd479"/>
-  <circle cx="788" cy="422" r="56" fill="#ffd479" opacity=".85"/>
-  <circle cx="682" cy="747" r="56" fill="#ffd479" opacity=".7"/>
-  <circle cx="342" cy="747" r="56" fill="#ffd479" opacity=".55"/>
-  <circle cx="236" cy="422" r="56" fill="#ffd479" opacity=".4"/>
+  <circle cx="512" cy="222" r="62" fill="#ff6b6b"/>
+  <circle cx="788" cy="422" r="62" fill="#ffb347"/>
+  <circle cx="682" cy="747" r="62" fill="#ffd93d"/>
+  <circle cx="342" cy="747" r="62" fill="#5ad18a"/>
+  <circle cx="236" cy="422" r="62" fill="#5aa9ff"/>
   <circle cx="512" cy="512" r="180" fill="url(#table)"/>
   <text x="512" y="605" text-anchor="middle" font-family="'Iowan Old Style', Palatino, Georgia, serif" font-size="270" font-weight="700" fill="#1d2b4a">S</text>
 </svg>
