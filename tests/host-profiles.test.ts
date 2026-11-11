@@ -49,6 +49,17 @@ async function drive({ clock, canvas, context }: ReturnType<typeof setup>, host:
   throw new Error("The review never settled.");
 }
 
+/** A context whose prompts resolve only when the turn they start ends, as Mirador's do in an idle conversation; here it never ends. */
+function turnNeverEnds(canvas: FakeCanvas<Review>, context: ReturnType<FakeCanvas<Review>["context"]>) {
+  return {
+    ...context,
+    prompt: (text: string) => {
+      canvas.prompts.push(text);
+      return new Promise<void>(() => {});
+    },
+  };
+}
+
 describe("profile seats", () => {
   test("council_open without agents and no known profile seats nobody; profiles seated before are offered first", async () => {
     const { host, canvas, context } = setup();
@@ -233,36 +244,41 @@ describe("the user starts a review", () => {
     expect(canvas.started).toEqual([]);
   });
 
-  test("council_begin starts the review while Start's prompt to call it is still waiting for the turn to end", async () => {
+  test("Start answers the view at once, and council_begin starts the review while the turn Start's prompt began still runs", async () => {
     const harness = setup();
     const { canvas, context, options } = harness;
     await harness.host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
     const restarted = createCouncilHost(options);
-    let turnEnded!: () => void;
-    const waitingForTheTurn = {
-      ...context,
-      prompt: (text: string) => {
-        canvas.prompts.push(text);
-        return new Promise<void>((resolve) => (turnEnded = resolve));
-      },
-    };
-    const starting = restarted.action!(canvas.items[0]!, { kind: "start" }, waitingForTheTurn);
-    await harness.clock.settle();
+    const turnRuns = turnNeverEnds(canvas, context);
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start" }, turnRuns)).toEqual({ prompted: true });
     expect(canvas.prompts.at(-1)).toContain("Call council_begin (review rev1)");
     expect(await restarted.tools.council_begin!.run({}, context)).toContain("Started review rev1");
     expect(canvas.storage.get(LAST_SEATS_KEY)).toEqual([{ agent: "profile:alpha", enabled: true }]);
-    turnEnded();
-    expect(await starting).toEqual({ prompted: true });
+    await drive(harness, restarted);
+    expect(canvas.items[0]!.data.phase).toBe("complete");
+  });
+
+  test("a second Start and the council_begin it asks for leave a review that runs already plainly alone", async () => {
+    const harness = setup();
+    const { canvas, context, options } = harness;
+    await harness.host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    const restarted = createCouncilHost(options);
+    const turnRuns = turnNeverEnds(canvas, context);
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start", review: "rev1" }, turnRuns)).toEqual({ prompted: true });
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start", review: "rev1" }, turnRuns)).toEqual({ prompted: true });
+    expect(await restarted.tools.council_begin!.run({}, context)).toContain("Started review rev1");
+    expect(await restarted.tools.council_begin!.run({}, context)).toContain("is already running in the canvas");
     await drive(harness, restarted);
     expect(canvas.items[0]!.data.phase).toBe("complete");
   });
 
   test("a Start whose ask to the agent fails leaves the review for the user to start again, and replaceable", async () => {
-    const { canvas, context, options, host } = setup();
+    const { canvas, clock, context, options, host } = setup();
     await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
     const restarted = createCouncilHost(options);
     const unreachable = { ...context, prompt: async () => Promise.reject(new Error("The conversation is gone.")) };
-    await expect(restarted.action!(canvas.items[0]!, { kind: "start" }, unreachable)).rejects.toThrow("The conversation is gone.");
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start" }, unreachable)).toEqual({ prompted: true });
+    await clock.settle();
     await expect(Promise.resolve().then(() => restarted.tools.council_begin!.run({}, context))).rejects.toThrow("The user hasn't pressed Start on review rev1");
     await restarted.tools.council_open!.run({ target, agents: ["profile:beta"] }, context);
     expect(canvas.items.map((item) => item.data.id)).toEqual(["rev2"]);
@@ -393,5 +409,22 @@ describe("the reviewers seated by default", () => {
     canvas.storage.set(LAST_SEATS_KEY, [{ agent: "profile:gone", enabled: true }]);
     await host.tools.council_open!.run({ target }, context);
     expect(canvas.items[1]!.data.reviewers.map((reviewer) => reviewer.agent)).toEqual(["profile:alpha", "profile:beta"]);
+  });
+});
+
+describe("actions that ask the agent", () => {
+  test("Fix and Run again answer the view at once, while the agent's turn they start runs on", async () => {
+    const harness = setup();
+    const { host, canvas, context } = harness;
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    await host.action!(canvas.items[0]!, { kind: "start" }, context);
+    await drive(harness, host);
+    const finding = canvas.items[0]!.data.findings[0]!;
+    await host.action!(canvas.items[0]!, { kind: "rule", findingId: finding.id, decision: "accepted" }, context);
+    const turnRuns = turnNeverEnds(canvas, context);
+    expect(await host.action!(canvas.items[0]!, { kind: "fix" }, turnRuns)).toBeNull();
+    expect(canvas.prompts.at(-1)).toContain("Please fix these findings from Spectra Council review rev1");
+    expect(await host.action!(canvas.items[0]!, { kind: "rerun" }, turnRuns)).toBeNull();
+    expect(canvas.prompts.at(-1)).toContain("Call council_open with");
   });
 });
