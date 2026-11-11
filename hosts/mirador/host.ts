@@ -594,6 +594,8 @@ export function createCouncilHost({
     if (hasFixedFinding(review)) return checkable(review);
     if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before starting the review.");
+    // The seats may have changed since the user's Start asked the agent: a run that then can't start would only be logged.
+    if (review.phase === "setup") reduceOrSay(review, { type: "started", at: clock.now() });
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
       throw new Error(`There is no file or folder at ${review.target}; give the absolute path of what to review.`);
     }

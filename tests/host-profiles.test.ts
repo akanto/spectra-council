@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { UNNAMED_PROFILE } from "../core/agents.ts";
 import type { Review } from "../core/model.ts";
 import { createCouncilHost, LAST_SEATS_KEY, PROFILES_KEY } from "../hosts/mirador/host.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
@@ -255,6 +256,17 @@ describe("the user starts a review", () => {
     expect(await starting).toEqual({ prompted: true });
     await drive(harness, restarted);
     expect(canvas.items[0]!.data.phase).toBe("complete");
+  });
+
+  test("council_begin refuses, with the reason, a review whose seat became an unnamed profile after Start asked for it", async () => {
+    const { canvas, context, options, host } = setup();
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    const restarted = createCouncilHost(options);
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start" }, context)).toEqual({ prompted: true });
+    await restarted.action!(canvas.items[0]!, { kind: "configure", patch: { seats: [{ agent: UNNAMED_PROFILE, enabled: true }] } }, context);
+    await expect(Promise.resolve().then(() => restarted.tools.council_begin!.run({}, context))).rejects.toThrow("Name the Mirador profile for reviewer 1 before starting the review.");
+    expect(canvas.items[0]!.data.phase).toBe("setup");
+    expect(canvas.started).toEqual([]);
   });
 
   test("a Start whose ask to the agent fails leaves the review for the user to start again, and replaceable", async () => {
