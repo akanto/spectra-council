@@ -62,8 +62,9 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 - **A runner interface.** `ReviewerRunner` (`core/engine.ts`) runs a reviewer's turns: `AgentRunner` through Mirador
   conversations, `MockRunner` for demos and tests. `routeByAgent` lets mocks and profiles sit at one council.
 - **Persistence is canvas item data.** Mirador stores items and streams each change to the view. There is no database
-  or socket layer of our own. The plugin's own storage keeps three things besides: the view's preferences (`viewPrefs`),
-  the profiles seated before (`profilesFor`) and the reviewer conversations in flight.
+  or socket layer of our own. The plugin's own storage keeps four things besides: the view's preferences (`viewPrefs`),
+  the profiles seated before (`profilesFor`), the profile seats of the review the user last started (`lastStartedSeats`,
+  which `council_open` seats when the agent names none) and the reviewer conversations in flight.
 - **Plain CSS on Mirador's theme variables**, so the view matches its light and dark themes and ships as one file.
 
 ### A review, phase by phase
@@ -71,8 +72,12 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 `ReviewSession` drives the phases and emits events; the host applies them to the canvas item, throttled for the view.
 
 1. **Setup.** The agent calls `council_open`; the user picks profile, depth, seats and instructions in the canvas
-   (`configure`), then starts it. Depth is two knobs (`core/depth.ts`): deliberation rounds (1 to 6) and the most
-   findings per reviewer (1 to 20).
+   (`configure`), then starts it. Only the user starts a review: `council_begin` refuses one in setup whose Start didn't
+   ask for it. A `council_open` while the conversation has a review the user hasn't started puts the new review in that
+   item (`unstartedReview`), keeping its profile seats unless the agent names others (a demo's mocks stay a demo's own),
+   so the user never sets up one tab while the agent means the other. Each setup action (`configure`, `start`) names the
+   review the view shows, so one sent for a review replaced meanwhile is refused instead of landing on its replacement. Depth is two knobs (`core/depth.ts`): deliberation rounds (1 to 6) and the most findings
+   per reviewer (1 to 20).
 2. **Independent review.** Each seat reviews the target on its own (`finding-reported`). A reviewer's findings past the
    limit are cut, most severe kept (`findings-capped`). Duplicates merge (`findings-merged`, `core/duplicates.ts`); with
    a real agent at the council, a grouping turn merges findings by meaning before round 1.
@@ -139,7 +144,15 @@ own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves t
   about once more in a new conversation (`repairPrompt`); a second miss fails the turn.
 - **Starting conversations.** Only a tool may start one, so the host keeps the tool context of the latest tool call in
   each conversation and starts reviewers through it. After a Mirador restart there is none: Start, Resume and Re-check
-  ask the agent to call `council_begin`, which starts the work.
+  ask the agent to call `council_begin`, which starts the work. For a review in setup it starts only one whose Start
+  asked (`startsAsked`, held in memory: after another restart the user presses Start again).
+- **Asking the agent from the canvas.** The view's actions that ask the agent something (Start, Resume, Re-check,
+  fetching a late reply, Fix, Ask, tickets, Run again, and a ruling on a finding with a ticket or a fix) send the prompt
+  without awaiting it (`promptAfterTurn`). Mirador waits for an action's result, and in an idle conversation a prompt
+  resolves only when the turn it starts ends, so awaiting it held up the view's later actions for the agent's whole
+  turn. A failed send is logged; Start also drops its request, so `council_begin` refuses until the user presses Start
+  again. Retry start sends a second ask while the agent's turn from the first still runs; a review running already
+  answers `council_begin` plainly rather than failing as one, which is what that second ask then calls.
 - **The agent's other tools.** `council_stop` does what the view's Stop does, but only for a running session: a review
   a restart left running reads as interrupted, with nothing to stop. A stop also stops the reviewers' conversations it
   started, through `stopConversation` (Mirador's plugin API 10); on a Mirador older than that there is no way to, so
