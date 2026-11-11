@@ -2,6 +2,7 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { isRunning, isRulable, type Ask, type Finding, type Review } from "../core/model.ts";
 import { uncheckableFixes } from "../core/deliberation.ts";
+import { unansweredFixes } from "../core/describe.ts";
 import { awaitsFixRequest } from "../core/review.ts";
 import type { Decision, ViewAction } from "../core/schemas.ts";
 import { ASK_MAX } from "../core/schemas.ts";
@@ -140,15 +141,15 @@ function FixStatus({ review, finding, openPath, act, busy }: { review: Review; f
           ? fix.fixer.conversationId
             ? `Handed to ${fix.fixer.profile}`
             : `Handed to ${fix.fixer.profile} · starting…`
-          : fix.problem
+          : fix.state === "handed-off" && fix.problem
             ? "Asked about in your own words"
             : "Handed to this conversation's agent"}
       </p>
       {fix.problem && (
         <p className="fix-problem" role="alert">
-          <strong>Not fixed: </strong>
+          <strong>{fix.state === "fixed" ? "Not re-checked: " : "Not fixed: "}</strong>
           {fix.problem}
-          <span className="muted"> · “Ask … to fix” in the action plan hands it over again.</span>
+          {fix.state !== "fixed" && <span className="muted"> · “Ask … to fix” in the action plan hands it over again.</span>}
         </p>
       )}
       {fix.summary ? <Markdown review={review} text={fix.summary} {...(openPath ? { openPath } : {})} /> : !fix.problem && <p className="muted">Waiting for the agent to report the fix.</p>}
@@ -326,6 +327,7 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
   const fixed = standing.filter((finding) => finding.fix?.state === "fixed").length;
   // With no reviewer left who completed the review, nobody can re-check a fix (the host refuses), so none is offered.
   const recheckable = Math.max(0, fixed - uncheckableFixes(review).length);
+  const unanswered = unansweredFixes(review).length;
   const withFix = (state: string) => standing.filter((finding) => finding.fix?.state === state).length;
   const attention = standing.filter((finding) => finding.fix?.problem).length;
   const hasFixes = standing.some((finding) => finding.fix);
@@ -347,7 +349,9 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
       : unruled > 0
         ? null
         : recheckable > 0
-          ? "Fixes reported. Re-check them so the reviewers can verify."
+          ? unanswered > 0 && unanswered === fixed
+            ? `Re-check ${review.verifications} got no answer about ${unanswered === 1 ? "a fix" : `${unanswered} fixes`} (the reviewers' activity says why). Re-check again.`
+            : "Fixes reported. Re-check them so the reviewers can verify."
           : fixed > 0 && pending === 0
             ? "Fixes reported, but no reviewer who completed the review is left to re-check them. Check them yourself."
           : reopened > 0

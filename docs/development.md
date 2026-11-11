@@ -100,7 +100,9 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 7. **Re-check.** `verification-started` has each fixed finding's reporters and backers check the fix (`fix-checked`);
    `verification-ended` marks each fix verified or reopened. Only reviewers who completed the review check
    (`checkersOf`); when none of a finding's backers did, every reviewer who did checks it, and with none left the host
-   refuses the re-check and says why.
+   refuses the re-check and says why. Each fix records the pass it was put to (`recheckedIn`); a pass that ends with no
+   check back on one (its checkers' turns failed, say) leaves it fixed with a `problem` saying so, cleared when the next
+   re-check starts. A stopped pass marks nothing.
 
 Every change from outside the engine goes through the host's `applyTo`, which hands it to the running session when
 there is one; a direct write would be lost under the session's next one.

@@ -279,7 +279,8 @@ export interface Fix {
   /**
    * Why the fixer didn't fix it, when it said so or ended without saying; cleared by a fix report or a new hand-off. A
    * handed-off fix without one is someone's work in progress, which asking for fixes again leaves alone; with one, it
-   * is handed to a new fixer.
+   * is handed to a new fixer. On a fixed fix: why the last re-check settled nothing about it (no check came back,
+   * as when its checkers' turns failed); cleared when the next re-check starts.
    */
   problem: string | null;
   /** What the agent said it changed, the latest report. */
@@ -287,6 +288,8 @@ export interface Fix {
   files: string[];
   fixedAt: number | null;
   checks: FixCheck[];
+  /** The latest re-check pass this fix was put to (verification-started); absent before one. */
+  recheckedIn?: number;
 }
 
 /** The council's verdict, once the synthesis has settled every finding. */

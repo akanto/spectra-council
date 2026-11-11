@@ -72,6 +72,7 @@ export function describeReview(review: Review): string {
     if (finding.ruling) lines.push(`  User ruling: ${finding.ruling.decision}${finding.ruling.note ? ` (${finding.ruling.note})` : ""}`);
     if (finding.fix) {
       lines.push(`  Fix: ${finding.fix.state}${finding.fix.summary ? `: ${finding.fix.summary}` : ""}${finding.fix.files.length ? ` (${finding.fix.files.join(", ")})` : ""}`);
+      if (finding.fix.problem) lines.push(`  ${finding.fix.state === "fixed" ? "Not re-checked" : "Not fixed"}: ${finding.fix.problem}`);
       for (const check of finding.fix.checks) lines.push(`  Re-check ${check.pass}, ${label(check.reviewerId)} ${check.outcome}: ${check.text}`);
     }
     for (const argument of argumentsOn(review, finding.id)) {
@@ -90,14 +91,25 @@ export const STATUS_MEANINGS: Record<Finding["status"], string> = {
   withdrawn: "Withdrawn: its reporter conceded it isn't a problem.",
 };
 
-/** How the latest re-check of fixes came out, e.g. "After re-check 1: 4 verified, 3 reopened."; null before one. */
+/**
+ * The fixes the latest re-check settled nothing about: put to it, and it ended with no check back (the reducer says so
+ * in the fix's problem). A stopped re-check, or a fix reported again since, leaves none.
+ */
+export const unansweredFixes = (review: Review): Finding[] =>
+  review.findings.filter((finding) => finding.fix?.state === "fixed" && finding.fix.recheckedIn === review.verifications && finding.fix.problem !== null);
+
+/**
+ * How the latest re-check of fixes came out, e.g. "After re-check 1: 4 verified, 3 reopened, 1 not re-checked."; null
+ * before one.
+ */
 export function recheckLine(review: Review): string | null {
   if (review.verifications === 0) return null;
   const fixes = review.findings.filter((finding) => finding.fix?.checks.some((check) => check.pass === review.verifications));
-  if (fixes.length === 0) return null;
+  const unanswered = unansweredFixes(review).length;
+  if (fixes.length === 0 && unanswered === 0) return null;
   const verified = fixes.filter((finding) => finding.fix!.state === "verified").length;
   const reopened = fixes.filter((finding) => finding.fix!.state === "reopened").length;
-  const parts = [verified > 0 ? `${verified} verified` : "", reopened > 0 ? `${reopened} reopened` : ""].filter(Boolean);
+  const parts = [verified > 0 ? `${verified} verified` : "", reopened > 0 ? `${reopened} reopened` : "", unanswered > 0 ? `${unanswered} not re-checked` : ""].filter(Boolean);
   return `After re-check ${review.verifications}: ${parts.join(", ") || "nothing settled"}.`;
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
 import { uncheckableFixes } from "../core/deliberation.ts";
+import { recheckLine, unansweredFixes } from "../core/describe.ts";
 import { ReviewSession, type ReviewerRunner } from "../core/engine.ts";
 import { isRulable, isStanding, reportersOf, type Review } from "../core/model.ts";
 import { MockRunner, mockScript } from "../core/mock-runner.ts";
@@ -317,6 +318,60 @@ describe("ReviewSession", () => {
     expect(checked).toEqual(["r2"]);
     expect(after.verifications).toBe(1);
     expect(after.findings[0]!.fix).toMatchObject({ state: "verified", checks: [{ reviewerId: "r2", outcome: "verified" }] });
+  });
+
+  test("a re-check whose checkers' turns all fail leaves the fix fixed, saying no one re-checked it, until the next one", async () => {
+    const final = await twoReviewerRun((reviewerId) => ({ stance: "supports", text: reviewerId }));
+    const fixed = fixFirst(final);
+    const clock = new FakeClock();
+    let failing = true;
+    const runner: ReviewerRunner = {
+      async run() {},
+      async deliberate() {},
+      async propose() {},
+      async verify(job, report) {
+        if (failing) throw new Error("Its turn took longer than 15 minutes");
+        for (const findingId of job.findingIds) report({ type: "fix-checked", check: { findingId, outcome: "verified", text: "Fixed.", evidence: [] } });
+      },
+    };
+    const first = new ReviewSession(fixed, { runner, clock, onChange: () => {} }).verify();
+    await clock.runAll();
+    const after = await first;
+    expect(after.phase).toBe("complete");
+    expect(after.findings[0]!.fix).toMatchObject({ state: "fixed", recheckedIn: 1, checks: [] });
+    expect(after.findings[0]!.fix!.problem).toContain("No reviewer re-checked it in re-check 1");
+    expect(unansweredFixes(after).map(({ id }) => id)).toEqual(["F1"]);
+    expect(recheckLine(after)).toBe("After re-check 1: 1 not re-checked.");
+    expect(after.reviewers[0]!.activity.some((each) => each.kind === "error" && each.text.includes("took longer"))).toBe(true);
+
+    failing = false;
+    const second = new ReviewSession(after, { runner, clock, onChange: () => {} }).verify();
+    await clock.runAll();
+    const again = await second;
+    expect(again.findings[0]!.fix).toMatchObject({ state: "verified", problem: null, recheckedIn: 2 });
+    expect(unansweredFixes(again)).toEqual([]);
+    expect(recheckLine(again)).toBe("After re-check 2: 1 verified.");
+  });
+
+  test("a stopped re-check says nothing about the fixes it didn't get to", async () => {
+    const fixed = fixFirst(await twoReviewerRun((reviewerId) => ({ stance: "supports", text: reviewerId })));
+    const stopped = reduce(reduce(fixed, { type: "verification-started", at: 6_000_000, findingIds: ["F1"], reviewerIds: ["r1"] }), { type: "stopped", at: 6_000_001 });
+    expect(stopped.findings[0]!.fix).toMatchObject({ state: "fixed", problem: null });
+    expect(unansweredFixes(stopped)).toEqual([]);
+  });
+
+  test("a fix reported during a re-check it wasn't put to isn't called unanswered", async () => {
+    const fixed = fixFirst(await twoReviewerRun((reviewerId) => ({ stance: "supports", text: reviewerId })));
+    let review = reduce(fixed, { type: "verification-started", at: 6_000_000, findingIds: ["F1"], reviewerIds: ["r1"] });
+    // A fixed finding from outside the pass (as a fixer reporting mid-pass would leave it).
+    review = { ...review, findings: [...review.findings, { ...review.findings[0]!, id: "F2", fix: { ...review.findings[0]!.fix!, recheckedIn: undefined } }] };
+    review = reduce(review, { type: "fix-checked", reviewerId: "r1", at: 6_000_001, check: { findingId: "F1", outcome: "verified", text: "ok", evidence: [] } });
+    // A fix from an earlier pass, reported again during this one, isn't checked in it.
+    const older = { ...review, findings: review.findings.map((finding) => (finding.id === "F2" ? { ...finding, fix: { ...finding.fix!, recheckedIn: 0 } } : finding)) };
+    expect(() => reduce(older, { type: "fix-checked", reviewerId: "r1", at: 6_000_001, check: { findingId: "F2", outcome: "verified", text: "ok", evidence: [] } })).toThrow("isn't being re-checked in this pass");
+    review = reduce(review, { type: "verification-ended", at: 6_000_002 });
+    expect(review.findings[1]!.fix).toMatchObject({ state: "fixed", problem: null });
+    expect(unansweredFixes(review)).toEqual([]);
   });
 
   test("with no reviewer left who completed the review, a re-check starts nothing", async () => {

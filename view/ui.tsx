@@ -260,7 +260,7 @@ export function FixBadge({ finding }: { finding: Finding }) {
     <>
       <span className={`badge fix-${finding.fix.state}`}>{FIX_WORDS[finding.fix.state]}</span>
       {finding.fix.problem && (
-        <span className="fix-problem-mark" title={`Not fixed: ${finding.fix.problem}`} aria-label="Needs attention">
+        <span className="fix-problem-mark" title={`${finding.fix.state === "fixed" ? "Not re-checked" : "Not fixed"}: ${finding.fix.problem}`} aria-label="Needs attention">
           ⚠
         </span>
       )}

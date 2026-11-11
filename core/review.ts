@@ -374,7 +374,7 @@ const findingOf = (review: Review, findingId: string): Finding => {
 
 /**
  * Back to complete after a verification round: each fixed finding checked in it is verified, or reopened if any check
- * reopened it; one with no check stays fixed. A cut-short round settles nothing. The agent hears of the outcome anew.
+ * reopened it; one put to it that got no check stays fixed, with the problem saying so. A cut-short round settles nothing. The agent hears of the outcome anew.
  */
 function endVerification(review: Review, at: number, current: string, settles = true): Review {
   const pass = review.verifications;
@@ -386,7 +386,8 @@ function endVerification(review: Review, at: number, current: string, settles = 
     findings: review.findings.map((finding) => {
       if (!settles || finding.fix?.state !== "fixed") return finding;
       const checks = finding.fix.checks.filter((check) => check.pass === pass);
-      if (checks.length === 0) return finding;
+      // Put to this pass and no check came back (its checkers' turns failed, or left it out): it stays fixed, saying why.
+      if (checks.length === 0) return finding.fix.recheckedIn === pass ? { ...finding, fix: { ...finding.fix, problem: `No reviewer re-checked it in re-check ${pass}: their turns failed or left it out (their activity says which). Re-check it again.` } } : finding;
       return { ...finding, fix: { ...finding.fix, state: checks.some((check) => check.outcome === "reopened") ? "reopened" : "verified" } };
     }),
   };
@@ -628,10 +629,13 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (event.findingIds.length === 0) throw new ReviewError("No fixed finding to re-check.");
       for (const id of event.findingIds) if (findingOf(review, id).fix?.state !== "fixed") throw new ReviewError(`${id} has no fix to re-check.`);
       const checkers = new Set(event.reviewerIds);
+      const pass = review.verifications + 1;
+      const ids = new Set(event.findingIds);
       return {
         ...review,
         phase: "verification",
-        verifications: review.verifications + 1,
+        verifications: pass,
+        findings: review.findings.map((finding) => (ids.has(finding.id) ? { ...finding, fix: { ...finding.fix!, recheckedIn: pass, problem: null } } : finding)),
         reviewers: review.reviewers.map((reviewer) =>
           checkers.has(reviewer.id) && reviewer.enabled && reviewer.status === "completed" ? { ...reviewer, status: "verifying", current: "Re-checking fixes" } : reviewer,
         ),
@@ -812,6 +816,8 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
     case "fix-checked": {
       const finding = findingOf(review, event.check.findingId);
       if (finding.fix?.state !== "fixed") throw new ReviewError(`${finding.id} has no fix to re-check.`);
+      // A fix reported again during the pass wasn't put to it (an older review's fixes have no pass recorded).
+      if (finding.fix.recheckedIn !== undefined && finding.fix.recheckedIn !== review.verifications) throw new ReviewError(`${finding.id}'s fix isn't being re-checked in this pass.`);
       const { findingId: _, ...check } = event.check;
       const checked = updateFinding(review, finding.id, (it) => ({
         ...it,
