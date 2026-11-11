@@ -16,6 +16,11 @@ function useDraft(value: string, commit: (text: string) => void) {
   useEffect(() => {
     setDraft(value);
   }, [value]);
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
   const flush = (text: string) => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
