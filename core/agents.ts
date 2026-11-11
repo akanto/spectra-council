@@ -1,10 +1,10 @@
 /**
  * The agents that can take a seat at the council: deterministic mock personas, and the user's Mirador profiles (Claude,
- * pi, opencode, …), whose agent id is "profile:" and the profile's name. A seat runs on its profile's defaults: the
- * agent's default model and the profile's effort (docs/mirador-api.md has what Mirador would need for more). The
- * review names a profile seat by its model ("Opus 5.5"), once the host could tell which.
+ * pi, opencode, …), whose agent id is "profile:" and the profile's name. A profile seat runs on its profile's defaults
+ * (the agent's default model and the profile's effort) unless the user chose a model or effort for it (`SeatChoice`).
+ * The review names a profile seat by its model ("Opus 5.5"), once the host could tell which.
  */
-import type { ModelInfo, Reviewer, RunnerKind } from "./model.ts";
+import type { ModelInfo, Reviewer, RunnerKind, SeatChoice } from "./model.ts";
 import type { Seat } from "./schemas.ts";
 
 export interface AgentInfo {
@@ -64,6 +64,26 @@ export function agentLabel(id: string): string {
   return isProfileAgent(id) ? profileName(id) : id;
 }
 
+/** A profile seat's own model and effort, undefined when it has neither or isn't a profile seat (a mock has no choice). */
+export function choiceOf(seat: Pick<Seat, "agent" | "model" | "effort">): SeatChoice | undefined {
+  if (!isProfileAgent(seat.agent) && seat.agent !== UNNAMED_PROFILE) return undefined;
+  const model = seat.model?.trim();
+  const effort = seat.effort?.trim();
+  if (!model && !effort) return undefined;
+  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+}
+
+/** Whether two choices of model and effort are the same (absent ones count as the profile's own). */
+export const sameChoice = (a: SeatChoice | undefined, b: SeatChoice | undefined) => (a?.model ?? "") === (b?.model ?? "") && (a?.effort ?? "") === (b?.effort ?? "");
+
+/** A choice of model and effort in a few words: "opus, high effort", "high effort"; "" for none. */
+export const choiceText = (choice: SeatChoice | undefined) => [choice?.model, choice?.effort ? `${choice.effort} effort` : undefined].filter(Boolean).join(", ");
+
+/** The seat a reviewer sits in: its agent and its choice of model and effort, as the setup edits it. */
+export function seatOf(reviewer: Pick<Reviewer, "agent" | "enabled" | "choice">): Seat {
+  return { agent: reviewer.agent, enabled: reviewer.enabled, ...reviewer.choice };
+}
+
 /** Two mock seats, the first two agents: for tests and demos (council_open seats the user's profiles by default). */
 export function defaultSeats(agents: AgentInfo[] = MOCK_AGENTS): Seat[] {
   return Array.from({ length: 2 }, (_, index) => ({ agent: agents[index % agents.length]!.id, enabled: true }));
@@ -78,6 +98,36 @@ export interface ProfileInfo {
   name: string;
   harness: string;
   model: ModelInfo | null;
+  /** The models its agent offered in its latest conversation, for a seat to choose from; absent or [] when unknown. */
+  models?: OptionChoice[];
+  /** The efforts that conversation's model offered; absent or [] when unknown or it has none. */
+  efforts?: OptionChoice[];
+}
+
+/** One choice an agent offers for a setting: its value, which the host passes on, and the name to show for it. */
+export interface OptionChoice {
+  value: string;
+  name: string;
+}
+
+/**
+ * The model a profile seat most likely runs on: the one chosen for it, named as the profile's agent offers it, else the
+ * one the profile's latest conversation ran on; with the chosen effort, else the profile's. Null when unknown.
+ */
+export function expectedModel(profile: ProfileInfo | undefined, choice: SeatChoice | undefined): ModelInfo | null {
+  const named = (list: OptionChoice[] | undefined, wanted: string) => offered(list, wanted)?.name ?? wanted;
+  const name = choice?.model ? named(profile?.models, choice.model) : profile?.model?.name;
+  if (!name) return null;
+  // Another model than the profile's latest may have other efforts, or none: its effort is unknown until it runs.
+  const ownEffort = name === profile?.model?.name ? profile.model.effort : null;
+  const effort = choice?.effort ? named(profile?.efforts, choice.effort) : ownEffort;
+  return { name, effort };
+}
+
+/** The choice on offer that `wanted` names, by its value or its name, in any case; undefined when none does. */
+export function offered(list: OptionChoice[] | undefined, wanted: string): OptionChoice | undefined {
+  const lower = wanted.trim().toLowerCase();
+  return list?.find((each) => each.value === wanted) ?? list?.find((each) => each.value.toLowerCase() === lower || each.name.toLowerCase() === lower);
 }
 
 /** A model with its effort, in a few words: "Opus 5.5 · high", or just "Opus 5.5". */

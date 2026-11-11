@@ -1,15 +1,16 @@
 /**
- * What the plugin reads from Mirador's own records, which its plugin API doesn't offer yet (docs/mirador-api.md, 1 and
- * 4): the user's profiles, the model and effort a conversation runs on, and a conversation's latest reply (for a
- * reviewer's late reply, which Mirador told the plugin while nothing waited for it). Mirador keeps both in its SQLite database
- * (`$MIRADOR_DATA_DIR/state.sqlite`, by default `~/.mirador/state.sqlite`), which this opens read-only. Anything it
- * can't read gives an empty answer, never an error: the council then names seats by their profiles, as before.
+ * What the plugin reads from Mirador's own records, which its plugin API doesn't offer yet (docs/mirador-api.md): the
+ * user's profiles with the models and efforts their agents offer, the model and effort a conversation runs on, and a
+ * conversation's latest reply (for a reviewer's late reply, which Mirador told the plugin while nothing waited for it).
+ * Mirador keeps them in its SQLite database (`$MIRADOR_DATA_DIR/state.sqlite`, by default `~/.mirador/state.sqlite`),
+ * which this opens read-only. Anything it can't read gives an empty answer, never an error: the council then names seats
+ * by their profiles, as before.
  */
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LateReply } from "../../core/agent-runner.ts";
-import type { ProfileInfo } from "../../core/agents.ts";
+import type { OptionChoice, ProfileInfo } from "../../core/agents.ts";
 import type { ModelInfo } from "../../core/model.ts";
 
 export interface MiradorRecords {
@@ -149,6 +150,27 @@ export function modelFromOptions(options: unknown, profileEffort: string | null 
   return { name, effort };
 }
 
+/**
+ * The models and efforts a conversation's config options offer, for a seat to choose from: the choices of the option of
+ * category "model" (without a "default" one, which a seat gets by choosing none) and of the one of category
+ * "thought_level" (without "default" or "off"), each by its value and its name. A model's name loses any provider prefix; an
+ * effort's is cleaned as `modelFromOptions` cleans it. Models of the same name from two providers keep the prefix.
+ */
+export function choicesFromOptions(options: unknown): { models: OptionChoice[]; efforts: OptionChoice[] } {
+  const list = parseOptions(options);
+  const modelOption = list.find((o) => o.category === "model") ?? list.find((o) => o.id === "model");
+  const effortOption = list.find((o) => o.category === "thought_level") ?? list.find((o) => o.id === "effort" || o.id === "thought_level");
+  const listed = (modelOption?.choices ?? []).filter((c) => c.value && c.value.toLowerCase() !== "default");
+  const short = listed.map((c) => stripProvider(c.name || c.value) || c.value);
+  // Two providers' models of the same name keep their prefixes, to tell them apart.
+  const models = listed.map((c, i) => ({ value: c.value, name: short.filter((name) => name === short[i]).length > 1 ? c.name || c.value : short[i]! }));
+  const efforts = (effortOption?.choices ?? []).flatMap((c) => {
+    const name = cleanEffort(c.name || c.value);
+    return c.value && c.value.toLowerCase() !== "default" && name ? [{ value: c.value, name }] : [];
+  });
+  return { models, efforts };
+}
+
 interface ParsedOption {
   id: string;
   category: string;
@@ -237,15 +259,20 @@ export function miradorRecords(path: string = miradorDatabase()): MiradorRecords
         const convs = db.query("SELECT config_options FROM conversations WHERE profile_id = ? AND config_options != '[]' ORDER BY created_at DESC, rowid DESC LIMIT 20");
         return rows.map((r) => {
           let model: ModelInfo | null = null;
+          let choices: ReturnType<typeof choicesFromOptions> = { models: [], efforts: [] };
           try {
             for (const c of convs.all(r.id) as { config_options: string }[]) {
-              model = modelFromOptions(optionsOf(c.config_options), r.effort);
-              if (model) break;
+              const options = optionsOf(c.config_options);
+              model = modelFromOptions(options, r.effort);
+              if (model) {
+                choices = choicesFromOptions(options);
+                break;
+              }
             }
           } catch {
             model = null;
           }
-          return { name: String(r.name), harness: String(r.harness), model };
+          return { name: String(r.name), harness: String(r.harness), model, ...choices };
         });
       });
     },

@@ -2,7 +2,7 @@
   "name": "spectra-council",
   "title": "Spectra Council",
   "version": "0.2.0",
-  "api": 5,
+  "api": 8,
   "tellsCaller": true,
   "canvas": {
     "host": "hosts/mirador/host.ts",

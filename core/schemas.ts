@@ -24,6 +24,9 @@ export const DECISIONS = ["accepted", "dismissed", "deferred"] as const;
 /** The most seats a council can have; it starts with two, and the user adds and removes seats. The workspace shows one panel each. */
 export const MAX_SEATS = 8;
 
+/** The longest model or effort a seat can name, in characters. */
+export const MODEL_CHOICE_MAX = 120;
+
 /** The longest instruction the user can send the agent about the accepted findings ("ask"), in characters. */
 export const ASK_MAX = 4000;
 
@@ -126,10 +129,17 @@ export const duplicateGroupInputSchema = z.object({
 
 export type DuplicateGroupInput = z.infer<typeof duplicateGroupInputSchema>;
 
-/** One seat at the council: the agent in it. `enabled` is false only in reviews from before seats could be removed. */
+/**
+ * One seat at the council: the agent in it, and for a Mirador profile the model and effort its conversations start on
+ * (the profile's own when left out). `enabled` is false only in reviews from before seats could be removed.
+ */
 export const seatSchema = z.object({
   agent: z.string().min(1).describe('A mock persona\'s id (mock-claude, …), or "profile:" and a Mirador profile\'s name, e.g. "profile:pi home".'),
   enabled: z.boolean(),
+  /** A model the profile's agent offers, by id or name, as Mirador matches it ("opus"); a profile seat only. */
+  model: z.string().trim().min(1).max(MODEL_CHOICE_MAX).optional(),
+  /** An effort the model offers, by its value ("high"); a profile seat only. */
+  effort: z.string().trim().min(1).max(MODEL_CHOICE_MAX).optional(),
 });
 
 export type Seat = z.infer<typeof seatSchema>;

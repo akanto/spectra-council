@@ -32,7 +32,7 @@ async function tour(theme: "light" | "dark") {
   for (let seat = await page.locator(".seats .seat").count(); seat < 4; seat++) {
     await page.getByRole("button", { name: /Add reviewer/ }).click();
     await page.locator(".seats .seat").nth(seat).waitFor();
-    await page.locator(".seats .seat select").nth(seat).selectOption(extra[seat - 2] ?? "mock-qwen");
+    await page.locator(".seats .seat select.seat-agent").nth(seat).selectOption(extra[seat - 2] ?? "mock-qwen");
     await page.waitForTimeout(200);
   }
   await page.waitForTimeout(300);

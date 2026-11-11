@@ -415,6 +415,28 @@ textarea {
   min-width: 0;
 }
 
+.seat-choices {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 6px;
+}
+
+.seat-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.seat-choice select,
+.seat-choice input {
+  width: 100%;
+  min-width: 0;
+  color: var(--text);
+}
+
 .seats-add {
   display: flex;
   align-items: center;

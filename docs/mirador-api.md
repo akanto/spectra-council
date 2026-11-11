@@ -1,27 +1,19 @@
 # What Spectra Council needs from Mirador's plugin API
 
-Real reviewers run as conversations that a plugin starts (plugin API 5, `CanvasToolContext.startConversation({ profile, prompt })`).
-These are the extensions that would make them better, most important first.
+Real reviewers run as conversations that a plugin starts (`CanvasToolContext.startConversation`). Plugin API 8 brought
+what this list asked for first: a started conversation's `title`, `model` and `effort`, which the plugin now uses. Since
+then Mirador has also shipped `stopConversation` (API 10, section 3), which the plugin uses when a review stops, and the
+`activity` hook (API 6, section 5), which it doesn't use yet. These are the extensions that would make reviewers better,
+most important first.
 
-## 1. Model and effort per started conversation
+## 1. The models and efforts a profile offers
 
-**What:** `startConversation({ profile, prompt, model?, effort? })`.
+**What:** the choices of a profile's model and effort options, e.g. `profiles()` (section 4) with
+`models: { value: string; name: string }[]` and `efforts` alike.
 
-**Why:** A started conversation takes its profile's mode and effort (`applyProfileChoices` in `host/conversations.ts`) and
-the agent's default model. A profile has no model field. What the user picks in a conversation's header goes through the
-session's `setConfigOption`, which plugins can't reach. So a seat can't choose its model, and the setup can't offer one.
-
-**Sketch:** once the session exists, apply `model` with `trySetConfigOption`, matched to the agent's model config option as
-`modelChoiceFor` does. Apply `effort` to the `thought_level` option, and skip it when the model doesn't offer it. This is
-what `applyProfileChoices` already does for the profile's values. Then a seat is a profile, a model and an effort, and the
-setup offers the choices.
-
-```ts
-startConversation({ profile: "pi home", prompt, model: "<model id>", effort: "high" });
-```
-
-Until then, pin a model per profile in the profile's environment: `ANTHROPIC_MODEL` for Claude Code, or a
-`PI_CODING_AGENT_DIR` whose `settings.json` names `defaultModel` for pi. The effort comes from the profile's effort field.
+**Why:** the setup offers each seat the models its profile's agent offers. Today the plugin reads them from the config
+options of the profile's latest conversation in Mirador's database (`hosts/mirador/records.ts`), so a profile with no
+conversation yet offers none, and the user types a model's name instead.
 
 ## 2. Starting conversations from a view action
 
@@ -39,30 +31,20 @@ startConversation(start: { profile: string; prompt: string }): Promise<StartedCo
 
 It keeps the same rule: a conversation a plugin started can't start more.
 
-## 3. Stopping a started conversation
+## 3. Stopping a started conversation (done)
 
 Done in Mirador's plugin API 10: `stopConversation(conversationId)` on both the tool and the action context. A Mirador
-older than that lacks it, so the plugin keeps `"api": 5` and checks whether it is there. A stop stops each reviewer
+older than that lacks it, so the plugin asks for `"api": 8` and checks whether it is there. A stop stops each reviewer
 conversation still running; one whose turn already ended is left alone, and so is one the turn's limit gave up on, whose
 late reply the user can still fetch. The stopped conversation's `replied` then hears `ended: "stopped"`, which changes
 nothing and tells no one.
 
 **What:** `stopConversation(id)` on the plugin context.
 
-**Why:** Stop in the canvas aborts the review, but the reviewers' conversations run on until their turn ends. Their replies
-are ignored. The user sees agents still working after they pressed Stop, and they still spend tokens.
-
-**Sketch:**
-
-```ts
-stopConversation(conversationId: string): Promise<void>;
-```
-
-The turn ends, and the plugin's `replied` hears `ended: "stopped"`.
-
-Until then, the plugin reads the model and effort a conversation runs on from Mirador's database, read-only
-(`hosts/mirador/records.ts`), to name each seat by its model. An API for that would replace the database read: for
-example `conversationModel(id): { model: string; effort: string | null } | null` on the plugin context.
+The plugin reads the model and effort a conversation runs on from Mirador's database, read-only
+(`hosts/mirador/records.ts`), to name each seat by its model while its turn runs. `ConversationReply.ranOn` (API 8)
+gives it at the turn's end; an API for it while the turn runs would replace the database read: for example
+`conversationModel(id): { model: string; effort: string | null } | null` on the plugin context.
 
 ## 4. Listing profiles
 
@@ -80,18 +62,11 @@ profiles(): { name: string; harness: string }[];
 
 `name` is the profile's name as Mirador has it (for example "Home" or "pi home"), and `harness` says which agent runs it.
 
-## 5. Progress of a started conversation
+## 5. Progress of a started conversation (partly shipped in API 6, not used yet)
 
-**What:** a way to hear a started conversation's tool calls (file reads, searches) as they happen.
-
-**Why:** A seat shows only "asked", "started conversation …" and the result at the end of each turn. A mock's panel shows
-each read and search as it happens. A real seat's panel should too.
-
-**Sketch:** a hook beside `replied`, called for each step the conversation takes:
-
-```ts
-activity?(started: StartedConversation, step: { kind: "read" | "search" | "tool" | "message"; text: string; at: number }, context: CanvasActionContext): void;
-```
+The `activity` hook (API 6) hears every conversation's turn and tool starts and ends, without text or arguments. That is
+enough to measure a turn's limit as idle time (spectra-council-9yd), but not to show a real seat's reads and searches
+as a mock's panel shows them: that would need the tool call's title or path, e.g. `toolTitle` on "tool-started".
 
 ## 6. A promise about tool contexts
 
@@ -125,6 +100,6 @@ database, which `hosts/mirador/records.ts` reads (`replyOf`) to let the user fet
 
 Done in Mirador after 0.12.0: a plugin whose `plugin.json` says `"tellsCaller": true`, and which has a `replied` hook,
 tells the conversation that started a conversation how its first turn ended, so Mirador leaves out its own "turn ended"
-notification for that turn. An older Mirador ignores the field, so the plugin keeps `"api": 5`; there the user gets both
+notification for that turn. An older Mirador ignores the field, so it needs no newer `"api"`; there the user gets both
 the ping and the review's own telling. The field is an opt-in because a plugin with `replied` that doesn't tell its
 caller (Spectra Council 0.2.0 and earlier) would otherwise end silently.

@@ -8,9 +8,10 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AgentRunner, replyFetched, type LateReply } from "../../core/agent-runner.ts";
+import { promptTitle } from "../../core/agent-turns.ts";
 import { knobsText } from "../../core/depth.ts";
 import { checkersOf, uncheckableFixes } from "../../core/deliberation.ts";
-import { isProfileAgent, modelLabel, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
+import { choiceOf, choiceText, expectedModel, isProfileAgent, modelLabel, offered, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, finishedPrompt, fixerFinishedPrompt, lateReplyPrompt, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, TURN_LIMIT_MS, TurnTimeout, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
 import { fixerPrompt, parseFixerReport } from "../../core/fixer.ts";
@@ -21,7 +22,7 @@ import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
-import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, stopInput, ticketIdSchema, viewActionSchema, type Decision, type Setup } from "../../core/schemas.ts";
+import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, type Decision, type Setup } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
 import { askFixerPrompt, askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
@@ -85,11 +86,16 @@ const openInput = z.object({
   rounds: roundsSchema.optional().describe("Deliberation rounds, 1 to 6; overrides the depth preset's. Only when the user asks for a number."),
   maxFindings: maxFindingsSchema.optional().describe("The most findings each reviewer reports, 1 to 20; overrides the depth preset's. Only when the user asks for a number."),
   agents: z
-    .array(z.string().min(1))
+    .array(
+      z.union([
+        z.string().min(1),
+        seatSchema.pick({ agent: true, model: true, effort: true }).describe("A Mirador profile seat on a model or effort of its own, e.g. {\"agent\": \"profile:Home\", \"model\": \"opus\", \"effort\": \"high\"}."),
+      ]),
+    )
     .min(1)
     .max(MAX_SEATS)
     .optional()
-    .describe(`The reviewers to seat, in order, 1 to ${MAX_SEATS}: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen, mock-glm). Seat mocks only when the user asks for a mock or demo review: their findings are illustrative, not an analysis. Default: the user's first two Mirador profiles, or none for the user to pick when no profile is known. The user can add and remove reviewers in the setup.`),
+    .describe(`The reviewers to seat, in order, 1 to ${MAX_SEATS}: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen, mock-glm). A profile seat runs on its profile's model and effort; only when the user names a model or effort for it, pass it as an object with model and effort. Seat mocks only when the user asks for a mock or demo review: their findings are illustrative, not an analysis. Default: the user's first two Mirador profiles, or none for the user to pick when no profile is known. The user can add and remove reviewers and choose their models in the setup.`),
   instructions: z.string().optional().describe("What the user asked the reviewers to pay attention to, in their words."),
   title: z.string().min(1).optional().describe('The review\'s title, e.g. "Architecture review of the payment service".'),
 });
@@ -247,7 +253,7 @@ export function createCouncilHost({
    */
   function conversationsOf(chairId: string, reviewId: string, storage: CanvasPluginContext<Review>["storage"]): Conversations {
     return {
-      ask: ({ profile, prompt, turn, signal, onStart, onModel }) =>
+      ask: ({ profile, model, effort, prompt, turn, signal, onStart, onModel }) =>
         new Promise<AgentReply>((resolve, reject) => {
           if (signal.aborted) return reject(signal.reason);
           // The turn's identity rather than its prompt, which can change while the turn runs (a label follows the model).
@@ -327,7 +333,13 @@ export function createCouncilHost({
             signal.removeEventListener("abort", onAbort);
             return reject(new Error("Mirador was restarted since this review started; ask the agent to call council_begin."));
           }
-          tool.startConversation({ profile, prompt }).then(
+          // A choice as the profile's agent offers it: Mirador takes an effort only by its exact value ("high", not "High").
+          const info = model || effort ? records.profiles().find((each) => each.name.toLowerCase() === profile.toLowerCase()) : undefined;
+          const chosen = {
+            ...(model ? { model: offered(info?.models, model)?.value ?? model } : {}),
+            ...(effort ? { effort: offered(info?.efforts, effort)?.value ?? effort } : {}),
+          };
+          tool.startConversation({ profile, prompt, title: promptTitle(prompt), ...chosen }).then(
             (started) => {
               // The ask gave up while this conversation was starting, before it could be followed: stop it all the same,
               // unless a turn past its limit gave up.
@@ -411,14 +423,18 @@ export function createCouncilHost({
     return (Array.isArray(remembered) ? remembered.filter((each): each is string => typeof each === "string") : []).map((name) => ({ name, harness: "", model: null }));
   }
 
-  /** A review in setup with each profile seat labelled by the model its profile's latest conversation ran on. */
+  /**
+   * A review in setup with each profile seat labelled by the model it most likely runs on: the one chosen for it, else
+   * the one its profile's latest conversation ran on.
+   */
   function identified(review: Review): Review {
     if (review.phase !== "setup" || !review.reviewers.some((reviewer) => isProfileAgent(reviewer.agent))) return review;
-    const models = new Map<string, ModelInfo>();
-    for (const profile of records.profiles()) if (profile.model) models.set(profile.name.toLowerCase(), profile.model);
+    const profiles = new Map<string, ProfileInfo>();
+    for (const profile of records.profiles()) profiles.set(profile.name.toLowerCase(), profile);
     let next = review;
     for (const reviewer of review.reviewers) {
-      const model = isProfileAgent(reviewer.agent) ? models.get(profileName(reviewer.agent).toLowerCase()) : undefined;
+      if (!isProfileAgent(reviewer.agent)) continue;
+      const model = expectedModel(profiles.get(profileName(reviewer.agent).toLowerCase()), reviewer.choice);
       if (model) next = reduce(next, { type: "model-seen", reviewerId: reviewer.id, model });
     }
     return next;
@@ -684,7 +700,8 @@ export function createCouncilHost({
     const ids = waiting.filter((finding) => finding.fix!.fixer!.profile === profile).sort(bySeverity).map(({ id }) => id);
     let started: Awaited<ReturnType<typeof context.startConversation>>;
     try {
-      started = await context.startConversation({ profile, prompt: fixerPrompt(review, ids, review.handoff!.path) });
+      const prompt = fixerPrompt(review, ids, review.handoff!.path);
+      started = await context.startConversation({ profile, prompt, title: promptTitle(prompt) });
     } catch (error) {
       // Recorded as the fixer's failure, so asking again hands the work over anew (to the fixer chosen then).
       const reason = `Couldn't start a conversation on ${profile}: ${error instanceof Error ? error.message : String(error)}`;
@@ -769,7 +786,7 @@ export function createCouncilHost({
       ...(review.depth === "custom" ? {} : { depth: review.depth }),
       rounds: review.deliberationRounds,
       maxFindings: review.maxFindings,
-      ...(seatedReviewers(review).length > 0 ? { agents: seatedReviewers(review).map((reviewer) => reviewer.agent) } : {}),
+      ...(seatedReviewers(review).length > 0 ? { agents: seatedReviewers(review).map((reviewer) => (reviewer.choice ? { agent: reviewer.agent, ...reviewer.choice } : reviewer.agent)) } : {}),
       ...(review.instructions ? { instructions: review.instructions } : {}),
       title: item.title,
     };
@@ -833,11 +850,15 @@ export function createCouncilHost({
           if (!isAbsolute(target)) throw new Error(`The target must be an absolute path; got ${target}.`);
           if ((await targetKind(target)) === null) throw new Error(`There is no file or folder at ${target}.`);
           // Real agents unless asked otherwise: mocks only when the agent names them.
-          const seats = (agents ?? profilesFor(context.storage).slice(0, DEFAULT_SEATS).map((known) => profileAgent(known.name))).map((agent) => ({ agent, enabled: true }));
+          const seats = (agents ?? profilesFor(context.storage).slice(0, DEFAULT_SEATS).map((known) => profileAgent(known.name))).map((seat) =>
+            typeof seat === "string" ? { agent: seat, enabled: true } : { agent: seat.agent, enabled: true, ...choiceOf(seat) },
+          );
           const setup: Setup = { target, profile, depth, seats, instructions, ...(rounds === undefined ? {} : { deliberationRounds: rounds }), ...(maxFindings === undefined ? {} : { maxFindings }) };
           const review = identified(newReview(newId(), setup, runnerKindOf(seats), clock.now()));
           const item = context.publish({ type: ITEM_TYPE, title: title ?? `${PROFILES[profile].title} review · ${basename(target)}`, data: review });
-          const seated = seatedReviewers(review).map((reviewer) => (isProfileAgent(reviewer.agent) ? `${reviewer.label} (${profileName(reviewer.agent)} profile)` : `${reviewer.label} (mock)`));
+          const seated = seatedReviewers(review).map((reviewer) =>
+            isProfileAgent(reviewer.agent) ? `${reviewer.label} (${[`${profileName(reviewer.agent)} profile`, choiceText(reviewer.choice)].filter(Boolean).join(", ")})` : `${reviewer.label} (mock)`,
+          );
           const seating = seated.length > 0 ? `seating ${seated.join(", ")}` : "with no reviewer seated yet (no Mirador profile is known)";
           return `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup, ${seating}, ${knobsText(review)}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
         },
@@ -887,7 +908,8 @@ export function createCouncilHost({
               const { profile } = review.asks![asked]!.fixer!;
               let started: Awaited<ReturnType<typeof context.startConversation>>;
               try {
-                started = await context.startConversation({ profile, prompt: askFixerPrompt(review, asked, review.handoff.path) });
+                const prompt = askFixerPrompt(review, asked, review.handoff.path);
+                started = await context.startConversation({ profile, prompt, title: promptTitle(prompt) });
               } catch (error) {
                 // Ended with the reason, so the canvas shows why instead of "starting…", and the user can ask again.
                 const problem = `Couldn't start a conversation on ${profile}: ${error instanceof Error ? error.message : String(error)}`;

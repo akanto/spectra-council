@@ -304,6 +304,7 @@ describe("the host", () => {
     expect(said).toContain("Started a conversation on codex with the user's ask");
     expect(canvas.started).toHaveLength(1);
     expect(canvas.started[0]!.prompt).toContain("> Fix and file");
+    expect(canvas.started[0]!.title).toBe(canvas.started[0]!.prompt.split("\n", 1)[0]!);
     expect(review().asks![0]!.fixer!.conversationId).toBe("conversation-fixer-1");
     await expect((async () => host.tools.council_delegate_fix!.run({}, context))()).rejects.toThrow("Nothing of review rev1 waits");
 

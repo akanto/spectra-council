@@ -62,7 +62,7 @@ export class FakeCanvas<Data> {
   /** What `profileSetting` returns, by setting id. */
   settings: Record<string, string | null> = {};
   /** The conversations `startConversation` was asked to start. */
-  started: { profile: string; prompt: string }[] = [];
+  started: { profile: string; prompt: string; title?: string; model?: string; effort?: string }[] = [];
   /** The conversations `stopConversation` was asked to stop, in the order it was asked. */
   stopped: string[] = [];
   private next = 1;

@@ -14,7 +14,7 @@ as the finding's minority report. It's a hearing, not a vote.
 
 ## Install
 
-You need [Mirador](https://github.com/sodre90/mirador) with plugin API 5, and [Bun](https://bun.sh).
+You need [Mirador](https://github.com/sodre90/mirador) with plugin API 8, and [Bun](https://bun.sh).
 
 ```bash
 git clone https://github.com/akanto/spectra-council.git && cd spectra-council
@@ -30,7 +30,8 @@ Restart Mirador. Each [release](https://github.com/akanto/spectra-council/releas
 Ask Mirador's agent: *"Convene a Spectra Council review of this repo."* The review opens in the canvas, beside the chat.
 
 - **Set it up**: a repository, a folder or one document; what to look for (general, code, architecture, security or
-  science); how deep (Quick, Standard, Deep); and up to eight seats, each one of your Mirador profiles.
+  science); how deep (Quick, Standard, Deep); and up to eight seats, each one of your Mirador profiles, on its own
+  model and effort or one you pick for the seat.
 - **Investigate**: each reviewer works alone, without seeing the others, and reports findings with evidence: a file, a
   line, a quote. When two find the same problem on their own, the council says so.
 - **Deliberate**: over a few rounds the reviewers back, challenge or doubt each finding, citing the code. Watch it live,
@@ -54,8 +55,8 @@ To try it without spending tokens, ask for a mock review: stand-in reviewers tha
   the conversation header for slow models.
 - **Restarts**: reviews are Mirador canvas items. One that was running when Mirador stopped can be resumed, and it picks
   up the reviewer conversations still running.
-- **Safety**: reviewers are told to only read the target. They run with your chat's permission mode, on each profile's
-  own model and effort.
+- **Safety**: reviewers are told to only read the target. They run with your chat's permission mode, on the model and
+  effort picked for their seat (by default, their profile's).
 - **Settings**: in Mirador's settings for the plugin, **Open reviews** opens a review beside the chat or full screen.
 
 Your agent hears how a review ended with your next message, and can read every finding with `council_status`.

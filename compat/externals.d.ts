@@ -8,3 +8,12 @@ declare module "@agentclientprotocol/sdk" {
   export type ToolCallUpdate = any;
   export type ToolKind = any;
 }
+
+declare module "@agentclientprotocol/sdk/unstable" {
+  export type PermissionOption = any;
+  export type SessionConfigOption = any;
+  export type SessionUpdate = any;
+  export type StopReason = any;
+  export type ToolCallUpdate = any;
+  export type ToolKind = any;
+}

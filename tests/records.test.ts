@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { miradorDatabase, miradorRecords, modelFromOptions, noRecords, replyFromEvents } from "../hosts/mirador/records.ts";
+import { choicesFromOptions, miradorDatabase, miradorRecords, modelFromOptions, noRecords, replyFromEvents } from "../hosts/mirador/records.ts";
 
 const claude = (current = "opus", effort: string | null = "high") => [
   { id: "mode", category: "mode", type: "select", currentValue: "default", options: [] },
@@ -123,9 +123,27 @@ describe("miradorRecords", () => {
 
   test("profiles: ordered, latest conversation with a model, profile effort fallback", () => {
     expect(records.profiles()).toEqual([
-      { name: "Claude", harness: "claude", model: { name: "Opus 5.5", effort: "max" } },
-      { name: "Pi", harness: "pi", model: { name: "Qwen 3.8 Max", effort: "medium" } },
-      { name: "Fresh", harness: "claude", model: null },
+      {
+        name: "Claude",
+        harness: "claude",
+        model: { name: "Opus 5.5", effort: "max" },
+        models: [
+          { value: "opus", name: "Opus 5.5" },
+          { value: "sonnet", name: "Sonnet 5.5" },
+        ],
+        efforts: [],
+      },
+      {
+        name: "Pi",
+        harness: "pi",
+        model: { name: "Qwen 3.8 Max", effort: "medium" },
+        models: [
+          { value: "alibaba-plan/qwen3.8-max", name: "Qwen 3.8 Max" },
+          { value: "opencode-go/glm-5.3", name: "GLM-5.3" },
+        ],
+        efforts: [{ value: "medium", name: "medium" }],
+      },
+      { name: "Fresh", harness: "claude", model: null, models: [], efforts: [] },
     ]);
   });
 
@@ -238,4 +256,59 @@ describe("miradorRecords.replyOf", () => {
     expect(noRecords.replyOf("finished")).toBeNull();
   });
   test("an unreadable event is skipped", () => expect(records.replyOf("broken")).toEqual({ text: null, ended: "finished" }));
+});
+
+describe("choicesFromOptions", () => {
+  test("models of the same name from two providers keep their prefixes", () => {
+    const options = [
+      {
+        id: "model",
+        category: "model",
+        currentValue: "a/glm-5.2",
+        options: [
+          { value: "a/glm-5.2", name: "a/GLM-5.2" },
+          { value: "b/glm-5.2", name: "b/GLM-5.2" },
+          { value: "a/qwen", name: "a/Qwen" },
+        ],
+      },
+    ];
+    expect(choicesFromOptions(options).models).toEqual([
+      { value: "a/glm-5.2", name: "a/GLM-5.2" },
+      { value: "b/glm-5.2", name: "b/GLM-5.2" },
+      { value: "a/qwen", name: "Qwen" },
+    ]);
+  });
+
+  test("drops the default model and the off effort, keeps values and names", () => {
+    expect(choicesFromOptions(claude())).toEqual({
+      models: [
+        { value: "opus", name: "Opus 5.5" },
+        { value: "sonnet", name: "Sonnet 5.5" },
+      ],
+      efforts: [
+        { value: "low", name: "low" },
+        { value: "high", name: "high" },
+      ],
+    });
+  });
+  test("strips a provider prefix from a model name and cleans a Thinking: effort", () => {
+    expect(choicesFromOptions(pi)).toEqual({
+      models: [
+        { value: "alibaba-plan/qwen3.8-max", name: "Qwen 3.8 Max" },
+        { value: "opencode-go/glm-5.3", name: "GLM-5.3" },
+      ],
+      efforts: [{ value: "medium", name: "medium" }],
+    });
+  });
+  test("a default effort is dropped too", () => {
+    const options = [{ id: "effort", category: "thought_level", currentValue: "default", options: [{ value: "default", name: "Default" }, { value: "high", name: "High" }] }];
+    expect(choicesFromOptions(options).efforts).toEqual([{ value: "high", name: "high" }]);
+  });
+  test("no model or effort option gives empty lists", () => {
+    expect(choicesFromOptions(claude("opus", null)).efforts).toEqual([]);
+    expect(choicesFromOptions([{ id: "mode", category: "mode", options: [] }])).toEqual({ models: [], efforts: [] });
+  });
+  test("garbage gives empty lists", () => {
+    for (const garbage of [null, undefined, 5, "x", {}, [null, 3, "x"]]) expect(choicesFromOptions(garbage)).toEqual({ models: [], efforts: [] });
+  });
 });

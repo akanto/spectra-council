@@ -1,7 +1,7 @@
 /**
- * Runs a seat with a real agent: each turn is a fresh conversation on the seat's Mirador profile. The prompt (see
- * agent-turns.ts) asks for the reply as a ```json block; the runner reads it and reports each item to the session, which
- * validates it. A turn that takes too long, ends badly or lacks the block fails the seat (or logs an error, for the
+ * Runs a seat with a real agent: each turn is a fresh conversation on the seat's Mirador profile, on the model and effort
+ * chosen for the seat if any. The prompt (see agent-turns.ts) asks for the reply as a ```json block; the runner reads it
+ * and reports each item to the session, which validates it. A turn that takes too long, ends badly or lacks the block fails the seat (or logs an error, for the
  * grouping, proposal and verification turns).
  */
 import type { z } from "zod";
@@ -9,6 +9,7 @@ import { deliberationPrompt, groupingPrompt, proposalPrompt, repairPrompt, revie
 import { profileName } from "./agents.ts";
 import { TURN_LIMIT_MS, TurnTimeout, type AgentReply, type Clock, type Conversations, type DeliberationJob, type ProposalJob, type Report, type ReviewerJob, type ReviewerRunner, type VerificationJob } from "./engine.ts";
 import { askingText, REVIEW_TURN, startedText } from "./late-replies.ts";
+import type { SeatChoice } from "./model.ts";
 import { jsonProblem, lastJson } from "./replies.ts";
 import type { ReplyFetched } from "./review.ts";
 import { deliberationReplySchema, findingInputSchema, groupingReplySchema, problemsOf, proposalReplySchema, reviewReplySchema, verificationReplySchema, type FindingInput } from "./schemas.ts";
@@ -114,7 +115,8 @@ export class AgentRunner implements ReviewerRunner {
     // take over the repair of the old one.
     const turn = (attempt: string, repairing?: string) => JSON.stringify([job.review.id, job.reviewer.id, ...task, attempt, ...(repairing === undefined ? [] : [repairing])]);
     report({ type: "activity", kind: "status", text: askingText(profile, what) });
-    let reply = await this.#ask(profile, prompt, turn("ask"), report, signal);
+    const choice = job.reviewer.choice ?? {};
+    let reply = await this.#ask(profile, choice, prompt, turn("ask"), report, signal);
     if (reply.ended !== "finished") throw new Error(reply.ended === "failed" ? "Its conversation failed" : "Its conversation was stopped");
     let parsed = lastJson(reply.text, schema);
     if (parsed === null) {
@@ -122,7 +124,7 @@ export class AgentRunner implements ReviewerRunner {
       const problem = jsonProblem(reply.text, schema);
       const short = problem.length > PROBLEM_LENGTH ? `${problem.slice(0, PROBLEM_LENGTH - 1).trimEnd()}…` : problem;
       report({ type: "activity", kind: "error", text: `Its reply had no valid JSON block (${short}); asking again` });
-      const again = await this.#ask(profile, repairPrompt(prompt, reply.text ?? "", problem), turn("repair", reply.text ?? ""), report, signal);
+      const again = await this.#ask(profile, choice, repairPrompt(prompt, reply.text ?? "", problem), turn("repair", reply.text ?? ""), report, signal);
       if (again.ended !== "finished") throw new Error(`Its reply had no valid JSON block (${short}), and the follow-up conversation ${again.ended === "failed" ? "failed" : "was stopped"}`);
       parsed = lastJson(again.text, schema);
       if (parsed === null) throw new Error(`Its reply had no valid JSON block, twice: ${jsonProblem(again.text, schema)}`);
@@ -135,13 +137,14 @@ export class AgentRunner implements ReviewerRunner {
   }
 
   /** Asks with a time limit; the limit's timer and the ask are both cancelled once either settles. */
-  async #ask(profile: string, prompt: string, turn: string, report: Reporter, signal: AbortSignal): Promise<AgentReply> {
+  async #ask(profile: string, choice: SeatChoice, prompt: string, turn: string, report: Reporter, signal: AbortSignal): Promise<AgentReply> {
     const child = new AbortController();
     const link = () => child.abort(signal.reason);
     if (signal.aborted) throw signal.reason;
     signal.addEventListener("abort", link, { once: true });
     const ask = this.#conversations.ask({
       profile,
+      ...choice,
       prompt,
       turn,
       signal: child.signal,

@@ -22,7 +22,7 @@ concurrency:
 env:
   # The Mirador release whose plugin API and canvas framing the checks use (sodre90/mirador, MIT). Bumping it is a
   # deliberate change: it is the Mirador version the plugin is known to work with.
-  MIRADOR_REF: v0.12.0
+  MIRADOR_REF: v0.13.0
 
 jobs:
   test:

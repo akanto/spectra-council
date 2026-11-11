@@ -10,7 +10,7 @@
  * (handoff-written), the agent is asked to fix them (fix-requested) and reports each fix (fix-reported), and a
  * verification round has reviewers re-check the fixes (verification-started → fix-checked → verification-ended).
  */
-import { agentLabel, isRunnableAgent, runnerKindOf, withLabels } from "./agents.ts";
+import { agentLabel, choiceOf, isRunnableAgent, runnerKindOf, sameChoice, seatOf, withLabels } from "./agents.ts";
 import { verdictSummary } from "./deliberation.ts";
 import { DEPTH_PRESETS, depthOf, overLimit, type DepthChoice, type Knobs } from "./depth.ts";
 import {
@@ -207,20 +207,24 @@ export function reopensWith(review: Review, fetched: ReplyFetched): boolean {
   return finished >= 2 && review.findings.length + fetched.findings.length > 0;
 }
 
-const reviewerOf = (seat: Seat, index: number): Reviewer => ({
-  id: `r${index + 1}`,
-  agent: seat.agent,
-  label: agentLabel(seat.agent),
-  model: null,
-  enabled: seat.enabled,
-  status: "idle",
-  current: null,
-  activity: [],
-  activityCount: 0,
-  startedAt: null,
-  endedAt: null,
-  problem: null,
-});
+const reviewerOf = (seat: Seat, index: number): Reviewer => {
+  const choice = choiceOf(seat);
+  return {
+    id: `r${index + 1}`,
+    agent: seat.agent,
+    label: agentLabel(seat.agent),
+    model: null,
+    ...(choice ? { choice } : {}),
+    enabled: seat.enabled,
+    status: "idle",
+    current: null,
+    activity: [],
+    activityCount: 0,
+    startedAt: null,
+    endedAt: null,
+    problem: null,
+  };
+};
 
 /** The knobs a setup asks for: its depth preset's, with any knob it sets itself. */
 const knobsOf = (setup: Pick<Setup, "depth" | "deliberationRounds" | "maxFindings">): Knobs => ({
@@ -319,7 +323,7 @@ export const setupOf = (review: Review): SetupState => ({
   deliberationRounds: review.deliberationRounds,
   maxFindings: review.maxFindings,
   instructions: review.instructions,
-  seats: review.reviewers.map(({ agent, enabled }) => ({ agent, enabled })),
+  seats: review.reviewers.map(seatOf),
 });
 
 const updateReviewer = (review: Review, reviewerId: string, update: (reviewer: Reviewer) => Reviewer): Review => ({
@@ -408,12 +412,13 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
         deliberationRounds: deliberationRounds ?? preset?.deliberationRounds ?? review.deliberationRounds,
         maxFindings: maxFindings ?? preset?.maxFindings ?? review.maxFindings,
       };
-      // A seat keeps the model seen for it while its agent stays the same.
+      // A seat keeps the model seen for it while its agent and its choice of model and effort stay the same.
       const reviewers = seats
         ? withLabels(
             seats.map((seat, index) => {
               const before = review.reviewers[index];
-              return { ...reviewerOf(seat, index), model: before?.agent === seat.agent ? before.model : null };
+              const after = reviewerOf(seat, index);
+              return { ...after, model: before?.agent === seat.agent && sameChoice(before.choice, after.choice) ? before.model : null };
             }),
           )
         : review.reviewers;

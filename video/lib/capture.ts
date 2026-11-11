@@ -178,10 +178,10 @@ try {
   await page.waitForTimeout(3000);
   // Any of the four the agent didn't seat, the person adds.
   for (const name of ["Claude", "Codex", "Gemini", "Qwen"]) {
-    const seated = await view.locator(".seats .seat select").evaluateAll((selects, name) => selects.some((select) => (select as HTMLSelectElement).selectedOptions[0]?.textContent?.endsWith(`— ${name}`)), name);
+    const seated = await view.locator(".seats .seat select.seat-agent").evaluateAll((selects, name) => selects.some((select) => (select as HTMLSelectElement).selectedOptions[0]?.textContent?.endsWith(`— ${name}`)), name);
     if (seated) continue;
     await click(view.getByRole("button", { name: /Add reviewer/ }));
-    const seat = view.locator(".seats .seat select").last();
+    const seat = view.locator(".seats .seat select.seat-agent").last();
     await page.waitForTimeout(400);
     const value = await seat.evaluate((select, name) => [...(select as HTMLSelectElement).options].find((option) => option.textContent?.endsWith(`— ${name}`))?.value, name);
     if (value) await seat.selectOption(value);

@@ -28,6 +28,9 @@ export const idsInTitle = (ids: string[]) => (ids.length <= 3 ? ids.join(", ") :
  */
 export const turnTitle = (review: Pick<Review, "id">, task: string, who?: string) => ["Spectra Council " + review.id, task, ...(who ? [who] : [])].join(" · ");
 
+/** A prompt's title: its first line, which is `turnTitle`'s for every prompt the council sends. */
+export const promptTitle = (prompt: string) => prompt.split("\n", 1)[0]!.trim();
+
 /** The common start of every turn: who the reviewer is, the rules, the profile's brief and the user's instructions. */
 function header({ review, reviewer, profile }: ReviewerJob, task: string): string {
   const parts = [

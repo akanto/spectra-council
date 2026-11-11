@@ -120,7 +120,7 @@ export interface AgentReply {
 
 /**
  * Conversations with real agents, as a host gives them: each `ask` starts a fresh conversation on a profile with the
- * prompt as its first message and resolves once that turn ends. It rejects when the conversation can't start (no
+ * prompt as its first message, titled by the prompt's first line (`promptTitle`), and resolves once that turn ends. It rejects when the conversation can't start (no
  * profile of that name, or no way to start one now) and as soon as the signal aborts; a host that can't stop the
  * conversation lets it run on and ignores its reply.
  */
@@ -128,6 +128,9 @@ export interface Conversations {
   ask(request: {
     profile: string;
     prompt: string;
+    /** The model and effort to start the conversation on, over the profile's (a seat's `SeatChoice`). */
+    model?: string;
+    effort?: string;
     /**
      * Which turn this ask is, independent of the prompt's wording (review, reviewer, task, round or pass, findings, and
      * whether it is the first ask or the JSON repair): a host that takes over a conversation a restart left running

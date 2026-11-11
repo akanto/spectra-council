@@ -1,6 +1,6 @@
 # Development
 
-Spectra Council is a [Mirador](https://github.com/sodre90/mirador) canvas plugin (plugin API 5): a host module Mirador
+Spectra Council is a [Mirador](https://github.com/sodre90/mirador) canvas plugin (plugin API 8): a host module Mirador
 runs (`hosts/mirador/host.ts`) and a React view it loads into the canvas (`dist/view.js`). The engine in `core/` knows
 nothing of either, so another host (a standalone app) could run it.
 
@@ -180,10 +180,15 @@ there is one; a direct write would be lost under the session's next one.
   The host keeps the conversations it started in plugin storage, with any reply that came while nothing waited for it,
   and a resumed turn takes its conversation over. Turns are matched by identity (review, reviewer, task, round or pass,
   findings, first ask or repair), not by prompt, which changes when a seat's label follows its model.
-- **Model names.** A seat runs on its profile's model and effort. The plugin API can't read them, so
-  `hosts/mirador/records.ts` reads Mirador's database read-only to name each seat by its model (`model-seen`), and to
-  read a late reply that came while no host kept it.
-  [mirador-api.md](mirador-api.md) lists the API extensions that would replace this and let a seat choose its model.
+- **Models.** A profile seat runs on its profile's model and effort, or on a model and effort chosen for it (`model` and
+  `effort` on its `Seat`, the reviewer's `choice`), which the runner passes to `startConversation` (plugin API 8);
+  Mirador matches the model to the agent's by id or name, and shows the user in that conversation when it can't. The
+  plugin API lists neither the models an agent offers nor the model a running conversation is on, so
+  `hosts/mirador/records.ts` reads Mirador's database read-only for the setup's choices (the model and effort options of
+  each profile's latest conversation), to name each seat by its model (`model-seen`), and to read a late reply that came
+  while no host kept it. [mirador-api.md](mirador-api.md) lists the API extensions that would replace this.
+- **Titles.** Every prompt opens with a title line (`turnTitle`); the host passes it as the conversation's `title`
+  (`promptTitle`), which Mirador keeps from the agent's renames.
 - **Other runners.** `createCouncilHost`'s `runnerFor` option hands an agent to a runner of the host's own, ahead of
   the mock and profile runners. The installed plugin passes none; the video's host (`video/lib/plugin-host.ts`) plays
   scripted reviewers through it.

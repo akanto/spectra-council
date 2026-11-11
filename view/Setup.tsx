@@ -1,11 +1,11 @@
 /** The review's setup: what it reviews (set by the agent), profile, depth, the council's seats and instructions; Start review hands it to the host. */
 import { useEffect, useRef, useState } from "react";
-import { MOCK_AGENTS, UNNAMED_PROFILE, isMockAgent, isProfileAgent, modelLabel, profileAgent, profileName, type ProfileInfo } from "../core/agents.ts";
+import { MOCK_AGENTS, UNNAMED_PROFILE, choiceOf, expectedModel, isMockAgent, offered, isProfileAgent, modelLabel, profileAgent, profileName, type OptionChoice, type ProfileInfo } from "../core/agents.ts";
 import type { Review, Reviewer } from "../core/model.ts";
 import { DEPTH_TITLES, MAX_FINDINGS_RANGE, ROUNDS_RANGE, knobsText, plannedTurns } from "../core/depth.ts";
 import { PROFILES } from "../core/profiles.ts";
 import { setupOf } from "../core/review.ts";
-import { DEPTHS, MAX_SEATS, PROFILE_IDS, type Seat, type SetupPatch } from "../core/schemas.ts";
+import { DEPTHS, MAX_SEATS, MODEL_CHOICE_MAX, PROFILE_IDS, type Seat, type SetupPatch } from "../core/schemas.ts";
 import type { CouncilBridge } from "./bridge.ts";
 import { cx } from "./ui.tsx";
 
@@ -107,7 +107,16 @@ const nameOf = (path: string) => path.replace(/\/+$/, "").split("/").pop() || pa
 
 const OTHER = "__other__";
 
-/** The profiles the host can list, with the model each last ran on; [] where the host can't tell. */
+/** The well-formed choices in a host's list of them. */
+const choicesIn = (list: unknown): OptionChoice[] =>
+  Array.isArray(list)
+    ? list.flatMap((each) => {
+        const choice = each as Partial<OptionChoice> | null;
+        return choice && typeof choice.value === "string" && choice.value.trim() !== "" && typeof choice.name === "string" ? [{ value: choice.value, name: choice.name || choice.value }] : [];
+      })
+    : [];
+
+/** The profiles the host can list, with the model each last ran on and the models and efforts on offer; [] where the host can't tell. */
 function useProfiles(bridge: CouncilBridge | undefined): ProfileInfo[] {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   useEffect(() => {
@@ -122,7 +131,9 @@ function useProfiles(bridge: CouncilBridge | undefined): ProfileInfo[] {
           for (const each of list) {
             // Tolerate a host that still answers with bare names.
             const item = typeof each === "string" ? { name: each, harness: "", model: null } : (each as Partial<ProfileInfo> | null);
-            if (item && typeof item.name === "string" && item.name.trim() !== "") clean.push({ name: item.name, harness: item.harness ?? "", model: item.model ?? null });
+            if (item && typeof item.name === "string" && item.name.trim() !== "") {
+              clean.push({ name: item.name, harness: item.harness ?? "", model: item.model ?? null, models: choicesIn(item.models), efforts: choicesIn(item.efforts) });
+            }
           }
         }
         setProfiles(clean);
@@ -152,6 +163,7 @@ function SeatCard({
   other,
   setOther,
   setAgent,
+  setChoice,
   remove,
 }: {
   index: number;
@@ -165,6 +177,8 @@ function SeatCard({
   other: boolean;
   setOther(other: boolean): void;
   setAgent(index: number, agent: string): void;
+  /** Sets the seat's model or effort; an empty one is the profile's own. */
+  setChoice(index: number, key: "model" | "effort", value: string): void;
   remove(index: number): void;
 }) {
   const isProfile = isProfileAgent(seat.agent);
@@ -214,12 +228,14 @@ function SeatCard({
   };
   const showOther = other || seat.agent === UNNAMED_PROFILE;
   const mock = MOCK_AGENTS.find((agent) => agent.id === seat.agent);
-  const info = profiles.find((profile) => profile.name === saved);
-  const model = reviewer?.model ?? info?.model ?? null;
+  // By name in any case, as Mirador finds a profile.
+  const info = profiles.find((profile) => profile.name === saved) ?? profiles.find((profile) => profile.name.toLowerCase() === saved.toLowerCase());
+  const choice = choiceOf(seat);
+  const model = choice ? expectedModel(info, choice) : (reviewer?.model ?? info?.model ?? null);
   const harness = info?.harness ? harnessName(info.harness) : "";
   const detail = isProfile
     ? model
-      ? `${modelLabel(model)}${harness ? ` on ${harness}` : ""} (what this profile ran last)`
+      ? `${modelLabel(model)}${harness ? ` on ${harness}` : ""} (${choice ? "chosen for this seat" : "what this profile ran last"})`
       : harness
         ? `Runs on ${harness}. Model shown once it starts`
         : "Model shown once it starts"
@@ -234,6 +250,7 @@ function SeatCard({
         </button>
       </div>
       <select
+        className="seat-agent"
         value={showOther ? OTHER : seat.agent}
         onChange={(event) => {
           if (event.target.value === OTHER) {
@@ -285,8 +302,81 @@ function SeatCard({
           }}
         />
       )}
+      {isProfile && !showOther && (
+        <div className="seat-choices">
+          <ChoicePicker
+            label="Model"
+            seat={n}
+            value={seat.model ?? ""}
+            choices={info?.models ?? []}
+            own={info?.model ? `Profile's own (${info.model.name})` : "Profile's own"}
+            set={(value) => setChoice(index, "model", value)}
+          />
+          <ChoicePicker
+            label="Effort"
+            seat={n}
+            value={seat.effort ?? ""}
+            choices={info?.efforts ?? []}
+            own={info?.model?.effort && !seat.model ? `Profile's own (${info.model.effort})` : "Profile's own"}
+            set={(value) => setChoice(index, "effort", value)}
+          />
+        </div>
+      )}
       <span className="hint">{showOther && saved === "" ? "Name a Mirador profile to seat it, or pick another agent." : detail}</span>
     </div>
+  );
+}
+
+/**
+ * A seat's model or effort: one of the choices the profile's agent offered, or the profile's own (""). Where the host
+ * knows no choices, a name is typed instead, which Mirador matches to the agent's when the conversation starts.
+ */
+function ChoicePicker({ label, seat, value, choices, own, set }: { label: string; seat: number; value: string; choices: OptionChoice[]; own: string; set(value: string): void }) {
+  const [typed, setTyped] = useState(value);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (document.activeElement !== input.current) setTyped(value);
+  }, [value]);
+  const name = `${label} for reviewer ${seat}`;
+  if (choices.length === 0) {
+    const commit = (text: string) => {
+      if (text.trim() !== value) set(text.trim());
+    };
+    return (
+      <label className="seat-choice">
+        <span>{label}</span>
+        <input
+          type="text"
+          ref={input}
+          value={typed}
+          placeholder={own}
+          maxLength={MODEL_CHOICE_MAX}
+          aria-label={name}
+          onChange={(event) => setTyped(event.target.value)}
+          onBlur={() => commit(typed)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit(event.currentTarget.value);
+          }}
+        />
+      </label>
+    );
+  }
+  // A choice named by the agent ("Opus 5.5", "High") shows as the one on offer; one not on offer shows as itself.
+  const shown = value === "" ? "" : (offered(choices, value)?.value ?? value);
+  const known = shown === "" || choices.some((choice) => choice.value === shown);
+  return (
+    <label className="seat-choice">
+      <span>{label}</span>
+      <select value={shown} aria-label={name} onChange={(event) => set(event.target.value)}>
+        <option value="">{own}</option>
+        {choices.map((choice) => (
+          <option key={choice.value} value={choice.value}>
+            {choice.name}
+          </option>
+        ))}
+        {!known && <option value={shown}>{shown}</option>}
+      </select>
+    </label>
   );
 }
 
@@ -323,11 +413,12 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
   const instructions = useDraft(setup.instructions, (text) => configure({ instructions: text }));
   // Old reviews may hold disabled seats: they aren't shown, and the first edit drops them.
   const stored = setup.seats.filter((seat) => seat.enabled);
-  const storedKey = stored.map((seat) => seat.agent).join("\n");
+  const seatKey = (list: Seat[]) => list.map((seat) => [seat.agent, seat.model ?? "", seat.effort ?? ""].join("\t")).join("\n");
+  const storedKey = seatKey(stored);
   // The seats as last sent, until the review catches up: quick edits build on each other rather than on a stale review.
   const [draft, setDraft] = useState<Seat[] | null>(null);
   useEffect(() => {
-    setDraft((sent) => (sent && sent.map((seat) => seat.agent).join("\n") === storedKey ? null : sent));
+    setDraft((sent) => (sent && seatKey(sent) === storedKey ? null : sent));
   }, [storedKey]);
   const seats = draft ?? stored;
   // Mocks are a demo, offered only when the review was opened with one seated (the agent seats them only when asked);
@@ -340,11 +431,20 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
   /** The positions of seats in "Other profile…" mode. */
   const [others, setOthers] = useState<number[]>([]);
   const send = (list: Seat[]) => {
-    const next = list.map((seat) => ({ agent: seat.agent, enabled: true }));
+    const next = list.map((seat) => ({ agent: seat.agent, enabled: true, ...choiceOf(seat) }));
     setDraft(next);
     configure({ seats: next });
   };
+  // Another agent starts on its profile's own model and effort: a choice belongs to the profile it was made for.
   const setAgent = (index: number, agent: string) => send(seats.map((seat, at) => (at === index ? { agent, enabled: true } : seat)));
+  const setChoice = (index: number, key: "model" | "effort", value: string) =>
+    send(
+      seats.map((seat, at) => {
+        if (at !== index) return seat;
+        const { [key]: _, ...rest } = seat;
+        return value.trim() ? { ...rest, [key]: value.trim() } : rest;
+      }),
+    );
   const remove = (index: number) => {
     send(seats.filter((_, at) => at !== index));
     setOthers((list) => list.filter((at) => at !== index).map((at) => (at > index ? at - 1 : at)));
@@ -445,6 +545,7 @@ export function Setup({ review, configure, start, busy, bridge }: { review: Revi
               other={others.includes(index)}
               setOther={(other) => setOther(index, other)}
               setAgent={setAgent}
+              setChoice={setChoice}
               remove={remove}
             />
           ))}

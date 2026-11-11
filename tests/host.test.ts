@@ -902,6 +902,8 @@ describe("the Mirador host", () => {
         const answer = await host.tools.council_delegate_fix!.run({}, context);
         expect(canvas.started).toHaveLength(1);
         expect(canvas.started[0]!.profile).toBe("codex");
+        expect(canvas.started[0]!.title).toBe(canvas.started[0]!.prompt.split("\n", 1)[0]!);
+        expect(canvas.started[0]!.title).toStartWith("Spectra Council ");
         expect(canvas.started[0]!.prompt).toContain(review().handoff!.path);
         for (const id of ids) expect(canvas.started[0]!.prompt).toContain(id);
         expect(answer).toContain("codex");

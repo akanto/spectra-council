@@ -26,7 +26,18 @@ const host = createCouncilHost({
   // Stand-ins for Mirador's profiles, so the setup offers them with their models as it does in Mirador.
   records: {
     profiles: () => [
-      { name: "Home", harness: "claude", model: { name: "Opus 5.5", effort: "high" } },
+      {
+        name: "Home",
+        harness: "claude",
+        model: { name: "Opus 5.5", effort: "high" },
+        models: [
+          { value: "opus", name: "Opus 5.5" },
+          { value: "sonnet", name: "Sonnet 5.5" },
+          { value: "haiku", name: "Haiku 5.5" },
+        ],
+        efforts: ["low", "medium", "high", "xhigh", "max"].map((value) => ({ value, name: value })),
+      },
+      // No conversation on it yet: no choices known, so the setup asks for a typed model.
       { name: "pi home", harness: "pi", model: { name: "Qwen 3.8 Max", effort: "medium" } },
     ],
     modelOf: () => null,

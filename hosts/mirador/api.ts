@@ -1,5 +1,5 @@
 /**
- * Mirador's canvas plugin API, version 5, as this plugin uses it. Mirador doesn't publish these types, so this is a copy
+ * Mirador's canvas plugin API, version 8, as this plugin uses it. Mirador doesn't publish these types, so this is a copy
  * of the parts of its shared/canvas-plugins.ts and of the `window.mirador` bridge in its shared/canvas-document.ts that
  * we need. Nothing outside hosts/mirador/ may import it: core/ and view/ don't know about Mirador.
  */
@@ -67,8 +67,11 @@ export interface ConversationReply {
 export interface CanvasToolContext<Data = unknown> extends CanvasPluginContext<Data> {
   publish(item: { type: string; title: string; data: Data }): PluginItem<Data>;
   prompt(text: string, options?: { afterTurn?: boolean }): Promise<void>;
-  /** Starts a conversation in this one's workspace on the named profile (API 5); the host's `replied` hears when it ends. */
-  startConversation(start: { profile: string; prompt: string }): Promise<StartedConversation>;
+  /**
+   * Starts a conversation in this one's workspace on the named profile (API 5); the host's `replied` hears when it ends.
+   * `title` (API 8) titles it and keeps it from the agent's renames, as one the user typed.
+   */
+  startConversation(start: { profile: string; prompt: string; title?: string } & ConversationChoices): Promise<StartedConversation>;
   /**
    * Stops the turn of a conversation this plugin's tool started from this conversation, as the user's Stop would; its
    * `replied` then hears it end as "stopped". Resolves doing nothing for one whose turn already ended or that no longer
@@ -76,6 +79,16 @@ export interface CanvasToolContext<Data = unknown> extends CanvasPluginContext<D
    * before plugin API 10 lacks it.
    */
   stopConversation?(conversationId: string): Promise<void>;
+}
+
+/**
+ * The model and effort of a conversation a plugin starts, over its profile's (API 8). Mirador matches the model to the
+ * agent's models by id or name; the effort must be a value the model offers. One the agent doesn't offer leaves the
+ * agent's own and shows the user why in that conversation, rather than throw.
+ */
+export interface ConversationChoices {
+  model?: string;
+  effort?: string;
 }
 
 export interface CanvasTool<Data = unknown> {

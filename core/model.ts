@@ -48,6 +48,15 @@ export interface ModelInfo {
   effort: string | null;
 }
 
+/**
+ * A profile seat's own model and effort, over its profile's: as the host passes them to the agent (a model by id or name,
+ * an effort by its value), each absent for the profile's own.
+ */
+export interface SeatChoice {
+  model?: string;
+  effort?: string;
+}
+
 export interface Reviewer {
   /** The seat's id, "r1", "r2", … in seat order. */
   id: string;
@@ -60,6 +69,11 @@ export interface Reviewer {
   label: string;
   /** The model a profile seat runs on, once the host could tell; null for a mock. */
   model: ModelInfo | null;
+  /**
+   * The model and effort the user chose for a profile seat, which its conversations start on; absent for the profile's
+   * own (and for a mock, and in reviews from before seats could choose).
+   */
+  choice?: SeatChoice;
   /** False for a seat that takes no part: one the user removed after it failed, or an unseated seat of an older review. */
   enabled: boolean;
   status: ReviewerStatus;
