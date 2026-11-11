@@ -191,10 +191,10 @@ for (const setup of setups) describe.skipIf(!setup.run)(`the view ${setup.name}`
 
   test("merged reporters have canonical counts and ruling works within combined filters", async () => {
     await load(fixture(harness.target));
-    expect(await root.getByRole("button", { name: /Codex,.*1 finding/ }).count()).toBe(1);
+    expect(await root.getByRole("button", { name: /R2 · Codex \(mock\),.*1 finding/ }).count()).toBe(1);
     await findings();
     const reporters = root.getByRole("group", { name: "Reviewer", exact: true });
-    await reporters.getByRole("button", { name: "Codex 1", exact: true }).click();
+    await reporters.getByRole("button", { name: "R2 · Codex (mock) 1", exact: true }).click();
     expect(await root.locator(".finding-card").count()).toBe(1);
     await root.getByRole("group", { name: "Severity", exact: true }).getByRole("button", { name: "high 2", exact: true }).click();
     await root.getByRole("group", { name: "Status", exact: true }).getByRole("button", { name: "Agreed 3", exact: true }).click();
@@ -204,7 +204,7 @@ for (const setup of setups) describe.skipIf(!setup.run)(`the view ${setup.name}`
     expect(await root.locator(".finding-card").count()).toBe(1);
     expect(await root.getByRole("button", { name: /Next to rule/ }).count()).toBe(0);
     expect(await root.locator("#finding-F1 .proposal").isVisible()).toBe(true);
-    await reporters.getByRole("button", { name: "Claude 3", exact: true }).click();
+    await reporters.getByRole("button", { name: "R1 · Claude (mock) 3", exact: true }).click();
     expect(await root.locator(".finding-card").count()).toBe(1);
   });
 
@@ -297,21 +297,21 @@ for (const setup of setups) describe.skipIf(!setup.run)(`the view ${setup.name}`
       reviewer.activityCount = 150;
     }
     await load(review);
-    for (const name of ["Claude", "Codex"]) {
-      await root.getByRole("button", { name: new RegExp(`${name},.*open activity`) }).click();
+    for (const name of ["R1 · Claude (mock)", "R2 · Codex (mock)"]) {
+      await root.getByRole("button", { name: new RegExp(`${name.replace(/[()]/g, "\\$&")},.*open activity`) }).click();
       expect(await root.locator(".detail").evaluate((node) => node.scrollTop)).toBe(0);
       expect(await root.locator(".detail h2").textContent()).toBe(name);
     }
     expect(await root.locator(".detail .problem").textContent()).toBe("Reviewer failed to respond");
     await page.setViewportSize({ width: 600, height: 900 });
     await root.locator(".detail").getByRole("button", { name: "Close", exact: true }).click();
-    await root.getByRole("button", { name: /Codex,.*open activity/ }).click();
+    await root.getByRole("button", { name: /R2 · Codex \(mock\),.*open activity/ }).click();
     const heading = await root.locator(".detail h2").boundingBox();
     // Scrolled to the panel's top edge, give or take sub-pixel rounding.
     expect(heading!.y).toBeGreaterThan(-1);
     expect(heading!.y).toBeLessThan(900);
     await page.setViewportSize({ width: 960, height: 900 });
-    await root.getByRole("button", { name: /Claude,.*open activity/ }).click();
+    await root.getByRole("button", { name: /R1 · Claude \(mock\),.*open activity/ }).click();
     const active = structuredClone(review);
     active.phase = "independent-review";
     active.reviewers[0]!.status = "reviewing";
