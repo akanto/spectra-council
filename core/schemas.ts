@@ -174,6 +174,14 @@ export const setupPatchSchema = z
 
 export type SetupPatch = z.infer<typeof setupPatchSchema>;
 
+/** What the view remembers across reviews. */
+export const viewPrefsSchema = z.object({
+  /** The user closed the process strip. */
+  flowHidden: z.boolean(),
+});
+export type ViewPrefs = z.infer<typeof viewPrefsSchema>;
+export const DEFAULT_VIEW_PREFS: ViewPrefs = { flowHidden: false };
+
 /** What the user does in the view. */
 export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("configure"), patch: setupPatchSchema }),
@@ -216,6 +224,11 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("profiles") }),
   /** Resolve a source link against the folder containing the reviewed files. */
   z.object({ kind: z.literal("resolve-path"), path: z.string().min(1) }),
+  /**
+   * The view's own preferences, kept by the host for every review (the view's sandbox has no storage of its own):
+   * resolves to `{ prefs: ViewPrefs }`, after applying `set` when given.
+   */
+  z.object({ kind: z.literal("prefs"), set: viewPrefsSchema.partial().optional() }),
 ]);
 
 export type ViewAction = z.infer<typeof viewActionSchema>;

@@ -74,9 +74,22 @@ describe("reduce", () => {
     review = reduce(review, { type: "reviewer-started", reviewerId: "r1", at: 11 });
     review = reduce(review, { type: "stopped", at: 12 });
     expect(review.phase).toBe("stopped");
+    expect(review.stoppedPhase).toBe("independent-review");
+    expect(review.interruptedPhase).toBeNull();
     expect(review.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["stopped", "stopped"]);
     const late = reduce(review, { type: "activity", reviewerId: "r1", at: 13, kind: "read", text: "Reading x" });
     expect(late).toBe(review);
+  });
+
+  test("a new review has no stoppedPhase", () => {
+    expect(fresh().stoppedPhase).toBeNull();
+  });
+
+  test("an interruption records interruptedPhase and leaves stoppedPhase null", () => {
+    let review = reduce(fresh(), { type: "started", at: 10 });
+    review = reduce(review, { type: "reviewer-started", reviewerId: "r1", at: 11 });
+    review = reduce(review, { type: "interrupted", at: 12 });
+    expect(review).toMatchObject({ phase: "interrupted", interruptedPhase: "independent-review", stoppedPhase: null });
   });
 
   test("activity is capped, the count is not, and notes keep the current step", () => {
@@ -230,6 +243,8 @@ describe("deliberation", () => {
 
   test("a stop during the deliberation stops the deliberating reviewers, and later events change nothing", () => {
     const review = reduce(inRound(), { type: "stopped", at: 45 });
+    expect(review.stoppedPhase).toBe("deliberation");
+    expect(review.interruptedPhase).toBeNull();
     expect(review.phase).toBe("stopped");
     expect(review.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["stopped", "stopped"]);
     expect(argue(review, "r1")).toBe(review);
@@ -565,6 +580,7 @@ describe("verification", () => {
       review = { ...review, agentHeardAt: 5 };
       const ended = reduce(review, { type, at: 80 });
       expect(ended.phase).toBe("complete");
+      expect(ended.stoppedPhase).toBeNull();
       expect(ended.findings[0]!.fix!.state).toBe("fixed");
       expect(ended.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["completed", "completed"]);
       expect(ended.agentHeardAt).toBe(5);
@@ -611,6 +627,12 @@ describe("upgradeReview", () => {
 
   test("the review format is 8", () => {
     expect(REVIEW_FORMAT).toBe(8);
+  });
+
+  test("a review stored without stoppedPhase reads as stopped nowhere", () => {
+    const { stoppedPhase: _s, ...rest } = concluded();
+    const old = { ...rest, format: 7 } as unknown as ReturnType<typeof fresh>;
+    expect(upgradeReview(old).stoppedPhase ?? null).toBeNull();
   });
 
   test("a current review is returned as it is", () => {

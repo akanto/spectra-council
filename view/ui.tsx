@@ -88,7 +88,8 @@ export const PHASE_WORDS: Record<Phase, string> = {
   interrupted: "Interrupted",
 };
 
-export function PhasePill({ phase }: { phase: Phase }) {
+/** The review's phase; with `toggle`, a button that shows or hides the process strip. */
+export function PhasePill({ phase, flowShown, toggle }: { phase: Phase; flowShown?: boolean; toggle?: () => void }) {
   const words: Record<Phase, string> = {
     setup: "Setting up",
     "independent-review": "Review running",
@@ -99,6 +100,14 @@ export function PhasePill({ phase }: { phase: Phase }) {
     stopped: "Stopped",
     interrupted: "Interrupted",
   };
+  if (toggle) {
+    return (
+      <button type="button" className={`pill phase-${phase}`} aria-expanded={flowShown ?? false} title={flowShown ? "Hide the process" : "Show the process"} onClick={toggle}>
+        <span className="pill-dot" />
+        {words[phase]}
+      </button>
+    );
+  }
   return (
     <span className={`pill phase-${phase}`}>
       <span className="pill-dot" />

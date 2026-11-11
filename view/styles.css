@@ -1888,3 +1888,186 @@ button.md-path {
 .ask-last {
   font-style: italic;
 }
+
+button.pill {
+  font: inherit;
+  font-weight: 600;
+  border: 0;
+  cursor: pointer;
+  color: var(--muted);
+  background: var(--bg-2);
+}
+
+button.pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Process strip */
+.flow {
+  container-type: inline-size;
+  container-name: flow;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 8px 4px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  min-width: 0;
+  margin: 0 0 12px;
+}
+
+.flow-steps {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+}
+
+.flow-connector {
+  flex: none;
+  padding: 0 8px;
+  color: var(--faint);
+}
+
+.flow-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.flow-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.flow-mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 0.75em;
+  line-height: 1;
+}
+
+.flow-detail {
+  font-size: 0.82em;
+  font-weight: 400;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 21px;
+}
+
+.flow-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Where the review is keeps its words; the other steps give way first. */
+.flow-current,
+.flow-stopped,
+.flow-interrupted {
+  flex-shrink: 0;
+}
+
+.flow-done {
+  color: var(--ok);
+}
+
+.flow-current {
+  color: var(--accent);
+}
+
+.flow-current .flow-mark {
+  border-width: 2px;
+  background: color-mix(in srgb, var(--accent) var(--soft), transparent);
+}
+
+.flow-ahead {
+  color: var(--muted);
+}
+
+.flow-skipped {
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+.flow-skipped .flow-mark {
+  border-style: dashed;
+}
+
+.flow-stopped {
+  color: var(--danger);
+}
+
+.flow-interrupted {
+  color: var(--warn);
+}
+
+.flow-settled {
+  flex: none;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+.flow-close {
+  flex: none;
+  margin-left: auto;
+}
+
+@container flow (max-width: 860px) {
+  .flow-step:not(.flow-current, .flow-stopped, .flow-interrupted) .flow-detail {
+    display: none;
+  }
+}
+
+@container flow (max-width: 720px) {
+  /* Hidden from sight only: a screen reader still names the step. */
+  .flow-step:not(.flow-current, .flow-stopped, .flow-interrupted) .flow-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .flow-step:not(.flow-current, .flow-stopped, .flow-interrupted) .flow-connector {
+    padding: 0 3px;
+  }
+}

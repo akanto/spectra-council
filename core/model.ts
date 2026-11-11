@@ -357,6 +357,8 @@ export interface Review {
   findingsIssued: number;
   /** The phase a review was in when a restart cut it short, for resuming it there; null otherwise. */
   interruptedPhase: ResumablePhase | null;
+  /** The phase a review was in when the user stopped it, for showing where it stopped; null otherwise, absent in reviews from before it was kept. */
+  stoppedPhase?: ResumablePhase | null;
   /**
    * Whether an agent has grouped the findings by meaning, in the grouping turn at the start of the deliberation; a
    * resumed review doesn't ask again.

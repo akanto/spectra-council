@@ -259,6 +259,7 @@ export function newReview(id: string, setup: Setup, runner: RunnerKind, at: numb
     agentHeardAt: null,
     findingsIssued: 0,
     interruptedPhase: null,
+    stoppedPhase: null,
     duplicatesChecked: false,
   };
 }
@@ -656,8 +657,10 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "interrupted": {
       if (review.phase === "verification") return endVerification(review, event.at, event.type === "stopped" ? "Re-check stopped" : "Re-check interrupted", false);
       if (!isRunning(review)) return review;
-      const interruptedPhase = event.type === "interrupted" ? (review.phase as ResumablePhase) : null;
-      return { ...review, phase: event.type, endedAt: event.at, reviewers: endActive(review, event.at), interruptedPhase };
+      const cutIn = review.phase as ResumablePhase;
+      const interruptedPhase = event.type === "interrupted" ? cutIn : null;
+      const stoppedPhase = event.type === "stopped" ? cutIn : null;
+      return { ...review, phase: event.type, endedAt: event.at, reviewers: endActive(review, event.at), interruptedPhase, stoppedPhase };
     }
     case "resumed":
       return resume(review, event.at);

@@ -61,7 +61,8 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 - **A runner interface.** `ReviewerRunner` (`core/engine.ts`) runs a reviewer's turns: `AgentRunner` through Mirador
   conversations, `MockRunner` for demos and tests. `routeByAgent` lets mocks and profiles sit at one council.
 - **Persistence is canvas item data.** Mirador stores items and streams each change to the view. There is no database
-  or socket layer of our own.
+  or socket layer of our own. The plugin's own storage keeps three things besides: the view's preferences (`viewPrefs`),
+  the profiles seated before (`profilesFor`) and the reviewer conversations in flight.
 - **Plain CSS on Mirador's theme variables**, so the view matches its light and dark themes and ships as one file.
 
 ### A review, phase by phase
@@ -107,6 +108,23 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 
 Every change from outside the engine goes through the host's `applyTo`, which hands it to the running session when
 there is one; a direct write would be lost under the session's next one.
+
+### The process strip
+
+The view shows the review as a strip between the header chips and the tabs, on every tab and during Setup. `flowOf`
+(`core/progress.ts`) is a pure function of the `Review`: it gives six steps, Setup, Review, Deliberate, Verdict, Rule &
+fix, and Re-check. Synthesis and the fix proposals fold into Verdict.
+
+Each step is **done**, **current**, **ahead**, **skipped**, **stopped** or **interrupted**. A sub-label gives live
+progress on the current step ("round 2 of 3", "3 of 4 done", "5/8 ruled · 2 fixed") and says what the step
+does otherwise. Deliberate is skipped with one reviewer or when the council skips deliberation. Re-check is skipped when
+nothing was fixed. A settled review reads "All settled". Each step has a tooltip. A stopped review is marked at the step
+it stopped in (`stoppedPhase`), and an interrupted one at `interruptedPhase`.
+
+The strip is read-only. In a narrow canvas it shows dots and the current step. ✕ hides it, and the header's phase pill
+shows it again. Hiding is a view preference for every review. The view runs in a sandboxed iframe with no storage of its
+own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves to `{ prefs: ViewPrefs }`, the type in
+`core/schemas.ts`). The host keeps the preferences under the `viewPrefs` storage key, and a `set` is merged over them.
 
 ### Real reviewers in Mirador
 
@@ -177,6 +195,8 @@ there is one; a direct write would be lost under the session's next one.
   A seat that failed in a deliberation round can't fetch: its round is over, and its arguments would land in a
   settled deliberation. Run the review again instead.
 - **Resume.** A restart cuts a running review short (`interrupted`). Resume (`resumed`) redoes only the work in flight.
+  `interruptedPhase` records the step the restart cut in. A stop records its step as `stoppedPhase` instead, which the
+  process strip marks; it is absent in reviews stored before it was kept, and the strip then guesses from the rounds.
   The host keeps the conversations it started in plugin storage, with any reply that came while nothing waited for it,
   and a resumed turn takes its conversation over. Turns are matched by identity (review, reviewer, task, round or pass,
   findings, first ask or repair), not by prompt, which changes when a seat's label follows its model.

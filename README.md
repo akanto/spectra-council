@@ -43,6 +43,9 @@ Ask Mirador's agent: *"Convene a Spectra Council review of this repo."* The revi
   evidence, the argument, any dissent and a proposed fix. *Re-check fixes* has the reviewers verify the work or reopen
   it.
 
+A strip above the tabs shows where the review stands: each step done, current, skipped or stopped, with live progress on
+the current one. It is read-only; ✕ hides it, and the phase pill in the header brings it back.
+
 To try it without spending tokens, ask for a mock review: stand-in reviewers that play the whole flow.
 
 ## Advanced

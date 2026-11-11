@@ -22,7 +22,7 @@ import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
 import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
-import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, type Decision, type Setup } from "../../core/schemas.ts";
+import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, viewPrefsSchema, DEFAULT_VIEW_PREFS, type Decision, type Setup, type ViewPrefs } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
 import { askFixerPrompt, askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
@@ -47,6 +47,9 @@ export function turnLimitOf(context: Pick<CanvasPluginContext<unknown>, "profile
   const minutes = Number(context.profileSetting(TURN_LIMIT_SETTING));
   return minutes > 0 ? minutes * 60_000 : TURN_LIMIT_MS;
 }
+
+/** Where the plugin's storage keeps the view's preferences, for every review. */
+const VIEW_PREFS_KEY = "viewPrefs";
 
 /** Where the plugin's storage keeps the reviewer conversations in flight, by conversation id. */
 export const IN_FLIGHT_KEY = "inFlight";
@@ -1073,6 +1076,12 @@ export function createCouncilHost({
           return { path: await resolveTargetPath(item.data.target, parsed.data.path) };
         case "profiles":
           return { profiles: profilesFor(context.storage) };
+        case "prefs": {
+          const stored = viewPrefsSchema.partial().safeParse(context.storage.get(VIEW_PREFS_KEY));
+          const prefs: ViewPrefs = { ...DEFAULT_VIEW_PREFS, ...(stored.success ? stored.data : {}), ...parsed.data.set };
+          if (parsed.data.set) context.storage.set(VIEW_PREFS_KEY, prefs);
+          return { prefs };
+        }
         case "stop": {
           const session = sessions.get(item.id);
           if (session) session.stop();

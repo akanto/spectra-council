@@ -1,12 +1,14 @@
 /** The Spectra Council view: setup, then the live workspace and the findings, around one review the host hands in. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isFinished, isRunning, seatedReviewers, type Review } from "../core/model.ts";
+import { flowOf } from "../core/progress.ts";
 import { DEPTH_TITLES } from "../core/depth.ts";
 import { PROFILES } from "../core/profiles.ts";
-import type { SetupPatch, ViewAction } from "../core/schemas.ts";
+import type { SetupPatch, ViewAction, ViewPrefs } from "../core/schemas.ts";
 import type { CouncilBridge } from "./bridge.ts";
 import { Deliberation } from "./Deliberation.tsx";
 import { Findings } from "./Findings.tsx";
+import { FlowStrip } from "./Flow.tsx";
 import { ReviewerDetail } from "./ReviewerDetail.tsx";
 import { Setup } from "./Setup.tsx";
 import { cx, elapsed, BeadsContext, FixerContext, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
@@ -53,6 +55,30 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const [fixer, setFixer] = useState<string | null>(null);
   const [beads, setBeads] = useState<string | null>(null);
   useEffect(() => bridge.onReview(setReview), [bridge]);
+  // Whether the user closed the process strip, kept by the host for every review; null until it answers, so a closed
+  // strip doesn't flash. A host that can't answer (one from before prefs) leaves it shown.
+  const [flowHidden, setFlowHidden] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    Promise.resolve(bridge.send({ kind: "prefs" })).then(
+      (result) => {
+        const hidden = (result as { prefs?: Partial<ViewPrefs> } | null)?.prefs?.flowHidden;
+        // A click on the pill before the answer wins over it.
+        if (live) setFlowHidden((now) => now ?? hidden === true);
+      },
+      () => {
+        if (live) setFlowHidden((now) => now ?? false);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [bridge]);
+  // A preference, not the user's action on the review: past the send queue, and a host that can't keep it still hides it for now.
+  const showFlow = (shown: boolean) => {
+    setFlowHidden(!shown);
+    Promise.resolve(bridge.send({ kind: "prefs", set: { flowHidden: !shown } })).catch(() => {});
+  };
   const reviewId = review?.id;
   const reviewTarget = review?.target;
   // Whether the target has a beads workspace, for the tickets button: asked once the review is complete, and again when
@@ -194,7 +220,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
               Deliberation started → Council
             </button>
           )}
-          <PhasePill phase={review.phase} />
+          <PhasePill phase={review.phase} flowShown={flowHidden === false} toggle={() => showFlow(flowHidden !== false)} />
         </div>
       </header>
       <div className="chips">
@@ -220,6 +246,8 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
           </span>
         )}
       </div>
+
+      {flowHidden === false && <FlowStrip flow={flowOf(review)} close={() => (showFlow(false), requestAnimationFrame(() => document.querySelector<HTMLElement>("button.pill")?.focus()))} />}
 
       {problem && (
         <div className="problem" role="alert">
