@@ -148,9 +148,15 @@ own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves t
   ask the agent to call `council_begin`, which starts the work. For a review in setup it starts only one whose Start
   asked (`startsAsked`, held in memory: after another restart the user presses Start again). A change of setup that
   reaches the host before `council_begin` takes the ask back, and the view shows Start again. The ask can't end when
-  Start's prompt resolves: queued behind a running turn, the prompt resolves before the agent reads it. Sent to an idle
-  agent, it resolves only once the turn has ended, and the view's actions queue behind it, so a change made meanwhile
-  lands after the review has started and is refused.
+  Start's prompt resolves: queued behind a running turn, the prompt resolves before the agent reads it. Start doesn't
+  wait for the prompt (below), so a change made while the agent's turn runs reaches the host before `council_begin`.
+- **Asking the agent from the canvas.** The view's actions that ask the agent something (Start, Resume, Re-check,
+  fetching a late reply, Fix, Ask, tickets, Run again, and a ruling on a finding with a ticket or a fix) send the prompt
+  without awaiting it (`promptAfterTurn`). Mirador waits for an action's result, and in an idle conversation a prompt
+  resolves only when the turn it starts ends, so awaiting it held up the view's later actions for the agent's whole
+  turn. A failed send is logged; Start also drops its request, so `council_begin` refuses until the user presses Start
+  again. Retry start sends a second ask while the agent's turn from the first still runs; a review running already
+  answers `council_begin` plainly rather than failing as one, which is what that second ask then calls.
 - **The agent's other tools.** `council_stop` does what the view's Stop does, but only for a running session: a review
   a restart left running reads as interrupted, with nothing to stop. A stop also stops the reviewers' conversations it
   started, through `stopConversation` (Mirador's plugin API 10); on a Mirador older than that there is no way to, so

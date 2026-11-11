@@ -631,16 +631,14 @@ export function createCouncilHost({
     if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
       const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
       const what = review.phase === "setup" ? "started" : "resumed";
-      // Before the prompt: sent to an idle agent, it resolves only once the turn it starts has ended, by when the agent has
-      // called council_begin. Queued behind a running turn, it resolves at once, before the agent has read it, so the ask
-      // can't end when it resolves; a change of setup ends it instead.
+      // Before the send, which nothing waits for: the agent may call council_begin before it has resolved. Nor can the ask
+      // end when it resolves: queued behind a running turn, it resolves before the agent has read it; a change of setup
+      // ends it instead.
       startsAsked.add(item.id);
-      try {
-        await context.prompt(`The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
-      } catch (error) {
-        startsAsked.delete(item.id);
-        throw error;
-      }
+      const text = `The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`;
+      void promptAfterTurn(context, text, `the user ${what} review ${review.id}`).then((sent) => {
+        if (!sent) startsAsked.delete(item.id);
+      });
       return { prompted: true };
     }
     begin(item, context, review);
@@ -691,7 +689,7 @@ export function createCouncilHost({
     const ids = (fresher.length > 0 ? fresher : waitingTickets(review)).map(({ id }) => id);
     if (ids.length === 0) throw new Error("Every accepted finding that isn't fixed has a ticket already.");
     const next = applyTo(item, context, { type: "tickets-requested", at: clock.now(), findingIds: ids });
-    await context.prompt(ticketsPrompt(next, ids, review.handoff!.path, workspace), { afterTurn: true });
+    void promptAfterTurn(context, ticketsPrompt(next, ids, review.handoff!.path, workspace), `the user asked for tickets in review ${next.id}`);
     return null;
   }
 
@@ -706,13 +704,14 @@ export function createCouncilHost({
     const ids = acceptedFindings(review).map(({ id }) => id);
     const next = applyTo(item, context, { type: "asked", at: clock.now(), text, findingIds: ids, ...(fixer ? { profile: fixer } : {}) });
     if (fixer) {
-      await context.prompt(
+      void promptAfterTurn(
+        context,
         `The user sent their own ask about the accepted findings of Spectra Council review ${next.id} to the "${fixer}" profile. Call council_delegate_fix (review ${next.id}) to start that conversation; don't do what it asks yourself.`,
-        { afterTurn: true },
+        `the user sent an ask about review ${next.id} to the "${fixer}" profile`,
       );
       return null;
     }
-    await context.prompt(askPrompt(next, text, review.handoff!.path), { afterTurn: true });
+    void promptAfterTurn(context, askPrompt(next, text, review.handoff!.path), `the user sent an ask about review ${next.id}`);
     return null;
   }
 
@@ -738,15 +737,17 @@ export function createCouncilHost({
     applyTo(item, context, { type: "fix-requested", at: clock.now(), findingIds: ids, ...(fixer ? { profile: fixer } : {}) });
     if (fixer) {
       // Only a tool may start a conversation, so the agent is asked to call the one that does.
-      await context.prompt(
+      void promptAfterTurn(
+        context,
         `The user handed ${ids.join(", ")} from Spectra Council review ${review.id} to the "${fixer}" profile to fix. Call council_delegate_fix (review ${review.id}) to start that conversation; don't fix them yourself.`,
-        { afterTurn: true },
+        `the user handed findings of review ${review.id} to the "${fixer}" profile`,
       );
       return null;
     }
     // Reopened before, even if a fixer has failed it since: the agent should know an earlier fix didn't hold.
     const reopened = toFix.filter((finding) => finding.fix?.checks.some((check) => check.outcome === "reopened")).map(({ id }) => id);
-    await context.prompt(
+    void promptAfterTurn(
+      context,
       [
         `Please fix these findings from Spectra Council review ${review.id}, most severe first: ${ids.join(", ")}.`,
         `The hand-off at ${handoff.path} has, for each one, the evidence, how the council reached its conclusion (including any dissent), and the proposed fix with how to verify it.`,
@@ -755,7 +756,7 @@ export function createCouncilHost({
       ]
         .filter(Boolean)
         .join("\n\n"),
-      { afterTurn: true },
+      `the user asked for fixes in review ${review.id}`,
     );
     return null;
   }
@@ -832,9 +833,10 @@ export function createCouncilHost({
       const waiting = [{ type: "reopened", at: event.at }, event, { type: "interrupted", at: event.at }].reduce<Review>((next, each) => reduceOrSay(next, each as ReviewEvent), review);
       context.change(item.id, { data: waiting });
       const names = [...new Set(profiles.map((each) => profileName(each.agent)))].join(", ");
-      await context.prompt(
+      void promptAfterTurn(
+        context,
         `The user fetched ${reviewer.label}'s late reply into Spectra Council review ${review.id}, which can now be deliberated; it seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`,
-        { afterTurn: true },
+        `the user fetched a late reply into review ${review.id}`,
       );
       return { prompted: true };
     }
@@ -856,7 +858,7 @@ export function createCouncilHost({
       ...(review.instructions ? { instructions: review.instructions } : {}),
       title: item.title,
     };
-    await context.prompt(`The user wants to run Spectra Council review ${review.id} again. Call council_open with ${JSON.stringify(open)}; the user starts it in the canvas.`, { afterTurn: true });
+    void promptAfterTurn(context, `The user wants to run Spectra Council review ${review.id} again. Call council_open with ${JSON.stringify(open)}; the user starts it in the canvas.`, `the user asked to run review ${review.id} again`);
     return null;
   }
 
@@ -872,7 +874,11 @@ export function createCouncilHost({
     }
     if (checkers.size > 0 && !toolContexts.has(context.conversationId)) {
       const names = [...new Set(checkers.values())].join(", ");
-      await context.prompt(`The user asked to re-check fixes in Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
+      void promptAfterTurn(
+        context,
+        `The user asked to re-check fixes in Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`,
+        `the user asked to re-check fixes in review ${review.id}`,
+      );
       return { prompted: true };
     }
     launch(item, context, review, (session) => session.verify());
@@ -957,6 +963,8 @@ export function createCouncilHost({
           const parsed = beginInput.safeParse(input);
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
           const item = itemFor(context, parsed.data.review);
+          // Retry start sends a second ask for a review the first one already started, so this answers plainly.
+          if (sessions.has(item.id)) return `Spectra Council review ${item.data.id} is already running in the canvas; there is nothing to start. You hear when it ends.`;
           const review = await startable(item, context);
           if (review.phase === "setup" && !startsAsked.has(item.id)) {
             throw new Error(
@@ -1111,16 +1119,18 @@ export function createCouncilHost({
           const after = applyTo(item, context, { type: "ruled", at: clock.now(), findingId, decision, note });
           const ticket = before?.ticket?.id;
           if (ticket && decision !== "accepted" && before?.ruling?.decision === "accepted") {
-            await context.prompt(
+            void promptAfterTurn(
+              context,
               `The user ${decision === null ? "cleared the ruling on" : decision === "dismissed" ? "dismissed" : "deferred"} ${findingId} of Spectra Council review ${after.id}, which has the beads issue ${ticket}. Tell the user, and close or update ${ticket} only if they want you to.`,
-              { afterTurn: true },
+              `the user ruled on ${findingId} of review ${after.id}, which has a ticket`,
             );
           }
           if (before?.fix && !after.findings.find((finding) => finding.id === findingId)?.fix) {
             const fixer = before.fix.fixer ? ` It was handed to the "${before.fix.fixer.profile}" profile, whose conversation can't hear this; its report on ${findingId} will be ignored.` : "";
-            await context.prompt(
+            void promptAfterTurn(
+              context,
               `The user took ${findingId} out of the fixes for Spectra Council review ${after.id} (${decision === null ? "ruling cleared" : decision}). Don't fix it; if you already changed something for it, tell the user what.${fixer}`,
-              { afterTurn: true },
+              `the user took ${findingId} of review ${after.id} out of the fixes`,
             );
           }
           return null;
