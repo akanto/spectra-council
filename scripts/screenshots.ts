@@ -31,6 +31,19 @@ async function tour(theme: "light" | "dark") {
   const catalogShot = async (name: string, top?: string) => {
     if (theme !== "dark") return;
     await page.setViewportSize({ width: 1440, height: 900 });
+    // The catalog's pictures name the seats as a review on real profiles does: no "(mock)", no mock chip. An observer
+    // keeps the live view's re-renders from bringing them back before the picture is taken.
+    await page.evaluate(() => {
+      const strip = (root: Node) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.nodeValue?.includes(" (mock)")) node.nodeValue = node.nodeValue.replaceAll(" (mock)", "");
+      };
+      strip(document.body);
+      const observer = new MutationObserver((changes) => { for (const change of changes) strip(change.target); });
+      observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+      (window as unknown as { catalogObserver?: MutationObserver }).catalogObserver = observer;
+      document.head.insertAdjacentHTML("beforeend", '<style id="catalog-style">.chip.mock { display: none !important; }</style>');
+    });
     await page.waitForTimeout(300);
     await page.evaluate((selector) => {
       const element = selector ? document.querySelector(selector) : null;
@@ -38,6 +51,10 @@ async function tour(theme: "light" | "dark") {
     }, top ?? null);
     await page.waitForTimeout(200);
     await page.screenshot({ path: join(catalogOut, `${name}.png`) });
+    await page.evaluate(() => {
+      (window as unknown as { catalogObserver?: MutationObserver }).catalogObserver?.disconnect();
+      document.getElementById("catalog-style")?.remove();
+    });
     await page.setViewportSize({ width: 960, height: 900 });
   };
 
