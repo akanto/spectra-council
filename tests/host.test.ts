@@ -138,7 +138,7 @@ describe("the Mirador host", () => {
     expect(item!.type).toBe("council");
     expect(item!.title).toStartWith("Security review · spectra-target-");
     expect(item!.data.phase).toBe("setup");
-    expect(item!.data.reviewers.map((reviewer) => [reviewer.label, reviewer.enabled])).toEqual([["Gemini", true]]);
+    expect(item!.data.reviewers.map((reviewer) => [reviewer.label, reviewer.enabled])).toEqual([["R1 · Gemini (mock)", true]]);
   });
 
   test("council_open refuses a relative or missing target", async () => {

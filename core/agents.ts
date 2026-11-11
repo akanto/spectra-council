@@ -2,7 +2,8 @@
  * The agents that can take a seat at the council: deterministic mock personas, and the user's Mirador profiles (Claude,
  * pi, opencode, …), whose agent id is "profile:" and the profile's name. A profile seat runs on its profile's defaults
  * (the agent's default model and the profile's effort) unless the user chose a model or effort for it (`SeatChoice`).
- * The review names a profile seat by its model ("Opus 5.5"), once the host could tell which.
+ * The review names a seat by its number and a profile seat by its model ("R1 · Opus 5.5 · high"), once the host could
+ * tell which.
  */
 import type { ModelInfo, Reviewer, RunnerKind, SeatChoice } from "./model.ts";
 import type { Seat } from "./schemas.ts";
@@ -133,31 +134,33 @@ export function offered(list: OptionChoice[] | undefined, wanted: string): Optio
 /** A model with its effort, in a few words: "Opus 5.5 · high", or just "Opus 5.5". */
 export const modelLabel = (model: ModelInfo) => (model.effort ? `${model.name} · ${model.effort}` : model.name);
 
+/** A seat's number as the review shows it: "R1" for r1. */
+export const seatNumber = (reviewer: Pick<Reviewer, "id">, index: number) => (/^r\d+$/.test(reviewer.id) ? reviewer.id.toUpperCase() : `R${index + 1}`);
+
 /**
- * The reviewers with their labels: a profile seat's model name when known, else its profile's or mock's name. Two
- * seats with the same name are told apart by their profile ("Opus 5.5 (Home)") when that differs, else by number
- * ("Claude 2").
+ * The reviewers with their labels: the seat's number, then a profile seat's model and effort ("R1 · Opus 5.5 · high"),
+ * or its profile's name until the host could tell its model ("R1 · Home"), or a mock persona's name ("R2 · Claude
+ * (mock)"). The number keeps them apart, so the profile shows only in the reviewer's detail (`seatDetail`).
  */
 export function withLabels(reviewers: Reviewer[]): Reviewer[] {
-  const base = reviewers.map((reviewer) => (isProfileAgent(reviewer.agent) && reviewer.model ? reviewer.model.name : agentLabel(reviewer.agent)));
-  const named = base.map((label, index) => {
-    const agent = reviewers[index]!.agent;
-    const twins = base.filter((other, at) => other === label && reviewers[at]!.agent !== agent);
-    return twins.length > 0 && isProfileAgent(agent) && profileName(agent) !== label ? `${label} (${profileName(agent)})` : label;
+  return reviewers.map((reviewer, index) => {
+    const name = isProfileAgent(reviewer.agent) && reviewer.model ? modelLabel(reviewer.model) : isMockAgent(reviewer.agent) ? `${agentLabel(reviewer.agent)} (mock)` : agentLabel(reviewer.agent);
+    const label = `${seatNumber(reviewer, index)} · ${name}`;
+    return reviewer.label === label ? reviewer : { ...reviewer, label };
   });
-  const labels = named.map((label, index) => {
-    const same = named.filter((other) => other === label).length;
-    if (same === 1) return label;
-    return `${label} ${named.slice(0, index + 1).filter((other) => other === label).length}`;
-  });
-  return reviewers.map((reviewer, index) => (reviewer.label === labels[index] ? reviewer : { ...reviewer, label: labels[index]! }));
 }
 
 /**
- * What to show under a reviewer's label: a profile seat's effort and profile ("high effort · Home profile"), or
- * "mock" for a mock persona.
+ * A reviewer's name inside a sentence: its seat number ("R2"), which the chips show and the label starts with, so that
+ * "R2's challenge stands" reads; a review saved before seats were numbered keeps its whole label.
  */
-export function seatDetail(reviewer: Pick<Reviewer, "agent" | "model">): string {
-  if (!isProfileAgent(reviewer.agent)) return "mock";
-  return [reviewer.model?.effort ? `${reviewer.model.effort} effort` : null, `${profileName(reviewer.agent)} profile`].filter(Boolean).join(" · ");
+export const shortName = (reviewer: Pick<Reviewer, "label">) => /^R\d+(?= · )/.exec(reviewer.label)?.[0] ?? reviewer.label;
+
+/**
+ * What the reviewer's detail shows under its label: the profile a profile seat runs on ("Home profile"), or a mock
+ * persona's blurb. Only the detail names the profile; the label names the model.
+ */
+export function seatDetail(reviewer: Pick<Reviewer, "agent">): string {
+  if (isProfileAgent(reviewer.agent)) return `${profileName(reviewer.agent)} profile`;
+  return agentById(reviewer.agent)?.blurb ?? "mock";
 }

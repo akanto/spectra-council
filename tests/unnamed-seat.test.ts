@@ -12,7 +12,7 @@ describe("an unnamed profile seat", () => {
 
   test("shows as an unnamed profile", () => {
     const review = newReview("r", setup([profileAgent("home"), UNNAMED_PROFILE]), "mirador", 0);
-    expect(review.reviewers[1]?.label).toBe("Unnamed profile");
+    expect(review.reviewers[1]?.label).toBe("R2 · Unnamed profile");
   });
 
   test("keeps the review from starting until it is named", () => {

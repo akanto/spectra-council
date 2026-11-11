@@ -21,18 +21,18 @@ describe("reduce", () => {
   test("a new review seats two agents", () => {
     const review = newReview("rev2", { ...setup, seats: defaultSeats() }, "mock", 0);
     expect(review.reviewers.map((reviewer) => [reviewer.id, reviewer.label, reviewer.enabled])).toEqual([
-      ["r1", "Claude", true],
-      ["r2", "Codex", true],
+      ["r1", "R1 · Claude (mock)", true],
+      ["r2", "R2 · Codex (mock)", true],
     ]);
   });
 
   test("a review with unseated seats keeps them out of the run", () => {
     const review = fresh();
     expect(review.reviewers.map((reviewer) => [reviewer.id, reviewer.label, reviewer.enabled])).toEqual([
-      ["r1", "Claude", true],
-      ["r2", "Codex", true],
-      ["r3", "Gemini", false],
-      ["r4", "Qwen", false],
+      ["r1", "R1 · Claude (mock)", true],
+      ["r2", "R2 · Codex (mock)", true],
+      ["r3", "R3 · Gemini (mock)", false],
+      ["r4", "R4 · Qwen (mock)", false],
     ]);
     expect(setupOf(review)).toEqual({ ...setup, deliberationRounds: 2, maxFindings: 3 });
   });

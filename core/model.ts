@@ -63,8 +63,9 @@ export interface Reviewer {
   /** The agent's id in the registry. */
   agent: string;
   /**
-   * The name the review shows for it: a profile seat's model when known ("Opus 5.5"), else the profile's or mock's
-   * name; made unique across the council ("Opus 5.5 (Home)", "Claude 2") by `withLabels` (core/agents.ts).
+   * The name the review shows for it: the seat's number and a profile seat's model and effort when known ("R1 · Opus 5.5
+   * · high"), else the profile's or mock's name ("R1 · Home", "R2 · Claude (mock)"); set by `withLabels`
+   * (core/agents.ts). Reviews from before keep the label they were saved with ("Opus 5.5 (Home)").
    */
   label: string;
   /** The model a profile seat runs on, once the host could tell; null for a mock. */

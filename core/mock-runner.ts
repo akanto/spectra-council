@@ -4,6 +4,7 @@
  * it read. The same agent, profile, depth and files always give the same script: `mockScript` is pure, and the runner
  * only plays it on a clock.
  */
+import { shortName } from "./agents.ts";
 import type { Clock, DeliberationJob, ProposalJob, Report, ReviewerJob, ReviewerRunner, VerificationJob } from "./engine.ts";
 import { argumentsOn, reportersOf, type Argument, type Finding } from "./model.ts";
 import type { ProfileId, Evidence, FindingInput, FixCheckInput, ProposalInput, Severity, Confidence, Stance } from "./schemas.ts";
@@ -173,7 +174,7 @@ export function mockScript(job: Pick<ReviewerJob, "review" | "reviewer" | "profi
         severity: template.severity,
         confidence: template.confidence,
         category: template.category,
-        evidence: [{ path: reads.includes(homeOf(template.title, files)) ? homeOf(template.title, files) : file, note: `Where ${reviewer.label} saw it.` }],
+        evidence: [{ path: reads.includes(homeOf(template.title, files)) ? homeOf(template.title, files) : file, note: `Where ${shortName(reviewer)} saw it.` }],
         recommendation: template.recommendation,
       };
       activity(pause(500), "status", `Writing up “${template.title}”`);
@@ -291,7 +292,10 @@ export function mockDeliberation(job: DeliberationJob): MockStep[] {
   const steps: MockStep[] = [];
   const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
   const pickFrom: PickOne = (options) => options[Math.floor(next() * options.length)]!;
-  const nameOf = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
+  const nameOf = (id: string) => {
+    const reviewer = review.reviewers.find((each) => each.id === id);
+    return reviewer ? shortName(reviewer) : id;
+  };
 
   const reads = [...new Set(reviewer.activity.flatMap((each) => (each.kind === "read" && each.path ? [each.path] : [])))];
   const evidenceFor = (finding: Finding, note: string): Evidence => {
@@ -411,7 +415,10 @@ export function mockProposals(job: ProposalJob): MockStep[] {
   const next = random(hash(`${reviewer.agent}|${review.profile}|${review.depth}|proposals|${job.findingIds.join(",")}`));
   const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
   const pickFrom: PickOne = (options) => options[Math.floor(next() * options.length)]!;
-  const nameOf = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
+  const nameOf = (id: string) => {
+    const reviewer = review.reviewers.find((each) => each.id === id);
+    return reviewer ? shortName(reviewer) : id;
+  };
   const steps: MockStep[] = [];
   const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
 

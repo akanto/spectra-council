@@ -2,7 +2,6 @@
 import { useEffect, useState } from "react";
 import { isFinished, isResumable, isRulable, reportersOf, type Activity, type Finding, type Review, type Reviewer } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
-import { seatDetail } from "../core/agents.ts";
 import { bySeverity } from "../core/describe.ts";
 import { canFetchReply } from "../core/late-replies.ts";
 import { ActionPlan } from "./Actions.tsx";
@@ -74,7 +73,6 @@ function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, re
         </span>
         <StatusMark status={reviewer.status} />
       </span>
-      <span className="seat-panel-detail">{seatDetail(reviewer)}</span>
       <span className="seat-panel-current">{reviewer.problem ?? reviewer.current ?? statusWord(reviewer.status)}</span>
       <ul className="seat-panel-recent">
         {recent.map((activity) => (

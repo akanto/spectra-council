@@ -1,4 +1,5 @@
 /** A review in words, for an agent: what the host's tools answer, and what it hears when a review ends. */
+import { isProfileAgent, profileName } from "./agents.ts";
 import { knobsText } from "./depth.ts";
 import type { WhenFetchable } from "./late-replies.ts";
 import { argumentsOn, isFinished, seatedReviewers, type Finding, type Review, type Reviewer } from "./model.ts";
@@ -103,7 +104,7 @@ export function describeReview(review: Review): string {
     review.rounds > 0 ? `Deliberation: round ${review.round} of ${review.rounds}, ${review.arguments.length} arguments.` : "",
     review.verdict ? `Verdict: ${review.verdict.summary}` : "",
     review.handoff ? `Hand-off: ${review.handoff.path} (${review.handoff.findingIds.join(", ")}).` : "",
-    `Reviewers: ${reviewers.map((reviewer) => `${reviewer.label} (${reviewer.status}${reviewer.problem ? `: ${reviewer.problem}` : ""})`).join(", ") || "none seated"}.`,
+    `Reviewers: ${reviewers.map((reviewer) => `${reviewer.label} (${isProfileAgent(reviewer.agent) ? `${profileName(reviewer.agent)} profile, ` : ""}${reviewer.status}${reviewer.problem ? `: ${reviewer.problem}` : ""})`).join(", ") || "none seated"}.`,
   ].filter(Boolean);
   if (review.findings.length === 0) return [...lines, "No findings yet."].join("\n");
   const label = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id)?.label ?? id;

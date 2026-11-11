@@ -146,7 +146,7 @@ describe("after a removal", () => {
       { type: "reviewer-removed", reviewerId: "r1", at: 20 },
       { type: "argued", reviewerId: "r2", at: 21, argument: { findingId: "F1", stance: "challenges", confidence: "high", text: "Not a leak after all.", evidence: [] } },
     ]);
-    expect(settle(review, review.findings[0]!)).toMatchObject({ status: "withdrawn", rationale: "Claude withdrew it." });
+    expect(settle(review, review.findings[0]!)).toMatchObject({ status: "withdrawn", rationale: "R2 withdrew it." });
     // With every reporter removed, the finding stands on the others' stances: with nobody backing it, nothing settles it.
     review = play(review, [finish("r2", "failed"), { type: "reviewer-removed", reviewerId: "r2", at: 22 }]);
     expect(settle(review, review.findings[0]!)).toBeNull();
@@ -170,7 +170,7 @@ describe("after a removal", () => {
     expect(settle(review, review.findings[0]!)).toMatchObject({ status: "disputed", dissenters: ["r2"] });
     // Removed, it no longer counts; it wasn't answered either.
     const removed = play(review, [{ type: "reviewer-removed", reviewerId: "r2", at: 20 }]);
-    expect(settle(removed, removed.findings[0]!)).toEqual({ status: "confirmed", rationale: "1 of 2 back it; Claude was removed, so its challenge no longer counts.", dissenters: [] });
+    expect(settle(removed, removed.findings[0]!)).toEqual({ status: "confirmed", rationale: "1 of 2 back it; R2 was removed, so its challenge no longer counts.", dissenters: [] });
   });
 });
 

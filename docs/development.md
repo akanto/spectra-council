@@ -187,6 +187,12 @@ there is one; a direct write would be lost under the session's next one.
   `hosts/mirador/records.ts` reads Mirador's database read-only for the setup's choices (the model and effort options of
   each profile's latest conversation), to name each seat by its model (`model-seen`), and to read a late reply that came
   while no host kept it. [mirador-api.md](mirador-api.md) lists the API extensions that would replace this.
+- **Seat names.** The setup lists profiles by name; the Model and Effort pickers show the model. Once seated, a
+  reviewer is named by its seat number and model (`withLabels`): "R1 · Opus 5.5 · high", "R1 · Home" until its model
+  is known, "R2 · Claude (mock)" for a mock. The number keeps seats on the same model apart, so only the reviewer's
+  detail panel names its profile (`seatDetail`). Sentences (rationales, the verdict, the hand-off, mock arguments)
+  name a seat by its number alone (`shortName`: "R2's challenge stands"); the hand-off's council line spells out each
+  label. Reviews saved before keep their stored labels until a seat is relabelled, and their whole label in sentences.
 - **Titles.** Every prompt opens with a title line (`turnTitle`); the host passes it as the conversation's `title`
   (`promptTitle`), which Mirador keeps from the agent's renames.
 - **Other runners.** `createCouncilHost`'s `runnerFor` option hands an agent to a runner of the host's own, ahead of

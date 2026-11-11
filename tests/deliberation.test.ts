@@ -55,7 +55,7 @@ describe("settle", () => {
   test("someone uncertain makes it confirmed, not agreed", () => {
     let review = argue(council(), "r2", "supports");
     review = argue(review, "r3", "uncertain");
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; Gemini couldn't tell.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; R3 couldn't tell.", dissenters: [] });
   });
 
   test("one challenger among three supporters is disputed, with that dissenter", () => {
@@ -70,7 +70,7 @@ describe("settle", () => {
     review = argue(review, "r4", "challenges");
     expect(settled(review)).toEqual({
       status: "disputed",
-      rationale: "3 of 4 back it; Qwen's challenge stands.",
+      rationale: "3 of 4 back it; R4's challenge stands.",
       dissenters: ["r4"],
       dissent: [{ reviewerId: "r4", reason: "Because.", argumentId: "A3" }],
     });
@@ -81,7 +81,7 @@ describe("settle", () => {
     review = argue(review, "r3", "challenges");
     expect(settled(review)).toEqual({
       status: "disputed",
-      rationale: "1 of 3 back it; Codex and Gemini's challenges stand.",
+      rationale: "1 of 3 back it; R2 and R3's challenges stand.",
       dissenters: ["r2", "r3"],
       dissent: [
         { reviewerId: "r2", reason: "Because.", argumentId: "A1" },
@@ -95,14 +95,14 @@ describe("settle", () => {
     review = argue(review, "r2", "challenges", 2, "The unchecked path is guarded by validateInput() at api.ts:42. It never sees raw input, e.g. from the CLI.");
     const settlement = settled(review)!;
     expect(settlement.dissent).toEqual([{ reviewerId: "r2", reason: "The unchecked path is guarded by validateInput() at api.ts:42.", argumentId: "A2" }]);
-    expect(settlement.rationale).toBe("1 of 3 back it; Codex's challenge stands.");
+    expect(settlement.rationale).toBe("1 of 3 back it; R2's challenge stands.");
   });
 
   test("the resolution keeps the dissent", () => {
     let review = argue(council(), "r2", "challenges", 1, "Not reachable");
     review = reduce(review, { type: "synthesis-started", at: 9 });
     review = reduce(review, { type: "finding-resolved", at: 10, findingId: "F1", ...settled(review)! });
-    expect(review.findings[0]!.resolution).toMatchObject({ rationale: "1 of 3 back it; Codex's challenge stands.", dissent: [{ reviewerId: "r2", reason: "Not reachable", argumentId: "A1" }] });
+    expect(review.findings[0]!.resolution).toMatchObject({ rationale: "1 of 3 back it; R2's challenge stands.", dissent: [{ reviewerId: "r2", reason: "Not reachable", argumentId: "A1" }] });
   });
 
   test("a challenger who came round leaves it confirmed, and says the challenge was answered", () => {
@@ -115,12 +115,12 @@ describe("settle", () => {
   test("a reporter who conceded after a challenge withdrew it, naming the challenger", () => {
     let review = argue(council(), "r2", "challenges", 1);
     review = argue(review, "r1", "challenges", 2);
-    expect(settled(review)).toEqual({ status: "withdrawn", rationale: "Claude withdrew it after Codex's challenge.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "withdrawn", rationale: "R1 withdrew it after R2's challenge.", dissenters: [] });
   });
 
   test("a reporter who conceded with no challenger just withdrew it", () => {
     const review = argue(council(), "r1", "uncertain");
-    expect(settled(review)).toEqual({ status: "withdrawn", rationale: "Claude withdrew it.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "withdrawn", rationale: "R1 withdrew it.", dissenters: [] });
   });
 
   test("a reviewer that failed before arguing anything doesn't count among the participants", () => {
@@ -139,7 +139,7 @@ describe("settle, when reviewers fail or are removed", () => {
     const settlement = settled(review);
     expect(settlement).toEqual({
       status: "disputed",
-      rationale: "1 of 2 back it; Codex's challenge stands; Codex couldn't continue, so its last stance counts.",
+      rationale: "1 of 2 back it; R2's challenge stands; R2 couldn't continue, so its last stance counts.",
       dissenters: ["r2"],
       dissent: [{ reviewerId: "r2", reason: "Not reachable: validateInput() guards it.", argumentId: "A1" }],
     });
@@ -154,7 +154,7 @@ describe("settle, when reviewers fail or are removed", () => {
     for (const reviewerId of ["r1", "r2", "r3"]) review = fail(review, reviewerId);
     expect(settled(review)).toEqual({
       status: "confirmed",
-      rationale: "2 of 3 back it; Gemini couldn't tell; Claude, Codex and Gemini couldn't continue, so their last stances count.",
+      rationale: "2 of 3 back it; R3 couldn't tell; R1, R2 and R3 couldn't continue, so their last stances count.",
       dissenters: [],
     });
   });
@@ -162,7 +162,7 @@ describe("settle, when reviewers fail or are removed", () => {
   test("with every reviewer failed, the reporter's support still stands and the rationale says so", () => {
     let review = council();
     for (const reviewerId of ["r1", "r2", "r3"]) review = fail(review, reviewerId);
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "1 of 1 back it; Claude couldn't continue, so its last stance counts.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "1 of 1 back it; R1 couldn't continue, so its last stance counts.", dissenters: [] });
   });
 
   test("with every reporter removed and nobody else backing it, nothing settles it", () => {
@@ -173,21 +173,21 @@ describe("settle, when reviewers fail or are removed", () => {
   test("a reporter that failed before arguing still backs it with its report: a timeout takes back nothing", () => {
     let review = argue(council(), "r2", "uncertain", 1);
     review = fail(review, "r1");
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "1 of 3 back it; Codex couldn't tell; Claude couldn't continue, so its last stance counts.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "1 of 3 back it; R2 couldn't tell; R1 couldn't continue, so its last stance counts.", dissenters: [] });
   });
 
   test("a challenger who came round and then failed answered the challenge", () => {
     let review = argue(council(), "r2", "challenges", 1);
     review = argue(review, "r2", "supports", 2);
     review = fail(review, "r2");
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; the challenge was answered; Codex couldn't continue, so its last stance counts.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; the challenge was answered; R2 couldn't continue, so its last stance counts.", dissenters: [] });
   });
 
   test("a challenger who came round only as far as uncertain didn't answer it", () => {
     let review = argue(council(), "r2", "challenges", 1);
     review = argue(review, "r3", "supports", 1);
     review = argue(review, "r2", "uncertain", 2);
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; Codex couldn't tell.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; R2 couldn't tell.", dissenters: [] });
   });
 
   test("of two challengers, only the one who came round is named as answered", () => {
@@ -195,14 +195,14 @@ describe("settle, when reviewers fail or are removed", () => {
     review = argue(review, "r3", "challenges", 1);
     review = argue(review, "r2", "supports", 2);
     review = argue(review, "r3", "uncertain", 2);
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; Codex's challenge was answered; Gemini couldn't tell.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; R2's challenge was answered; R3 couldn't tell.", dissenters: [] });
   });
 
   test("a reporter who conceded and then failed still withdrew it", () => {
     let review = argue(council(), "r2", "challenges", 1);
     review = argue(review, "r1", "challenges", 2);
     review = fail(review, "r1");
-    expect(settled(review)).toEqual({ status: "withdrawn", rationale: "Claude withdrew it after Codex's challenge.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "withdrawn", rationale: "R1 withdrew it after R2's challenge.", dissenters: [] });
   });
 
   test("a removed challenger's challenge no longer counts, and isn't called answered", () => {
@@ -210,15 +210,15 @@ describe("settle, when reviewers fail or are removed", () => {
     review = argue(review, "r3", "supports", 1);
     review = reduce(review, { type: "round-started", at: 9, round: 2 });
     review = remove(fail(review, "r2"), "r2");
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 2 back it; Codex was removed, so its challenge no longer counts.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 2 back it; R2 was removed, so its challenge no longer counts.", dissenters: [] });
   });
 
   test("a removed reviewer's support goes with it", () => {
     let review = argue(council(), "r2", "supports", 1);
     review = reduce(review, { type: "round-started", at: 9, round: 2 });
     review = fail(fail(review, "r1"), "r2");
-    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; Claude and Codex couldn't continue, so their last stances count.", dissenters: [] });
-    expect(settled(remove(review, "r2"))).toEqual({ status: "confirmed", rationale: "1 of 2 back it; Claude couldn't continue, so its last stance counts.", dissenters: [] });
+    expect(settled(review)).toEqual({ status: "confirmed", rationale: "2 of 3 back it; R1 and R2 couldn't continue, so their last stances count.", dissenters: [] });
+    expect(settled(remove(review, "r2"))).toEqual({ status: "confirmed", rationale: "1 of 2 back it; R1 couldn't continue, so its last stance counts.", dissenters: [] });
   });
 });
 
@@ -276,7 +276,7 @@ describe("verdictSummary", () => {
     review = fail(review, "r3");
     review = reduce(review, { type: "synthesis-started", at: 9 });
     expect(settled(review)).toBeNull();
-    expect(verdictSummary(review)).toBe("1 finding: 1 unsettled. No serious finding stands. 1 finding was left unsettled, with no one backing it. Gemini failed and couldn't continue.");
+    expect(verdictSummary(review)).toBe("1 finding: 1 unsettled. No serious finding stands. 1 finding was left unsettled, with no one backing it. R3 failed and couldn't continue.");
   });
 
   test("findings more than one reviewer reported on their own are counted", () => {
@@ -312,7 +312,7 @@ describe("verdictSummary", () => {
     expect(verdictSummary(review)).toBe("The council found nothing to report.");
     review = reduce(review, { type: "reviewer-started", reviewerId: "r1", at: 2 });
     review = reduce(review, { type: "finding-reported", reviewerId: "r1", at: 4, finding });
-    expect(verdictSummary(review)).toBe("1 finding, not deliberated: fewer than two reviewers finished their review. Codex failed and couldn't continue.");
+    expect(verdictSummary(review)).toBe("1 finding, not deliberated: fewer than two reviewers finished their review. R2 failed and couldn't continue.");
   });
 
   test("a medium agreed finding is not serious", () => {

@@ -79,6 +79,8 @@ describe("handoff", () => {
     expect(md).toContain("2026-11-02");
     expect(md).toContain("council_mark_fixed");
     expect(md).toContain("| F2 | critical | disputed | Race on cache |");
+    // The council line spells out each seat's name; the rest of the file calls them R1, R2, ….
+    expect(md).toContain("(R1 · Claude (mock); R2 · Codex (mock))");
     const notToFix = md.slice(md.indexOf("## Not to fix"));
     expect(notToFix).toContain("F3 (dismissed): Leaky handle - Not worth it");
     expect(notToFix).not.toContain("F1");
@@ -89,7 +91,7 @@ describe("handoff", () => {
     const f2 = md.slice(md.indexOf("## F2:"), md.indexOf("## F1:"));
     expect(f2).toContain("Minority report");
     expect(f2).toContain("Codex");
-    expect(f2).toContain("> Codex (round 1): The lock is held by the caller.");
+    expect(f2).toContain("> R2 (round 1): The lock is held by the caller.");
     expect(f2).toContain("src/cache.ts:9");
     expect(f2).toContain("Go with the dissent");
     expect(md.slice(md.indexOf("## F1:"))).not.toContain("Minority report");
@@ -118,7 +120,7 @@ describe("handoff", () => {
     );
     const md = handoffMarkdown(merged);
     const f1 = md.slice(md.indexOf("## F1:"), md.indexOf("## F3:"));
-    expect(f1).toContain("- Reported by: Claude, high confidence\n- Also found independently by: Codex\n");
+    expect(f1).toContain("- Reported by: R1, high confidence\n- Also found independently by: R2\n");
     expect(md.slice(md.indexOf("## F3:"))).not.toContain("Also found independently");
   });
 
@@ -152,7 +154,7 @@ describe("handoff", () => {
     expect(review.findings[0]!.fix?.state).toBe("reopened");
     const md = handoffMarkdown(review);
     expect(md).toContain("State: reopened.");
-    expect(md).toContain("Codex (check 1): Still skips the empty list case.");
+    expect(md).toContain("R2 (check 1): Still skips the empty list case.");
     expect(md).toContain("Reported change: Changed the bound");
   });
 

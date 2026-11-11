@@ -857,7 +857,7 @@ export function createCouncilHost({
           const review = identified(newReview(newId(), setup, runnerKindOf(seats), clock.now()));
           const item = context.publish({ type: ITEM_TYPE, title: title ?? `${PROFILES[profile].title} review · ${basename(target)}`, data: review });
           const seated = seatedReviewers(review).map((reviewer) =>
-            isProfileAgent(reviewer.agent) ? `${reviewer.label} (${[`${profileName(reviewer.agent)} profile`, choiceText(reviewer.choice)].filter(Boolean).join(", ")})` : `${reviewer.label} (mock)`,
+            isProfileAgent(reviewer.agent) ? `${reviewer.label} (${[`${profileName(reviewer.agent)} profile`, choiceText(reviewer.choice)].filter(Boolean).join(", ")})` : reviewer.label,
           );
           const seating = seated.length > 0 ? `seating ${seated.join(", ")}` : "with no reviewer seated yet (no Mirador profile is known)";
           return `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup, ${seating}, ${knobsText(review)}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
@@ -873,7 +873,7 @@ export function createCouncilHost({
           const item = itemFor(context, parsed.data.review);
           const review = await startable(item);
           begin(item, context, review);
-          const seated = seatedReviewers(review).map((reviewer) => reviewer.label);
+          const seated = seatedReviewers(review).map((reviewer) => (isProfileAgent(reviewer.agent) ? `${reviewer.label} (${profileName(reviewer.agent)} profile)` : reviewer.label));
           if (hasFixedFinding(review)) return `Started the re-check of the fixes of review ${review.id}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
           return `${review.phase === "setup" ? "Started" : "Resumed"} review ${review.id} with ${seated.join(", ")}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
         },

@@ -151,8 +151,6 @@ function useProfiles(bridge: CouncilBridge | undefined): ProfileInfo[] {
 const HARNESS_NAMES: Record<string, string> = { claude: "Claude Code", pi: "pi", opencode: "opencode", codex: "Codex" };
 const harnessName = (harness: string) => HARNESS_NAMES[harness] ?? harness;
 
-const profileOption = (profile: ProfileInfo) => (profile.model ? `${modelLabel(profile.model)} \u2014 ${profile.name}` : profile.harness ? `${profile.name} (${harnessName(profile.harness)})` : profile.name);
-
 function SeatCard({
   index,
   seat,
@@ -270,7 +268,7 @@ function SeatCard({
           <optgroup label="Mirador profiles">
             {profiles.map((profile) => (
               <option key={profile.name} value={profileAgent(profile.name)}>
-                {profileOption(profile)}
+                {profile.name}
               </option>
             ))}
           </optgroup>

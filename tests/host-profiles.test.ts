@@ -69,7 +69,7 @@ describe("profile seats", () => {
   test("council_open seats profiles and mocks, and the runner kind follows the seats", async () => {
     const { host, canvas, context } = setup();
     const answer = await host.tools.council_open!.run({ target, agents: ["profile:alpha", "mock-codex"] }, context);
-    expect(answer).toContain("seating alpha (alpha profile), Codex (mock)");
+    expect(answer).toContain("seating R1 · alpha (alpha profile), R2 · Codex (mock)");
     expect(canvas.items[0]!.data.runner).toBe("mixed");
     const seats = canvas.items[0]!.data.reviewers.map(({ agent, enabled }) => ({ agent, enabled: agent === "profile:alpha" ? enabled : false }));
     await host.action!(canvas.items[0]!, { kind: "configure", patch: { seats } }, context);
@@ -183,10 +183,10 @@ describe("models from Mirador's records", () => {
   test("the setup names a profile seat by the model its profile last ran on, and lists the profiles", async () => {
     const { host, canvas, context } = withRecords();
     const answer = await host.tools.council_open!.run({ target, agents: ["profile:alpha", "profile:beta"] }, context);
-    expect(answer).toContain("seating Opus 5.5 (alpha profile), beta (beta profile)");
-    expect(canvas.items[0]!.data.reviewers.map((reviewer) => [reviewer.label, reviewer.model])).toEqual([["Opus 5.5", opus], ["beta", null]]);
+    expect(answer).toContain("seating R1 · Opus 5.5 · high (alpha profile), R2 · beta (beta profile)");
+    expect(canvas.items[0]!.data.reviewers.map((reviewer) => [reviewer.label, reviewer.model])).toEqual([["R1 · Opus 5.5 · high", opus], ["R2 · beta", null]]);
     await host.action!(canvas.items[0]!, { kind: "configure", patch: { seats: [{ agent: "profile:beta", enabled: true }, { agent: "profile:alpha", enabled: true }] } }, context);
-    expect(canvas.items[0]!.data.reviewers.map((reviewer) => reviewer.label)).toEqual(["beta", "Opus 5.5"]);
+    expect(canvas.items[0]!.data.reviewers.map((reviewer) => reviewer.label)).toEqual(["R1 · beta", "R2 · Opus 5.5 · high"]);
     expect(await host.action!(canvas.items[0]!, { kind: "profiles" }, context)).toEqual({ profiles: records.profiles() });
   });
 
@@ -195,7 +195,7 @@ describe("models from Mirador's records", () => {
     const answer = await host.tools.council_open!.run({ target }, context);
     expect(canvas.items[0]!.data.reviewers.map((reviewer) => reviewer.agent)).toEqual(["profile:alpha", "profile:beta"]);
     expect(canvas.items[0]!.data.runner).toBe("mirador");
-    expect(answer).toContain("seating Opus 5.5 (alpha profile), beta (beta profile)");
+    expect(answer).toContain("seating R1 · Opus 5.5 · high (alpha profile), R2 · beta (beta profile)");
   });
 
   test("a running seat is named by the model its conversation runs on", async () => {

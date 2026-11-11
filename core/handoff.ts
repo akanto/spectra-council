@@ -2,6 +2,7 @@
  * The hand-off document: what the council concluded and how, for the accepted findings, with the proposed fixes, so an
  * agent (or a person) can act on it without the canvas. Pure Markdown from a review; the host decides where it goes.
  */
+import { shortName } from "./agents.ts";
 import { knobsText } from "./depth.ts";
 import { bySeverity } from "./describe.ts";
 import { argumentsOn, type Argument, type Finding, type Review, reportersOf } from "./model.ts";
@@ -64,7 +65,10 @@ function evidenceLines(list: Evidence[], indent = ""): string[] {
 }
 
 export function handoffMarkdown(review: Review): string {
-  const label = (reviewerId: string) => review.reviewers.find((reviewer) => reviewer.id === reviewerId)?.label ?? reviewerId;
+  const label = (reviewerId: string) => {
+    const reviewer = review.reviewers.find((each) => each.id === reviewerId);
+    return reviewer ? shortName(reviewer) : reviewerId;
+  };
   const accepted = acceptedFindings(review);
   const seated = review.reviewers.filter((reviewer) => reviewer.enabled);
   const out: string[] = [];
@@ -72,7 +76,7 @@ export function handoffMarkdown(review: Review): string {
   out.push(`# Spectra Council hand-off: review ${review.id}`, "");
   out.push(`- Target: \`${review.target}\``);
   out.push(`- Profile: ${review.profile}; depth: ${review.depth} (${knobsText(review)})`);
-  out.push(`- Council: ${plural(seated.length, "reviewer")} (${seated.map((reviewer) => reviewer.label).join(", ")}), ${plural(review.rounds, "deliberation round")}`);
+  out.push(`- Council: ${plural(seated.length, "reviewer")} (${seated.map((reviewer) => reviewer.label).join("; ")}), ${plural(review.rounds, "deliberation round")}`);
   if (review.verdict) out.push(`- Date: ${isoDate(review.verdict.at)}`);
   if (review.runner === "mock") out.push("- Note: the reviewers in this review are deterministic mocks, not real agents; the findings are illustrative.");
   if (review.runner === "mixed") out.push("- Note: some reviewers in this review are deterministic mocks; their findings are illustrative.");

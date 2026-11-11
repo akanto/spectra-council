@@ -1,5 +1,6 @@
 /** The Council tab: the findings on the left, and the selected one's positions, resolution and argument timeline. */
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
+import { shortName } from "../core/agents.ts";
 import { countsIn } from "../core/deliberation.ts";
 import { bySeverity, possibleDuplicates, STATUS_MEANINGS } from "../core/describe.ts";
 import { argumentsOn, isRulable, type Argument, type Finding, type Resolution, type Review } from "../core/model.ts";
@@ -25,6 +26,10 @@ function jumpToArgument(id: string) {
 
 function ArgumentItem({ review, argument, openPath, select }: { review: Review; argument: Argument; openPath?: (path: string) => void; select(id: string): void }) {
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
+  const short = (id: string) => {
+    const reviewer = review.reviewers.find((each) => each.id === id);
+    return reviewer ? shortName(reviewer) : id;
+  };
   const parent = argument.replyTo ? review.arguments.find((each) => each.id === argument.replyTo) : undefined;
   return (
     <li className="argument" id={`argument-${argument.id}`}>
@@ -44,7 +49,7 @@ function ArgumentItem({ review, argument, openPath, select }: { review: Review; 
           ) : (
             argument.replyTo
           )}
-          {parent ? ` (${label(parent.reviewerId)})` : ""}
+          {parent ? ` (${short(parent.reviewerId)})` : ""}
         </div>
       )}
       <Markdown review={review} text={argument.text} select={select} {...(openPath ? { openPath } : {})} />

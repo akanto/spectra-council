@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defaultSeats } from "../core/agents.ts";
+import { defaultSeats, shortName } from "../core/agents.ts";
 import { ReviewSession } from "../core/engine.ts";
 import { isStanding, type Review } from "../core/model.ts";
 import { MockRunner, mockProposals, mockVerification } from "../core/mock-runner.ts";
@@ -60,7 +60,7 @@ describe("mockProposals", () => {
           const finding = review.findings.find((each) => each.id === proposal.findingId)!;
           if (finding.resolution?.status !== "disputed") continue;
           seen++;
-          const names = finding.resolution.dissenters.map((id) => review.reviewers.find((each) => each.id === id)!.label);
+          const names = finding.resolution.dissenters.map((id) => shortName(review.reviewers.find((each) => each.id === id)!));
           expect(names.some((name) => proposal.risks?.includes(name))).toBe(true);
         }
       }

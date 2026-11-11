@@ -2,6 +2,7 @@
  * The council's deliberation protocol: how many rounds a review gets, and how the synthesis settles each finding from
  * where the reviewers ended up standing. Pure: the engine runs the rounds and dispatches what this decides.
  */
+import { shortName } from "./agents.ts";
 import { argumentsOn, type Dissent, type Finding, type FindingStatus, type Review, type Reviewer, reportersOf } from "./model.ts";
 
 export interface Settlement {
@@ -61,7 +62,7 @@ export function firstSentence(text: string, max = DISSENT_REASON_MAX): string {
 }
 
 const names = (reviewers: Reviewer[]) => {
-  const labels = reviewers.map((reviewer) => reviewer.label);
+  const labels = reviewers.map(shortName);
   return labels.length <= 1 ? (labels[0] ?? "") : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
 };
 
@@ -98,7 +99,8 @@ export function settle(review: Review, finding: Finding): Settlement | null {
   // Withdrawn once no one who reported it backs it any more (the reporter and any whose report merged into it); a
   // reporter the user removed has no say, and a finding whose reporters were all removed stands on the others' stances.
   const reporters = reportersOf(finding).filter((id) => byId(id)?.enabled);
-  const reporterName = byId(reporters[0] ?? finding.reviewerId)?.label ?? finding.reviewerId;
+  const reporter = byId(reporters[0] ?? finding.reviewerId);
+  const reporterName = reporter ? shortName(reporter) : finding.reviewerId;
   if (reporters.length > 0 && reporters.every((id) => stanceOf(id) !== undefined && stanceOf(id) !== "supports")) {
     const challengers = finding.positions.filter((position) => !reporters.includes(position.reviewerId) && position.stance === "challenges").map((position) => byId(position.reviewerId)).filter((it) => it !== undefined);
     return {

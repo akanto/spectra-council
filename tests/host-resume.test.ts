@@ -248,12 +248,12 @@ describe("conversations taken over after a restart: only the right ones", () => 
     const host = createCouncilHost({ ...first.options, records, modelLookupMs: [0] });
     await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, first.context);
     const id = first.canvas.items[0]!.id;
-    expect(first.canvas.item(id).data.reviewers[0]!.label).toBe("alpha");
+    expect(first.canvas.item(id).data.reviewers[0]!.label).toBe("R1 · alpha");
     await host.action!(first.canvas.item(id), { kind: "start" }, first.context);
     await first.clock.settle();
     await Bun.sleep(5);
     await first.clock.settle();
-    expect(first.canvas.item(id).data.reviewers[0]!.label).toBe("Actual Model");
+    expect(first.canvas.item(id).data.reviewers[0]!.label).toBe("R1 · Actual Model");
     expect(first.canvas.started).toHaveLength(1);
     return { first, id };
   }

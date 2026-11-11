@@ -218,12 +218,12 @@ describe("ReviewSession", () => {
     const finding = final.findings[0]!;
     expect(finding.status).toBe("disputed");
     expect(finding.resolution).toMatchObject({
-      rationale: "1 of 2 back it; Codex's challenge stands; Codex couldn't continue, so its last stance counts.",
+      rationale: "1 of 2 back it; R2's challenge stands; R2 couldn't continue, so its last stance counts.",
       dissenters: ["r2"],
       dissent: [{ reviewerId: "r2", reason: "Not reachable: the caller trims the list first.", argumentId: "A1" }],
     });
     expect(finding.resolution!.rationale).not.toContain("answered");
-    expect(final.verdict?.summary).toBe("1 finding: 1 disputed. No serious finding is agreed or confirmed. 1 serious finding is disputed. Codex failed and couldn't continue.");
+    expect(final.verdict?.summary).toBe("1 finding: 1 disputed. No serious finding is agreed or confirmed. 1 serious finding is disputed. R2 failed and couldn't continue.");
   });
 
   test("a reporter that fails keeps its report's support: its finding stands, can be ruled on, and the failure is said", async () => {

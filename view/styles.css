@@ -530,15 +530,6 @@ textarea {
   padding: 0 4px;
 }
 
-.seat-panel-detail {
-  margin-top: -4px;
-  font-size: 0.88em;
-  color: var(--faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .detail-sub {
   font-size: 0.9em;
 }
