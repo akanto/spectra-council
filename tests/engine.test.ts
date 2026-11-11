@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
+import { uncheckableFixes } from "../core/deliberation.ts";
 import { ReviewSession, type ReviewerRunner } from "../core/engine.ts";
-import { isRulable, isStanding, type Review } from "../core/model.ts";
+import { isRulable, isStanding, reportersOf, type Review } from "../core/model.ts";
 import { MockRunner, mockScript } from "../core/mock-runner.ts";
 import { PROFILES } from "../core/profiles.ts";
 import { newReview, reduce } from "../core/review.ts";
@@ -262,7 +263,7 @@ describe("ReviewSession", () => {
     }
   });
 
-  test("a verification round checks every fixed finding, by its reporter and backers only", async () => {
+  test("a verification round checks every fixed finding, by its reporters and backers only", async () => {
     const final = await completeRun();
     const fixed = fixedReview(final);
     const clock = new FakeClock();
@@ -277,9 +278,54 @@ describe("ReviewSession", () => {
     for (const { finding, fix } of fixes) {
       expect(["verified", "reopened"]).toContain(fix.state);
       expect(fix.checks.length).toBeGreaterThan(0);
-      const allowed = new Set([finding.reviewerId, ...finding.positions.filter((position) => position.stance === "supports").map((position) => position.reviewerId)]);
+      const allowed = new Set([...reportersOf(finding), ...finding.positions.filter((position) => position.stance === "supports").map((position) => position.reviewerId)]);
       for (const check of fix.checks) expect(allowed.has(check.reviewerId)).toBe(true);
     }
+  });
+
+  /** Accepts the review's first finding, hands it off and reports it fixed. */
+  function fixFirst(base: Review): Review {
+    let current = base;
+    const apply = (event: Parameters<typeof reduce>[1]) => void (current = reduce(current, event));
+    apply({ type: "ruled", at: 5_000_000, findingId: "F1", decision: "accepted", note: "" });
+    apply({ type: "handoff-written", at: 5_000_001, path: "/tmp/handoff.md", findingIds: ["F1"] });
+    apply({ type: "fix-requested", at: 5_000_002, findingIds: ["F1"] });
+    apply({ type: "fix-reported", at: 5_000_003, findingId: "F1", summary: "Fixed F1.", files: ["src/engine.ts"] });
+    return current;
+  }
+
+  test("a fix whose backers all failed later is re-checked by a reviewer who completed the review", async () => {
+    // r1 reports F1 and fails in round 2; r2 challenges it and completes: no backer of F1 completed the review.
+    const final = await twoReviewerRun((reviewerId, round) => (reviewerId === "r1" ? (round === 2 ? "fail" : { stance: "supports", text: "Still there." }) : { stance: "challenges", text: "Not reachable." }));
+    expect(final.reviewers.slice(0, 2).map((reviewer) => reviewer.status)).toEqual(["failed", "completed"]);
+    expect(final.findings[0]!.status).toBe("disputed");
+    const fixed = fixFirst(final);
+    const clock = new FakeClock();
+    const checked: string[] = [];
+    const runner: ReviewerRunner = {
+      async run() {},
+      async deliberate() {},
+      async propose() {},
+      async verify(job, report) {
+        checked.push(job.reviewer.id);
+        for (const findingId of job.findingIds) report({ type: "fix-checked", check: { findingId, outcome: "verified", text: "Fixed.", evidence: [] } });
+      },
+    };
+    const done = new ReviewSession(fixed, { runner, clock, onChange: () => {} }).verify();
+    await clock.runAll();
+    const after = await done;
+    expect(checked).toEqual(["r2"]);
+    expect(after.verifications).toBe(1);
+    expect(after.findings[0]!.fix).toMatchObject({ state: "verified", checks: [{ reviewerId: "r2", outcome: "verified" }] });
+  });
+
+  test("with no reviewer left who completed the review, a re-check starts nothing", async () => {
+    const final = await twoReviewerRun((reviewerId, round) => (round === 2 ? "fail" : { stance: reviewerId === "r1" ? "supports" : "challenges", text: "Because." }));
+    const fixed = fixFirst(final);
+    expect(uncheckableFixes(fixed).map((finding) => finding.id)).toEqual(["F1"]);
+    const clock = new FakeClock();
+    const after = await new ReviewSession(fixed, { runner: new MockRunner(async () => FILES, clock), clock, onChange: () => {} }).verify();
+    expect(after).toBe(fixed);
   });
 
   test("stopping a verification leaves the fixes fixed and the review complete", async () => {

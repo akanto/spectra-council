@@ -339,15 +339,21 @@ export class ReviewSession {
   }
 
   /**
-   * Re-checks every fixed finding: each is checked by its reporter and the reviewers who backed it, all at once. Run on a
-   * complete review; resolves with it complete again (or stopped short).
+   * Re-checks every fixed finding: each is checked by its reporter and the reviewers who backed it (checkersOf), all at
+   * once. Run on a complete review; resolves with it complete again (or stopped short). A fixed finding no one is left
+   * to check is left out (the host says so before starting); with none to check, nothing starts.
    */
   async verify(): Promise<Review> {
     const review = this.#review;
     const profile = PROFILES[review.profile];
-    const fixed = review.findings.filter((finding) => finding.fix?.state === "fixed");
     const assignments = new Map<string, string[]>();
-    for (const finding of fixed) for (const reviewer of checkersOf(review, finding)) assignments.set(reviewer.id, [...(assignments.get(reviewer.id) ?? []), finding.id]);
+    const fixed = review.findings.filter((finding) => {
+      if (finding.fix?.state !== "fixed") return false;
+      const checkers = checkersOf(review, finding);
+      for (const reviewer of checkers) assignments.set(reviewer.id, [...(assignments.get(reviewer.id) ?? []), finding.id]);
+      return checkers.length > 0;
+    });
+    if (fixed.length === 0) return review;
     this.#dispatch({ type: "verification-started", at: this.#clock.now(), findingIds: fixed.map(({ id }) => id), reviewerIds: [...assignments.keys()] });
     const started = this.#review;
     const pass = started.verifications;

@@ -154,6 +154,8 @@ export type ReviewEvent =
   | { type: "ask-delegated"; at: number; ask: number; conversationId: string }
   /** The fixer's conversation for the ask at this index ended its turn: with a usable report, or with this problem. */
   | { type: "ask-answered"; at: number; ask: number; problem: string | null }
+  /** The fixer's conversation for the ask at this index couldn't be started: why. The ask ends unanswered. */
+  | { type: "ask-failed"; at: number; ask: number; problem: string }
   /** These reviewers re-check these fixed findings. */
   | { type: "verification-started"; at: number; findingIds: string[]; reviewerIds: string[] }
   /** Each finding checked in this round is verified, or reopened if any check reopened it. */
@@ -545,9 +547,14 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       for (const id of ids) findingOf(review, id);
       return {
         ...review,
-        findings: review.findings.map((finding) =>
-          ids.has(finding.id) && finding.fix && (finding.fix.state === "handed-off" || finding.fix.state === "reopened") ? { ...finding, fix: { ...finding.fix, problem: event.reason } } : finding,
-        ),
+        findings: review.findings.map((finding) => {
+          if (!ids.has(finding.id)) return finding;
+          if (finding.fix) return finding.fix.state === "handed-off" || finding.fix.state === "reopened" ? { ...finding, fix: { ...finding.fix, problem: event.reason } } : finding;
+          // An accepted finding nobody handed off, which the user asked a fixer about in their own words: why it wasn't
+          // fixed gets a fix to show on, one that awaits a fix request like any other its fixer didn't fix.
+          if (finding.ruling?.decision !== "accepted" || !askedAbout(review, finding.id)) return finding;
+          return { ...finding, fix: { state: "handed-off", handedOffAt: event.at, fixer: null, problem: event.reason, summary: null, files: [], fixedAt: null, checks: [] } };
+        }),
       };
     }
     case "fix-reported": {
@@ -608,6 +615,12 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "ask-answered": {
       const ask = review.asks?.[event.ask];
       if (!ask?.fixer?.conversationId) throw new ReviewError(`Ask ${event.ask} has no fixer conversation.`);
+      return withAsk(review, event.ask, { ...ask, fixer: { ...ask.fixer, endedAt: event.at, problem: event.problem } });
+    }
+    case "ask-failed": {
+      const ask = review.asks?.[event.ask];
+      if (!ask?.fixer) throw new ReviewError(`No ask ${event.ask} was sent to a fixer profile.`);
+      if (ask.fixer.conversationId !== null || ask.fixer.endedAt !== null) throw new ReviewError(`Ask ${event.ask} isn't waiting to start.`);
       return withAsk(review, event.ask, { ...ask, fixer: { ...ask.fixer, endedAt: event.at, problem: event.problem } });
     }
     case "verification-started": {

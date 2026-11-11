@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review } from "../core/model.ts";
-import { newReview, reduce, type ReviewEvent } from "../core/review.ts";
+import { awaitsFixRequest, newReview, reduce, type ReviewEvent } from "../core/review.ts";
 import type { FindingInput } from "../core/schemas.ts";
 import { askFixerPrompt, askPrompt, BEADS_PRIORITY, handoffRef, ticketsPrompt, unticketed, waitingTickets } from "../core/tickets.ts";
 import { beadsWorkspace, createCouncilHost } from "../hosts/mirador/host.ts";
@@ -89,6 +89,17 @@ describe("asks in the review", () => {
     expect(review.asks![0]).toEqual({ text: "File them", findingIds: ["F1", "F2"], at: 10 });
   });
 
+  test("an ask whose fixer conversation couldn't start ends with why", () => {
+    let review = reduce(concluded(), { type: "asked", at: 10, text: "File them", findingIds: ["F1"] });
+    review = reduce(review, { type: "asked", at: 11, text: "Fix them", findingIds: ["F1"], profile: "codex" });
+    expect(() => reduce(review, { type: "ask-failed", at: 12, ask: 0, problem: "x" })).toThrow("was sent to a fixer profile");
+    const failed = reduce(review, { type: "ask-failed", at: 12, ask: 1, problem: "No profile codex." });
+    expect(failed.asks![1]!.fixer).toEqual({ profile: "codex", conversationId: null, endedAt: 12, problem: "No profile codex." });
+    expect(() => reduce(failed, { type: "ask-failed", at: 13, ask: 1, problem: "again" })).toThrow("isn't waiting to start");
+    const started = reduce(review, { type: "ask-delegated", at: 12, ask: 1, conversationId: "c1" });
+    expect(() => reduce(started, { type: "ask-failed", at: 13, ask: 1, problem: "x" })).toThrow("isn't waiting to start");
+  });
+
   test("an empty ask, or one about findings not accepted, is refused", () => {
     expect(() => reduce(concluded(), { type: "asked", at: 10, text: " ", findingIds: ["F1"] })).toThrow("Say what");
     expect(() => reduce(concluded(), { type: "asked", at: 10, text: "Go", findingIds: ["F3"] })).toThrow("F3 isn't accepted");
@@ -102,6 +113,20 @@ describe("asks in the review", () => {
     expect(() => reduce(asked, { type: "fix-reported", at: 10, findingId: "F3", summary: "x", files: [] })).toThrow("wasn't handed off");
     // A fixed finding needs no ticket.
     expect(unticketed(review).map(({ id }) => id)).toEqual(["F2"]);
+  });
+
+  test("why a fixer didn't fix an accepted finding nobody handed off shows on it only when the user asked about it", () => {
+    const unasked = reduce(concluded(), { type: "fix-failed", at: 10, findingIds: ["F1"], reason: "codex: no repro" });
+    expect(unasked.findings[0]!.fix).toBeNull();
+    const asked = reduce(concluded(), { type: "asked", at: 9, text: "Fix F1", findingIds: ["F1", "F2"], profile: "codex" });
+    const review = reduce(asked, { type: "fix-failed", at: 10, findingIds: ["F1", "F3"], reason: "codex: no repro" });
+    expect(review.findings[0]!.fix).toEqual({ state: "handed-off", handedOffAt: 10, fixer: null, problem: "codex: no repro", summary: null, files: [], fixedAt: null, checks: [] });
+    // F3 was dismissed: not asked about, so nothing to show on.
+    expect(review.findings[2]!.fix).toBeNull();
+    expect(awaitsFixRequest(review.findings[0]!)).toBe(true);
+    // A later report that it was fixed after all clears the problem.
+    const fixed = reduce(review, { type: "fix-reported", at: 11, findingId: "F1", summary: "Fixed it.", files: ["src/a.ts"] });
+    expect(fixed.findings[0]!.fix).toMatchObject({ state: "fixed", problem: null, summary: "Fixed it." });
   });
 
   test("a ticket waiting for the agent goes when the finding is no longer accepted; a filed one stays", () => {
@@ -259,6 +284,33 @@ describe("the host", () => {
     await host.replied!({ id: "conversation-fixer-1", profile: "codex" }, { ended: "finished", text }, context);
     expect(review().findings[0]!.fix).toMatchObject({ state: "fixed", summary: "Fixed it", files: ["a.ts"] });
     expect(review().findings[1]!.ticket?.id).toBe("proj-9");
+    expect(review().asks![0]!.fixer).toMatchObject({ endedAt: expect.any(Number), problem: null });
+  });
+
+  test("an ask whose fixer conversation can't start shows the failure, not starting…", async () => {
+    const { host, canvas, context, act, review } = await completed(false);
+    canvas.settings.fixer = "codex";
+    await act({ kind: "ask", text: "Fix them", toFixer: true });
+    const failing = { ...context, startConversation: async () => Promise.reject(new Error("No profile named codex.")) };
+    await expect((async () => host.tools.council_delegate_fix!.run({}, failing))()).rejects.toThrow("No profile named codex.");
+    expect(review().asks![0]!.fixer).toEqual({ profile: "codex", conversationId: null, endedAt: expect.any(Number), problem: "Couldn't start a conversation on codex: No profile named codex." });
+    // Nothing waits any more; the user can ask again.
+    await expect((async () => host.tools.council_delegate_fix!.run({}, context))()).rejects.toThrow("Nothing of review rev1 waits");
+    await act({ kind: "ask", text: "Fix them again", toFixer: true });
+    await host.tools.council_delegate_fix!.run({}, context);
+    expect(review().asks![1]!.fixer!.conversationId).toBe("conversation-fixer-1");
+  });
+
+  test("why a fixer on an ask didn't fix a finding nobody handed off shows on the finding", async () => {
+    const { host, canvas, context, act, review } = await completed(false);
+    canvas.settings.fixer = "codex";
+    await act({ kind: "ask", text: "Fix the first", toFixer: true });
+    await host.tools.council_delegate_fix!.run({}, context);
+    const first = review().findings[0]!.id;
+    expect(review().findings[0]!.fix).toBeNull();
+    const text = "```json\n" + JSON.stringify({ notFixed: [{ finding: first, reason: "Can't reproduce it." }] }) + "\n```";
+    await host.replied!({ id: "conversation-fixer-1", profile: "codex" }, { ended: "finished", text }, context);
+    expect(review().findings[0]!.fix).toMatchObject({ state: "handed-off", problem: "codex: Can't reproduce it." });
     expect(review().asks![0]!.fixer).toMatchObject({ endedAt: expect.any(Number), problem: null });
   });
 

@@ -155,13 +155,20 @@ export function settle(review: Review, finding: Finding): Settlement | null {
 /**
  * Who re-checks a finding's fix: its reporter and the reviewers whose last stance backed it, among those who completed
  * the review. A disputed finding's dissenters are left out: the fix is checked against the finding as the council
- * accepted it.
+ * accepted it. When none of its backers completed the review (they failed in a later round), every reviewer who did
+ * checks it instead, so the fix is still checked; with no one left who completed it, nobody can.
  */
 export function checkersOf(review: Review, finding: Finding): Reviewer[] {
   const backers = new Set(finding.positions.filter((position) => position.stance === "supports").map((position) => position.reviewerId));
-  backers.add(finding.reviewerId);
-  return review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "completed" && backers.has(reviewer.id));
+  // A reporter backs it by its report until it takes another stance: one who came to challenge it is a dissenter.
+  for (const id of reportersOf(finding)) if (!finding.positions.some((position) => position.reviewerId === id)) backers.add(id);
+  const finished = review.reviewers.filter((reviewer) => reviewer.enabled && reviewer.status === "completed");
+  const backing = finished.filter((reviewer) => backers.has(reviewer.id));
+  return backing.length > 0 ? backing : finished;
 }
+
+/** The fixed findings no reviewer is left to re-check: none who completed the review. */
+export const uncheckableFixes = (review: Review): Finding[] => review.findings.filter((finding) => finding.fix?.state === "fixed" && checkersOf(review, finding).length === 0);
 
 /** The verdict in a sentence or two, from the settled findings. */
 export function verdictSummary(review: Review): string {

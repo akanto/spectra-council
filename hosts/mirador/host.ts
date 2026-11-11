@@ -9,7 +9,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AgentRunner, replyFetched, type LateReply } from "../../core/agent-runner.ts";
 import { knobsText } from "../../core/depth.ts";
-import { checkersOf } from "../../core/deliberation.ts";
+import { checkersOf, uncheckableFixes } from "../../core/deliberation.ts";
 import { isProfileAgent, profileAgent, profileName, runnerKindOf, type ProfileInfo } from "../../core/agents.ts";
 import { describeReview, outcomeOf } from "../../core/describe.ts";
 import { ReviewSession, routeByAgent, systemClock, TurnTimeout, type AgentReply, type Clock, type Conversations, type ReviewerRunner } from "../../core/engine.ts";
@@ -433,13 +433,21 @@ export function createCouncilHost({
   async function startable(item: PluginItem<Review>): Promise<Review> {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const review = settled(item);
-    if (hasFixedFinding(review)) return review;
+    if (hasFixedFinding(review)) return checkable(review);
     if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before starting the review.");
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
       throw new Error(`There is no file or folder at ${review.target}; give the absolute path of what to review.`);
     }
     return review;
+  }
+
+  /** The review, if a reviewer is left to re-check each of its fixes; otherwise says which can't be. */
+  function checkable(review: Review): Review {
+    const stuck = uncheckableFixes(review).map((finding) => finding.id);
+    if (stuck.length === 0) return review;
+    const which = stuck.length === 1 ? `${stuck[0]}'s fix` : `the fixes of ${stuck.join(", ")}`;
+    throw new Error(`No reviewer who completed the review is left to re-check ${which}: every reviewer failed or was removed. Check ${stuck.length === 1 ? "it" : "them"} yourself, or open a new review.`);
   }
 
   /** A complete review with a fixed finding is one whose fixes can be re-checked. */
@@ -682,6 +690,7 @@ export function createCouncilHost({
     const review = settled(item);
     if (review.phase !== "complete") throw new Error(`Fixes are re-checked once the review is complete; it is ${review.phase}.`);
     if (!review.findings.some((finding) => finding.fix?.state === "fixed")) throw new Error("No finding has a fix to re-check yet.");
+    checkable(review);
     const checkers = new Map<string, string>();
     for (const finding of review.findings) {
       if (finding.fix?.state !== "fixed") continue;
@@ -785,7 +794,16 @@ export function createCouncilHost({
           try {
             if (waiting.length === 0) {
               const { profile } = review.asks![asked]!.fixer!;
-              const started = await context.startConversation({ profile, prompt: askFixerPrompt(review, asked, review.handoff.path) });
+              let started: Awaited<ReturnType<typeof context.startConversation>>;
+              try {
+                started = await context.startConversation({ profile, prompt: askFixerPrompt(review, asked, review.handoff.path) });
+              } catch (error) {
+                // Ended with the reason, so the canvas shows why instead of "starting…", and the user can ask again.
+                const problem = `Couldn't start a conversation on ${profile}: ${error instanceof Error ? error.message : String(error)}`;
+                const fixer = current(item, context).asks?.[asked]?.fixer;
+                if (fixer && fixer.conversationId === null && fixer.endedAt === null) applyTo(item, context, { type: "ask-failed", at: clock.now(), ask: asked, problem });
+                throw error;
+              }
               applyTo(item, context, { type: "ask-delegated", at: clock.now(), ask: asked, conversationId: started.id });
               return `Started a conversation on ${started.profile} with the user's ask about review ${review.id}. The canvas shows what it fixed or filed when it reports back; there is nothing more for you to do.`;
             }
@@ -806,7 +824,7 @@ export function createCouncilHost({
           const item = itemFor(context, wanted);
           const next = applyTo(item, context, { type: "fix-reported", at: clock.now(), findingId: finding, summary, files });
           const open = next.findings.filter((each) => each.fix && (each.fix.state === "handed-off" || each.fix.state === "reopened")).map(({ id }) => id);
-          return `Marked ${finding} fixed in review ${next.id}.${open.length > 0 ? ` Still to fix: ${open.join(", ")}.` : " Every handed-off finding is fixed; the user can have the council re-check them."}`;
+          return `Marked ${finding} fixed in review ${next.id}.${open.length > 0 ? ` Still to fix: ${open.join(", ")}.` : uncheckableFixes(next).length > 0 ? " Every handed-off finding is fixed, but no reviewer who completed the review is left to re-check them." : " Every handed-off finding is fixed; the user can have the council re-check them."}`;
         },
       },
       council_mark_ticketed: {

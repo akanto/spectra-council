@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultSeats } from "../core/agents.ts";
-import { DISSENT_REASON_MAX, firstSentence, settle, verdictSummary } from "../core/deliberation.ts";
+import { checkersOf, DISSENT_REASON_MAX, firstSentence, settle, uncheckableFixes, verdictSummary } from "../core/deliberation.ts";
 import { REVIEW_FORMAT, type Finding, type Review } from "../core/model.ts";
 import { newReview, reduce, upgradeReview } from "../core/review.ts";
 import type { ArgumentInput, FindingInput, Stance } from "../core/schemas.ts";
@@ -333,6 +333,32 @@ describe("verdictSummary", () => {
     expect(verdictSummary(base)).toBe("5 findings: 1 agreed, 2 confirmed, 1 disputed, 1 withdrawn. 2 serious findings stand.");
     const unsettled: Review = { ...base, findings: [...base.findings, { ...base.findings[1]!, id: "F6", status: "reported" }, { ...base.findings[1]!, id: "F7", status: "reported" }] };
     expect(verdictSummary(unsettled)).toBe("7 findings: 1 agreed, 2 confirmed, 1 disputed, 1 withdrawn, 2 unsettled. 2 serious findings stand. 2 findings were left unsettled, with no one backing them.");
+  });
+});
+
+describe("checkersOf", () => {
+  const position = (reviewerId: string, stance: Stance, round: number) => ({ reviewerId, stance, confidence: "high" as const, round, at: 8 });
+  const coReport = { reviewerId: "r3", findingId: "F2", title: "Off by one", severity: "medium" as const, evidence: [] };
+  const ids = (review: Review) => checkersOf(review, review.findings[0]!).map(({ id }) => id);
+  const fixed = (review: Review): Review => ({ ...review, findings: [{ ...review.findings[0]!, fix: { state: "fixed", handedOffAt: 1, fixer: null, problem: null, summary: "x", files: [], fixedAt: 2, checks: [] } }] });
+
+  test("reporters who took no stance and backers check; a co-reporter who came to challenge it doesn't", () => {
+    const base = reviewed();
+    const withCoReport = (positions: Finding["positions"]): Review => ({ ...base, findings: [{ ...base.findings[0]!, alsoReported: [coReport], positions }] });
+    expect(ids(withCoReport([]))).toEqual(["r1", "r3"]);
+    expect(ids(withCoReport([position("r1", "supports", 0), position("r3", "challenges", 1), position("r2", "supports", 1)]))).toEqual(["r1", "r2"]);
+  });
+
+  test("with no backer who completed the review, every reviewer who did checks it; with none, nobody can", () => {
+    // Failed in a later round, after finishing their review.
+    const failed = (review: Review, ...gone: string[]): Review => ({ ...review, reviewers: review.reviewers.map((reviewer) => (gone.includes(reviewer.id) ? { ...reviewer, status: "failed" as const } : reviewer)) });
+    let review = failed(reviewed(), "r1");
+    review = { ...review, findings: [{ ...review.findings[0]!, positions: [position("r1", "supports", 0), position("r2", "challenges", 1)] }] };
+    expect(ids(review)).toEqual(["r2", "r3"]);
+    expect(uncheckableFixes(fixed(review))).toEqual([]);
+    const nobody = failed(review, "r2", "r3");
+    expect(ids(nobody)).toEqual([]);
+    expect(uncheckableFixes(fixed(nobody)).map(({ id }) => id)).toEqual(["F1"]);
   });
 });
 

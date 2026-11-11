@@ -393,6 +393,21 @@ describe("the Mirador host", () => {
       await expect(env.act({ kind: "verify" })).rejects.toThrow("No finding has a fix");
     });
 
+    test("verify says why when no reviewer is left to re-check a fix", async () => {
+      const env = await completed();
+      const [first] = standing(env.review());
+      await env.act({ kind: "rule", findingId: first!.id, decision: "accepted" });
+      await env.act({ kind: "fix" });
+      await env.host.tools.council_mark_fixed!.run({ finding: first!.id, summary: "done", files: ["src/a.ts"] }, env.context);
+      // Every reviewer failed in a later round: none who completed the review is left.
+      const data = env.review();
+      env.canvas.context().change(env.id, { data: { ...data, reviewers: data.reviewers.map((reviewer) => ({ ...reviewer, status: "failed" as const })) } });
+      await expect(env.act({ kind: "verify" })).rejects.toThrow(`No reviewer who completed the review is left to re-check ${first!.id}'s fix`);
+      await expect(env.host.tools.council_begin!.run({}, env.context)).rejects.toThrow("No reviewer who completed the review");
+      expect(env.review().phase).toBe("complete");
+      expect(env.review().verifications).toBe(0);
+    });
+
     test("verify runs a round, settles the fixes, shows fix counts, and the agent is told again", async () => {
       const env = await completed();
       const { host, canvas, context, clock, review, act } = env;

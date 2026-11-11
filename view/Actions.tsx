@@ -1,6 +1,7 @@
 /** After the verdict: the proposed fix, the user's ruling, the fix's progress and the action plan that drives the hand-off. */
 import { useContext, useEffect, useRef, useState } from "react";
 import { isRunning, isRulable, type Ask, type Finding, type Review } from "../core/model.ts";
+import { uncheckableFixes } from "../core/deliberation.ts";
 import { awaitsFixRequest } from "../core/review.ts";
 import type { Decision, ViewAction } from "../core/schemas.ts";
 import { ASK_MAX } from "../core/schemas.ts";
@@ -135,7 +136,13 @@ function FixStatus({ review, finding, openPath, act, busy }: { review: Review; f
       </h3>
       {finding.ruling?.note && <p className="muted">Your note: {finding.ruling.note}</p>}
       <p className="fix-who muted">
-        {fix.fixer ? (fix.fixer.conversationId ? `Handed to ${fix.fixer.profile}` : `Handed to ${fix.fixer.profile} · starting…`) : "Handed to this conversation's agent"}
+        {fix.fixer
+          ? fix.fixer.conversationId
+            ? `Handed to ${fix.fixer.profile}`
+            : `Handed to ${fix.fixer.profile} · starting…`
+          : fix.problem
+            ? "Asked about in your own words"
+            : "Handed to this conversation's agent"}
       </p>
       {fix.problem && (
         <p className="fix-problem" role="alert">
@@ -144,7 +151,7 @@ function FixStatus({ review, finding, openPath, act, busy }: { review: Review; f
           <span className="muted"> · “Ask … to fix” in the action plan hands it over again.</span>
         </p>
       )}
-      {fix.summary ? <Markdown review={review} text={fix.summary} {...(openPath ? { openPath } : {})} /> : <p className="muted">Waiting for the agent to report the fix.</p>}
+      {fix.summary ? <Markdown review={review} text={fix.summary} {...(openPath ? { openPath } : {})} /> : !fix.problem && <p className="muted">Waiting for the agent to report the fix.</p>}
       {fix.files.length > 0 && (
         <p className="proposal-files">
           <span className="muted">Changed </span>
@@ -317,6 +324,8 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
   const toHand = accepted.filter((finding) => !finding.fix).length;
   const reopened = standing.filter((finding) => finding.fix?.state === "reopened").length;
   const fixed = standing.filter((finding) => finding.fix?.state === "fixed").length;
+  // With no reviewer left who completed the review, nobody can re-check a fix (the host refuses), so none is offered.
+  const recheckable = Math.max(0, fixed - uncheckableFixes(review).length);
   const withFix = (state: string) => standing.filter((finding) => finding.fix?.state === state).length;
   const attention = standing.filter((finding) => finding.fix?.problem).length;
   const hasFixes = standing.some((finding) => finding.fix);
@@ -330,15 +339,17 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
   const lastAsk = review.asks?.at(-1);
   const who = fixer ?? "agent";
   // The one accent-filled button follows the next step; nothing is primary while the user still has to rule.
-  const next: "verify" | "fix" | null = unruled > 0 ? null : fixed > 0 ? "verify" : pending > 0 ? "fix" : null;
+  const next: "verify" | "fix" | null = unruled > 0 ? null : recheckable > 0 ? "verify" : pending > 0 ? "fix" : null;
   const fixLabel = toHand === 0 && pending > 0 ? `Ask ${who} to fix again (${pending})` : `Ask ${who} to fix (${pending})`;
   const instruction =
     running
       ? null
       : unruled > 0
         ? null
-        : fixed > 0
+        : recheckable > 0
           ? "Fixes reported. Re-check them so the reviewers can verify."
+          : fixed > 0 && pending === 0
+            ? "Fixes reported, but no reviewer who completed the review is left to re-check them. Check them yourself."
           : reopened > 0
             ? "Some fixes were reopened. Ask the fixer to try again."
             : toHand > 0
@@ -415,9 +426,9 @@ export function ActionPlan({ review, act, busy, compact, openPath, openCouncil }
               {fixLabel}
             </button>
           )}
-          {fixed > 0 && (
+          {recheckable > 0 && (
             <button className={cx(next === "verify" && "primary")} disabled={off} onClick={() => act({ kind: "verify" })}>
-              Re-check fixes ({fixed})
+              Re-check fixes ({recheckable})
             </button>
           )}
         </div>

@@ -94,9 +94,13 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
    its fixer. The fix is reported with `council_mark_fixed` (`fix-reported`), or by a fixer profile's conversation
    started with `council_delegate_fix` (`fix-delegated`), whose final JSON report (`core/fixer.ts`) becomes
    `fix-reported` and `fix-failed`. Tickets (`tickets-requested`, `ticketed`) and the user's own asks (`asked`,
-   `ask-delegated`, `ask-answered`) work the same way.
-7. **Re-check.** `verification-started` has each fixed finding's reporter and backers check the fix (`fix-checked`);
-   `verification-ended` marks each fix verified or reopened.
+   `ask-delegated`, `ask-answered`, or `ask-failed` when the fixer's conversation couldn't start) work the same way. An
+   accepted finding the user asked about needs no hand-off: a fixer's report on it gives it a fix (`fix-reported`
+   fixed, `fix-failed` handed off with the reason).
+7. **Re-check.** `verification-started` has each fixed finding's reporters and backers check the fix (`fix-checked`);
+   `verification-ended` marks each fix verified or reopened. Only reviewers who completed the review check
+   (`checkersOf`); when none of a finding's backers did, every reviewer who did checks it, and with none left the host
+   refuses the re-check and says why.
 
 Every change from outside the engine goes through the host's `applyTo`, which hands it to the running session when
 there is one; a direct write would be lost under the session's next one.
