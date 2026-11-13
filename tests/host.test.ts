@@ -443,13 +443,16 @@ describe("the Mirador host", () => {
     const records = {
       profiles: () => [
         { name: "alpha", harness: "claude", model: { name: "Opus 5.5", effort: "high" } },
+        { name: "beta", harness: "claude", model: { name: "Haiku 5.5", effort: null }, lastRan: true },
         { name: "pi home", harness: "pi", model: null },
       ],
       modelOf: () => null,
       replyOf: () => null,
     };
     const fromRecords = createCouncilHost({ clock: new FakeClock(), records });
-    expect(await fromRecords.tools.council_profiles!.run({}, new FakeCanvas<Review>().context())).toBe("Mirador profiles to seat:\n- profile:alpha (Opus 5.5 · high)\n- profile:pi home");
+    expect(await fromRecords.tools.council_profiles!.run({}, new FakeCanvas<Review>().context())).toBe(
+      "Mirador profiles to seat:\n- profile:alpha (Opus 5.5 · high)\n- profile:beta (last ran on Haiku 5.5)\n- profile:pi home",
+    );
 
     const { host, canvas, context } = setup();
     expect(await host.tools.council_profiles!.run({}, context)).toBe("No Mirador profile is known to Spectra Council yet; the user can pick reviewers in the review's setup.");

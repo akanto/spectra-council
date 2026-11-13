@@ -51,8 +51,8 @@ gives it at the turn's end; an API for it while the turn runs would replace the 
 **What:** `profiles(): { name: string; harness: string }[]` on the plugin context.
 
 **Why:** The setup offers real profile names instead of free text plus the names seated before. (Today the plugin reads
-them, with the model each last ran on, from Mirador's database; `hosts/mirador/records.ts`.) Today a wrong name fails
-that seat at Start, and the error lists Mirador's profiles.
+them, with the model each sets, else the one it last ran on, from Mirador's database; `hosts/mirador/records.ts`.) Today
+a wrong name fails that seat at Start, and the error lists Mirador's profiles.
 
 **Sketch:**
 

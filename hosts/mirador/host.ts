@@ -428,7 +428,7 @@ export function createCouncilHost({
 
   /**
    * A review in setup with each profile seat labelled by the model it most likely runs on: the one chosen for it, else
-   * the one its profile's latest conversation ran on.
+   * its profile's (`ProfileInfo.model`).
    */
   function identified(review: Review): Review {
     if (review.phase !== "setup" || !review.reviewers.some((reviewer) => isProfileAgent(reviewer.agent))) return review;
@@ -977,12 +977,12 @@ export function createCouncilHost({
       },
       council_profiles: {
         description:
-          "List the Mirador profiles Spectra Council can seat as reviewers, by the exact name council_open's agents take (\"profile:\" and the name), with the model each last ran on where known.",
+          "List the Mirador profiles Spectra Council can seat as reviewers, by the exact name council_open's agents take (\"profile:\" and the name), with the model each runs on where known: the one the profile sets, else the one it last ran on.",
         input: jsonSchema(z.object({})),
         run(_input, context) {
           const known = profilesFor(context.storage);
           if (known.length === 0) return "No Mirador profile is known to Spectra Council yet; the user can pick reviewers in the review's setup.";
-          return ["Mirador profiles to seat:", ...known.map((profile) => `- profile:${profile.name}${profile.model ? ` (${modelLabel(profile.model)})` : ""}`)].join("\n");
+          return ["Mirador profiles to seat:", ...known.map((profile) => `- profile:${profile.name}${profile.model ? ` (${profile.lastRan ? "last ran on " : ""}${modelLabel(profile.model)})` : ""}`)].join("\n");
         },
       },
       council_rule: {

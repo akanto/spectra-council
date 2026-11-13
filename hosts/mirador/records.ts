@@ -10,11 +10,14 @@ import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LateReply } from "../../core/agent-runner.ts";
-import type { OptionChoice, ProfileInfo } from "../../core/agents.ts";
+import { offered, type OptionChoice, type ProfileInfo } from "../../core/agents.ts";
 import type { ModelInfo } from "../../core/model.ts";
 
 export interface MiradorRecords {
-  /** The user's profiles, in Mirador's order (oldest first), each with the model its latest conversation ran on. */
+  /**
+   * The user's profiles, in Mirador's order (oldest first), each with the model a new conversation on it runs on: the one
+   * the profile sets, else the one its latest conversation ran on.
+   */
   profiles(): ProfileInfo[];
   /** The model and effort a conversation runs on, from its header's choices; null until its session reported them. */
   modelOf(conversationId: string): ModelInfo | null;
@@ -222,6 +225,14 @@ function cleanEffort(raw: string | null | undefined): string | null {
   return e === "" || e === "off" ? null : e;
 }
 
+/**
+ * The model a profile sets (its `model`, a value its agent offers, e.g. "opus"), named as the agent offers it ("Opus
+ * 5.5"), with the effort the profile sets: what a new conversation on the profile starts on.
+ */
+export function profileModel(model: string, effort: string | null, offeredModels: OptionChoice[]): ModelInfo {
+  return { name: offered(offeredModels, model)?.name ?? (stripProvider(model) || model), effort: cleanEffort(effort) };
+}
+
 /** Records read from the database at `path`, opened read-only for each read. */
 export function miradorRecords(path: string = miradorDatabase()): MiradorRecords {
   /** Runs `read` on a fresh read-only connection; any failure gives `fallback`. */
@@ -253,26 +264,30 @@ export function miradorRecords(path: string = miradorDatabase()): MiradorRecords
   return {
     profiles() {
       return withDb<ProfileInfo[]>([], (db) => {
+        // A Mirador from before profiles named a model of their own has no such column.
+        const modelColumn = db.query("SELECT 1 FROM pragma_table_info('profiles') WHERE name = 'model'").get() ? "model" : "NULL AS model";
         const rows = db
-          .query("SELECT id, name, harness, effort FROM profiles ORDER BY created_at, rowid")
-          .all() as { id: string; name: string; harness: string; effort: string | null }[];
+          .query(`SELECT id, name, harness, ${modelColumn}, effort FROM profiles ORDER BY created_at, rowid`)
+          .all() as { id: string; name: string; harness: string; model: string | null; effort: string | null }[];
         const convs = db.query("SELECT config_options FROM conversations WHERE profile_id = ? AND config_options != '[]' ORDER BY created_at DESC, rowid DESC LIMIT 20");
-        return rows.map((r) => {
-          let model: ModelInfo | null = null;
-          let choices: ReturnType<typeof choicesFromOptions> = { models: [], efforts: [] };
+        /** The model the profile's latest conversation that names one ran on, and the choices that conversation offered. */
+        const latestRun = (r: (typeof rows)[number]) => {
           try {
             for (const c of convs.all(r.id) as { config_options: string }[]) {
               const options = optionsOf(c.config_options);
-              model = modelFromOptions(options, r.effort);
-              if (model) {
-                choices = choicesFromOptions(options);
-                break;
-              }
+              const model = modelFromOptions(options, r.effort);
+              if (model) return { model, ...choicesFromOptions(options) };
             }
           } catch {
-            model = null;
+            // an unreadable conversation tells nothing
           }
-          return { name: String(r.name), harness: String(r.harness), model, ...choices };
+          return null;
+        };
+        return rows.map((r) => {
+          const latest = latestRun(r);
+          const profile = { name: String(r.name), harness: String(r.harness), models: latest?.models ?? [], efforts: latest?.efforts ?? [] };
+          if (r.model) return { ...profile, model: profileModel(r.model, r.effort, profile.models) };
+          return latest ? { ...profile, model: latest.model, lastRan: true } : { ...profile, model: null };
         });
       });
     },

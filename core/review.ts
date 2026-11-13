@@ -108,8 +108,8 @@ export type ReviewEvent =
   | { type: "resumed"; at: number }
   | { type: "configured"; patch: SetupPatch }
   /**
-   * The model a profile seat runs on, as the host learnt it: before the start, what the profile's latest conversation
-   * ran on; once a turn started, what its conversation runs on. Relabels the seat by its model.
+   * The model a profile seat runs on, as the host learnt it: before the start, the profile's model, else what its latest
+   * conversation ran on; once a turn started, what its conversation runs on. Relabels the seat by its model.
    */
   | { type: "model-seen"; reviewerId: string; model: ModelInfo }
   | { type: "started"; at: number }
