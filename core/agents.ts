@@ -92,13 +92,15 @@ export function defaultSeats(agents: AgentInfo[] = MOCK_AGENTS): Seat[] {
 
 /**
  * A Mirador profile a seat can take, as the host knows it: its name, which agent runs it ("claude", "pi", …; "" when
- * unknown), and the model its latest conversation ran on (null when unknown), which a new conversation on it most
- * likely runs on too.
+ * unknown), and the model a new conversation on it runs on (null when unknown): the one the profile sets, else the one
+ * its latest conversation ran on (`lastRan`), which a new one most likely runs on too.
  */
 export interface ProfileInfo {
   name: string;
   harness: string;
   model: ModelInfo | null;
+  /** True when `model` is the one its latest conversation ran on, because the profile sets none. */
+  lastRan?: boolean;
   /** The models its agent offered in its latest conversation, for a seat to choose from; absent or [] when unknown. */
   models?: OptionChoice[];
   /** The efforts that conversation's model offered; absent or [] when unknown or it has none. */
@@ -113,7 +115,7 @@ export interface OptionChoice {
 
 /**
  * The model a profile seat most likely runs on: the one chosen for it, named as the profile's agent offers it, else the
- * one the profile's latest conversation ran on; with the chosen effort, else the profile's. Null when unknown.
+ * profile's (`ProfileInfo.model`); with the chosen effort, else the profile's. Null when unknown.
  */
 export function expectedModel(profile: ProfileInfo | undefined, choice: SeatChoice | undefined): ModelInfo | null {
   const named = (list: OptionChoice[] | undefined, wanted: string) => offered(list, wanted)?.name ?? wanted;

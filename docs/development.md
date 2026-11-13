@@ -206,7 +206,8 @@ own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves t
   Mirador matches the model to the agent's by id or name, and shows the user in that conversation when it can't. The
   plugin API lists neither the models an agent offers nor the model a running conversation is on, so
   `hosts/mirador/records.ts` reads Mirador's database read-only for the setup's choices (the model and effort options of
-  each profile's latest conversation), to name each seat by its model (`model-seen`), and to read a late reply that came
+  each profile's latest conversation), to name each seat by its model (`model-seen`: the model the profile sets, else
+  the one its latest conversation ran on), and to read a late reply that came
   while no host kept it. [mirador-api.md](mirador-api.md) lists the API extensions that would replace this.
 - **Seat names.** The setup lists profiles by name; the Model and Effort pickers show the model. Once seated, a
   reviewer is named by its seat number and model (`withLabels`): "R1 · Opus 5.5 · high", "R1 · Home" until its model

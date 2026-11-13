@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { choicesFromOptions, miradorDatabase, miradorRecords, modelFromOptions, noRecords, replyFromEvents } from "../hosts/mirador/records.ts";
+import { choicesFromOptions, miradorDatabase, miradorRecords, modelFromOptions, noRecords, profileModel, replyFromEvents } from "../hosts/mirador/records.ts";
 
 const claude = (current = "opus", effort: string | null = "high") => [
   { id: "mode", category: "mode", type: "select", currentValue: "default", options: [] },
@@ -121,12 +121,13 @@ describe("miradorRecords", () => {
 
   const records = miradorRecords(path);
 
-  test("profiles: ordered, latest conversation with a model, profile effort fallback", () => {
+  test("profiles of a Mirador whose profiles set no model: ordered, what the latest conversation with a model ran on, profile effort fallback", () => {
     expect(records.profiles()).toEqual([
       {
         name: "Claude",
         harness: "claude",
         model: { name: "Opus 5.5", effort: "max" },
+        lastRan: true,
         models: [
           { value: "opus", name: "Opus 5.5" },
           { value: "sonnet", name: "Sonnet 5.5" },
@@ -137,6 +138,7 @@ describe("miradorRecords", () => {
         name: "Pi",
         harness: "pi",
         model: { name: "Qwen 3.8 Max", effort: "medium" },
+        lastRan: true,
         models: [
           { value: "alibaba-plan/qwen3.8-max", name: "Qwen 3.8 Max" },
           { value: "opencode-go/glm-5.3", name: "GLM-5.3" },
@@ -171,6 +173,56 @@ describe("miradorRecords", () => {
   test("noRecords", () => {
     expect(noRecords.profiles()).toEqual([]);
     expect(noRecords.modelOf("x")).toBeNull();
+  });
+});
+
+describe("miradorRecords, profiles that set a model", () => {
+  const dir = mkdtempSync(join(tmpdir(), "records-model-test-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "state.sqlite");
+
+  const db = new Database(path);
+  db.run("CREATE TABLE profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL, environment TEXT NOT NULL, created_at INTEGER NOT NULL, harness TEXT NOT NULL, effort TEXT, model TEXT)");
+  db.run("CREATE TABLE conversations (id TEXT PRIMARY KEY, config_options TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, profile_id TEXT)");
+  const addProfile = (id: string, name: string, at: number, model: string | null, effort: string | null) =>
+    db.run("INSERT INTO profiles (id, name, environment, created_at, harness, effort, model) VALUES (?, ?, '', ?, 'claude', ?, ?)", [id, name, at, effort, model]);
+  const addConv = (id: string, profile: string, at: number, opts: unknown) =>
+    db.run("INSERT INTO conversations (id, config_options, created_at, profile_id) VALUES (?, ?, ?, ?)", [id, JSON.stringify(opts), at, profile]);
+  addProfile("work", "Work", 10, "opus", "max");
+  addProfile("own", "Own", 20, null, null);
+  addProfile("new", "New", 30, "provider/some-model", null);
+  addConv("w1", "work", 100, claude("opus", "high"));
+  addConv("w2", "work", 200, claude("sonnet", "low"));
+  addConv("o1", "own", 100, claude("sonnet", "low"));
+  db.close();
+
+  test("a profile's own model names it, whatever its latest conversation moved to", () => {
+    const [work, own, fresh] = miradorRecords(path).profiles();
+    expect(work).toEqual({
+      name: "Work",
+      harness: "claude",
+      model: { name: "Opus 5.5", effort: "max" },
+      models: [
+        { value: "opus", name: "Opus 5.5" },
+        { value: "sonnet", name: "Sonnet 5.5" },
+      ],
+      efforts: [
+        { value: "low", name: "low" },
+        { value: "high", name: "high" },
+      ],
+    });
+    expect(own).toMatchObject({ name: "Own", model: { name: "Sonnet 5.5", effort: "low" }, lastRan: true });
+    expect(fresh).toEqual({ name: "New", harness: "claude", model: { name: "some-model", effort: null }, models: [], efforts: [] });
+  });
+
+  test("profileModel names the model as the agent offers it, by its value or its name", () => {
+    const offered = [
+      { value: "opus", name: "claude-opus[1m] (opus)" },
+      { value: "haiku", name: "claude-haiku" },
+    ];
+    expect(profileModel("opus", "xhigh", offered)).toEqual({ name: "claude-opus[1m] (opus)", effort: "xhigh" });
+    expect(profileModel("Claude-Haiku", null, offered)).toEqual({ name: "claude-haiku", effort: null });
+    expect(profileModel("gateway/gpt6.1-sol", "Thinking: high", [])).toEqual({ name: "gpt6.1-sol", effort: "high" });
   });
 });
 

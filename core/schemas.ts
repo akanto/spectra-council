@@ -219,7 +219,7 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fixer") }),
   /**
    * The Mirador profiles a seat can take: resolves to `{ profiles: ProfileInfo[] }` (core/agents.ts), each with the model
-   * its latest conversation ran on where the host can tell.
+   * a new conversation on it runs on where the host can tell.
    */
   z.object({ kind: z.literal("profiles") }),
   /** Resolve a source link against the folder containing the reviewed files. */

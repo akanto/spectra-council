@@ -116,7 +116,7 @@ const choicesIn = (list: unknown): OptionChoice[] =>
       })
     : [];
 
-/** The profiles the host can list, with the model each last ran on and the models and efforts on offer; [] where the host can't tell. */
+/** The profiles the host can list, with the model each runs on and the models and efforts on offer; [] where the host can't tell. */
 function useProfiles(bridge: CouncilBridge | undefined): ProfileInfo[] {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   useEffect(() => {
@@ -132,7 +132,7 @@ function useProfiles(bridge: CouncilBridge | undefined): ProfileInfo[] {
             // Tolerate a host that still answers with bare names.
             const item = typeof each === "string" ? { name: each, harness: "", model: null } : (each as Partial<ProfileInfo> | null);
             if (item && typeof item.name === "string" && item.name.trim() !== "") {
-              clean.push({ name: item.name, harness: item.harness ?? "", model: item.model ?? null, models: choicesIn(item.models), efforts: choicesIn(item.efforts) });
+              clean.push({ name: item.name, harness: item.harness ?? "", model: item.model ?? null, ...(item.lastRan === true && { lastRan: true }), models: choicesIn(item.models), efforts: choicesIn(item.efforts) });
             }
           }
         }
@@ -231,9 +231,10 @@ function SeatCard({
   const choice = choiceOf(seat);
   const model = choice ? expectedModel(info, choice) : (reviewer?.model ?? info?.model ?? null);
   const harness = info?.harness ? harnessName(info.harness) : "";
+  const modelSource = choice ? "chosen for this seat" : info?.lastRan ? "what this profile ran last" : "this profile's model";
   const detail = isProfile
     ? model
-      ? `${modelLabel(model)}${harness ? ` on ${harness}` : ""} (${choice ? "chosen for this seat" : "what this profile ran last"})`
+      ? `${modelLabel(model)}${harness ? ` on ${harness}` : ""} (${modelSource})`
       : harness
         ? `Runs on ${harness}. Model shown once it starts`
         : "Model shown once it starts"

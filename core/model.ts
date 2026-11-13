@@ -38,8 +38,8 @@ export interface Activity {
 
 /**
  * The model a real reviewer runs on, as Mirador names it in the conversation's header: "Opus 5.5" with effort "high",
- * say. Before the review starts it is what the profile's latest conversation ran on; once a turn starts, what that
- * turn's conversation runs on.
+ * say. Before the review starts it is the profile's model, else what its latest conversation ran on; once a turn starts,
+ * what that turn's conversation runs on.
  */
 export interface ModelInfo {
   /** The model's name and version, without a provider prefix: "Opus 5.5", "Qwen 3.8 Max". */
