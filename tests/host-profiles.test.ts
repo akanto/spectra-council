@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review } from "../core/model.ts";
-import { createCouncilHost, LAST_SEATS_KEY, PROFILES_KEY } from "../hosts/mirador/host.ts";
+import { createCouncilHost, FIXER_SETTING, LAST_SEATS_KEY, PROFILES_KEY } from "../hosts/mirador/host.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
 
 const target = await mkdtemp(join(tmpdir(), "spectra-target-"));
@@ -426,5 +426,42 @@ describe("actions that ask the agent", () => {
     expect(canvas.prompts.at(-1)).toContain("Please fix these findings from Spectra Council review rev1");
     expect(await host.action!(canvas.items[0]!, { kind: "rerun" }, turnRuns)).toBeNull();
     expect(canvas.prompts.at(-1)).toContain("Call council_open with");
+  });
+
+  test("tickets, asks, Fix to a fixer, a ruling that takes a finding back, and Re-check answer the view at once too", async () => {
+    const tracked = await mkdtemp(join(tmpdir(), "spectra-tracked-"));
+    await writeFile(join(tracked, "README.md"), "# A project\n");
+    await mkdir(join(tracked, ".beads"));
+    await writeFile(join(tracked, ".beads", "metadata.json"), "{}");
+    const harness = setup();
+    const { host, canvas, context, options } = harness;
+    await host.tools.council_open!.run({ target: tracked, agents: ["profile:alpha"] }, context);
+    await host.action!(canvas.items[0]!, { kind: "start" }, context);
+    await drive(harness, host);
+    const finding = canvas.items[0]!.data.findings[0]!.id;
+    await host.action!(canvas.items[0]!, { kind: "rule", findingId: finding, decision: "accepted" }, context);
+    const turnRuns = turnNeverEnds(canvas, context);
+    const answersAtOnce = async (action: Parameters<NonNullable<typeof host.action>>[1], asks: string, on = host) => {
+      const before = canvas.prompts.length;
+      const answered = await on.action!(canvas.items[0]!, action, turnRuns);
+      expect(canvas.prompts.slice(before).join("\n")).toContain(asks);
+      return answered;
+    };
+
+    expect(await answersAtOnce({ kind: "tickets" }, "council_mark_ticketed")).toBeNull();
+    await host.tools.council_mark_ticketed!.run({ finding, ticket: "proj-1" }, context);
+    expect(await answersAtOnce({ kind: "ask", text: "Explain it" }, "Explain it")).toBeNull();
+    canvas.settings[FIXER_SETTING] = "gamma";
+    expect(await answersAtOnce({ kind: "ask", text: "Fix it your way", toFixer: true }, "Call council_delegate_fix")).toBeNull();
+    expect(await answersAtOnce({ kind: "fix" }, 'to the "gamma" profile to fix')).toBeNull();
+    const before = canvas.prompts.length;
+    expect(await answersAtOnce({ kind: "rule", findingId: finding, decision: null }, "which has the beads issue proj-1")).toBeNull();
+    expect(canvas.prompts.slice(before).join("\n")).toContain(`took ${finding} out of the fixes`);
+
+    canvas.settings[FIXER_SETTING] = null;
+    await host.action!(canvas.items[0]!, { kind: "rule", findingId: finding, decision: "accepted" }, context);
+    await host.action!(canvas.items[0]!, { kind: "fix" }, context);
+    await host.tools.council_mark_fixed!.run({ finding, summary: "done", files: [] }, context);
+    expect(await answersAtOnce({ kind: "verify" }, "Call council_begin (review rev1)", createCouncilHost(options))).toEqual({ prompted: true });
   });
 });

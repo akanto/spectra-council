@@ -630,6 +630,7 @@ export function createCouncilHost({
     if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
       const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
       const what = review.phase === "setup" ? "started" : "resumed";
+      // Before the send, which nothing waits for: the agent may call council_begin before it has even resolved.
       startsAsked.add(item.id);
       const text = `The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`;
       void promptAfterTurn(context, text, `the user ${what} review ${review.id}`).then((sent) => {
