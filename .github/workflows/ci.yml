@@ -22,16 +22,16 @@ concurrency:
 env:
   # The Mirador release whose plugin API and canvas framing the checks use (sodre90/mirador, MIT). Bumping it is a
   # deliberate change: it is the Mirador version the plugin is known to work with.
-  MIRADOR_REF: v0.13.0
+  MIRADOR_REF: 7c5be70abbcaef2b3bb125b93629ca3b16eb24ab # v0.13.0
 
 jobs:
   test:
     # Mirador is macOS-only; its views run in WKWebView.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
@@ -43,10 +43,10 @@ jobs:
   api:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # Mirador's shared/ folder, and the two web/ files its types reach.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: sodre90/mirador
           ref: ${{ env.MIRADOR_REF }}
@@ -57,7 +57,7 @@ jobs:
             /web/problem-text.ts
             /web/i18n/en/problems.ts
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
@@ -69,9 +69,9 @@ jobs:
   e2e:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: sodre90/mirador
           ref: ${{ env.MIRADOR_REF }}
@@ -82,7 +82,7 @@ jobs:
             /web/problem-text.ts
             /web/i18n/en/problems.ts
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
@@ -94,7 +94,7 @@ jobs:
         env:
           MIRADOR_CANVAS: ${{ github.workspace }}/.mirador/shared/canvas-document.ts
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: e2e-screenshots-${{ github.sha }}

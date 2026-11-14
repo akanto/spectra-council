@@ -36,8 +36,8 @@ rather than connecting to `/socket` yourself.
 `shared/canvas-document.ts` (the installed app's, or `MIRADOR_CANVAS`). A setup that can't run is skipped. **api-compat**
 reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the installed app.
 
-**CI** (`.github/workflows/ci.yml`) runs the typecheck, tests, build, API check and e2e on macOS, against the Mirador tag
-`MIRADOR_REF` pins. Bumping that pin is how the plugin moves to a newer Mirador.
+**CI** (`.github/workflows/ci.yml`) runs the typecheck, tests, build, API check and e2e on macOS, against the Mirador commit
+`MIRADOR_REF` pins (a tag's commit, with the tag in a comment). Bumping that pin is how the plugin moves to a newer Mirador.
 
 ## Layout
 
