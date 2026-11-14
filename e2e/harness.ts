@@ -21,6 +21,8 @@ export interface Harness {
   setReview(review: Review): void;
   restartHost(): void;
   prompts: string[];
+  /** Keeps the host's prompts from resolving, as a prompt to an idle agent waits for the turn it starts; returns the release. */
+  holdPrompts(): () => void;
   stop(): Promise<void>;
 }
 
@@ -146,6 +148,7 @@ export async function startHarness(sourceTarget: string | null, { mirador }: { m
     waiting = [];
   };
   const prompts: string[] = [];
+  let held: Promise<void> = Promise.resolve();
   const storage = new Map<string, unknown>();
   const context: CanvasToolContext<Review> & CanvasActionContext<Review> = {
     conversationId: "e2e",
@@ -166,7 +169,10 @@ export async function startHarness(sourceTarget: string | null, { mirador }: { m
       changed();
       return item;
     },
-    prompt: async (text) => { prompts.push(text); },
+    prompt: async (text) => {
+      prompts.push(text);
+      await held;
+    },
     startConversation: async () => {
       throw new Error("The e2e harness has no Mirador profiles; seats are mocks.");
     },
@@ -211,6 +217,14 @@ export async function startHarness(sourceTarget: string | null, { mirador }: { m
     setReview: (review) => { context.change(item!.id, { data: review }); },
     restartHost: () => { host = createCouncilHost({ writeFile: async () => {} }); },
     prompts,
+    holdPrompts() {
+      let release!: () => void;
+      held = new Promise<void>((resolve) => (release = resolve));
+      return () => {
+        release();
+        held = Promise.resolve();
+      };
+    },
     async stop() {
       if (item) await Promise.resolve(host.action!(item, { kind: "stop" }, context)).catch(() => {});
       await server.stop(true);

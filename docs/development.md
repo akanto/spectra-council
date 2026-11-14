@@ -74,10 +74,11 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 1. **Setup.** The agent calls `council_open`; the user picks profile, depth, seats and instructions in the canvas
    (`configure`), then starts it. Only the user starts a review: `council_begin` refuses one in setup whose Start didn't
    ask for it. A `council_open` while the conversation has a review the user hasn't started puts the new review in that
-   item (`unstartedReview`), keeping its profile seats unless the agent names others (a demo's mocks stay a demo's own),
-   so the user never sets up one tab while the agent means the other. Each setup action (`configure`, `start`) names the
-   review the view shows, so one sent for a review replaced meanwhile is refused instead of landing on its replacement. Depth is two knobs (`core/depth.ts`): deliberation rounds (1 to 6) and the most findings
-   per reviewer (1 to 20).
+   item (`unstartedReview`), keeping what the agent doesn't name: its profile seats (a demo's mocks stay a demo's own),
+   profile, depth knobs and instructions. So the user never sets up one tab while the agent means the other, and what
+   they set there survives the agent's second thoughts. Each setup action (`configure`, `start`) names the review the
+   view shows, so one sent for a review replaced meanwhile is refused instead of landing on its replacement. Depth is
+   two knobs (`core/depth.ts`): deliberation rounds (1 to 6) and the most findings per reviewer (1 to 20).
 2. **Independent review.** Each seat reviews the target on its own (`finding-reported`). A reviewer's findings past the
    limit are cut, most severe kept (`findings-capped`). Duplicates merge (`findings-merged`, `core/duplicates.ts`); with
    a real agent at the council, a grouping turn merges findings by meaning before round 1.
@@ -145,7 +146,11 @@ own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves t
 - **Starting conversations.** Only a tool may start one, so the host keeps the tool context of the latest tool call in
   each conversation and starts reviewers through it. After a Mirador restart there is none: Start, Resume and Re-check
   ask the agent to call `council_begin`, which starts the work. For a review in setup it starts only one whose Start
-  asked (`startsAsked`, held in memory: after another restart the user presses Start again).
+  asked (`startsAsked`, held in memory: after another restart the user presses Start again). A change of setup that
+  reaches the host before `council_begin` takes the ask back, and the view shows Start again. The ask can't end when
+  Start's prompt resolves: queued behind a running turn, the prompt resolves before the agent reads it. Sent to an idle
+  agent, it resolves only once the turn has ended, and the view's actions queue behind it, so a change made meanwhile
+  lands after the review has started and is refused.
 - **The agent's other tools.** `council_stop` does what the view's Stop does, but only for a running session: a review
   a restart left running reads as interrupted, with nothing to stop. A stop also stops the reviewers' conversations it
   started, through `stopConversation` (Mirador's plugin API 10); on a Mirador older than that there is no way to, so

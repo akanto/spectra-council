@@ -401,13 +401,22 @@ function radioKeys<T>(options: readonly T[], chosen: T, choose: (option: T) => v
   };
 }
 
-export function Setup({ review, configure, start, busy, bridge }: { review: Review; configure(patch: SetupPatch): void; start(): Promise<unknown>; busy: boolean; bridge?: CouncilBridge }) {
+export function Setup({ review, configure: sendPatch, start, busy, bridge }: { review: Review; configure(patch: SetupPatch): void; start(): Promise<unknown>; busy: boolean; bridge?: CouncilBridge }) {
   const [startState, setStartState] = useState<"idle" | "sending" | "prompted">("idle");
+  // A change of setup takes back a Start that asked the agent to start the review, also one still on its way: the host
+  // hears the change after the Start, so the user starts the review again as it now is.
+  const changedSinceStart = useRef(false);
+  const configure = (patch: SetupPatch) => {
+    changedSinceStart.current = true;
+    setStartState((state) => (state === "prompted" ? "idle" : state));
+    sendPatch(patch);
+  };
   const requestStart = async () => {
     setStartState("sending");
+    changedSinceStart.current = false;
     try {
       const result = await start();
-      setStartState((result as { prompted?: boolean } | null)?.prompted ? "prompted" : "idle");
+      setStartState((result as { prompted?: boolean } | null)?.prompted && !changedSinceStart.current ? "prompted" : "idle");
     } catch {
       setStartState("idle"); // The sender displays the host's error.
     }

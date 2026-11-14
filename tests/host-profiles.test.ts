@@ -268,6 +268,34 @@ describe("the user starts a review", () => {
     expect(canvas.items.map((item) => item.data.id)).toEqual(["rev2"]);
   });
 
+  test("a change of setup after Start takes back its ask to the agent, which a new Start gives again", async () => {
+    const { canvas, context, options, host } = setup();
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    const restarted = createCouncilHost(options);
+    // Queued behind a running turn, Start's prompt resolves before the agent has read it.
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start", review: "rev1" }, context)).toEqual({ prompted: true });
+    await restarted.action!(canvas.items[0]!, { kind: "configure", review: "rev1", patch: { instructions: "Mind the cache." } }, context);
+    await expect(Promise.resolve().then(() => restarted.tools.council_begin!.run({}, context))).rejects.toThrow("The user hasn't pressed Start on review rev1");
+    expect(canvas.started).toEqual([]);
+    // With the ask taken back, the review is the user's to set up again, and a new council_open takes its place.
+    await restarted.tools.council_open!.run({ target, agents: ["profile:beta"] }, context);
+    expect(canvas.items.map((item) => item.data.id)).toEqual(["rev2"]);
+    // The refused call left the agent's tool context behind, so the user's next Start runs the review itself.
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start", review: "rev2" }, context)).toBeNull();
+    expect(canvas.started.map((started) => started.profile)).toEqual(["beta"]);
+    restarted.action!(canvas.items[0]!, { kind: "stop" }, context);
+  });
+
+  test("a refused change of setup leaves Start's ask to the agent", async () => {
+    const { canvas, context, options, host } = setup();
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    const restarted = createCouncilHost(options);
+    expect(await restarted.action!(canvas.items[0]!, { kind: "start", review: "rev1" }, context)).toEqual({ prompted: true });
+    await expect(Promise.resolve().then(() => restarted.action!(canvas.items[0]!, { kind: "configure", review: "rev0", patch: { instructions: "x" } }, context))).rejects.toThrow("replaced");
+    expect(await restarted.tools.council_begin!.run({}, context)).toContain("Started review rev1");
+    restarted.action!(canvas.items[0]!, { kind: "stop" }, context);
+  });
+
   test("a Start or a change of setup sent for a review the agent replaced meanwhile is refused", async () => {
     const { host, canvas, context } = setup();
     await host.tools.council_open!.run({ target, agents: ["mock-claude"] }, context);
@@ -306,6 +334,24 @@ describe("opening a review while another is unstarted", () => {
     expect(answer).toContain("in place of review rev1, which the user hadn't started and is gone now: same tab (item item-1)");
     expect(answer).toContain("(kept from review rev1)");
     await expect(Promise.resolve().then(() => host.tools.council_begin!.run({ review: "rev1" }, context))).rejects.toThrow("No review rev1 in this conversation; its reviews are rev2");
+  });
+
+  test("the new review keeps the unstarted one's profile, depth and instructions unless the agent names them", async () => {
+    const { host, canvas, context } = setup();
+    await host.tools.council_open!.run({ target, profile: "code", depth: "quick", agents: ["profile:alpha"] }, context);
+    await host.action!(canvas.items[0]!, { kind: "configure", patch: { maxFindings: 9, instructions: "Mind the cache." } }, context);
+    const answer = await host.tools.council_open!.run({ target: document }, context);
+    const kept = canvas.items[0]!.data;
+    expect([kept.id, kept.target, kept.profile, kept.deliberationRounds, kept.maxFindings, kept.instructions]).toEqual(["rev2", document, "code", 2, 9, "Mind the cache."]);
+    expect(answer).toContain("keeping its profile, depth and instructions");
+    await host.tools.council_open!.run({ target, profile: "security", rounds: 5, instructions: "Look at auth." }, context);
+    const named = canvas.items[0]!.data;
+    expect([named.id, named.profile, named.deliberationRounds, named.maxFindings, named.instructions]).toEqual(["rev3", "security", 5, 6, "Look at auth."]);
+    // Naming the depth alone takes both knobs from it; empty instructions clear the kept ones.
+    expect(await host.tools.council_open!.run({ target, depth: "deep", instructions: "" }, context)).toContain("keeping its profile,");
+    const cleared = canvas.items[0]!.data;
+    expect([cleared.id, cleared.profile, cleared.deliberationRounds, cleared.maxFindings, cleared.instructions]).toEqual(["rev4", "security", 4, 10, ""]);
+    expect(await host.tools.council_open!.run({ target, agents: ["profile:beta"] }, context)).toContain("keeping its profile and depth, seating");
   });
 
   test("reviewers the agent names replace the unstarted review's", async () => {

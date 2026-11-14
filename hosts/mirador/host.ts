@@ -85,10 +85,10 @@ const openInput = z.object({
     .string()
     .min(1)
     .describe("The absolute path of what to review: the workspace folder you work in, unless the user names something narrower, such as one document or subfolder."),
-  profile: profileIdSchema.optional().describe("What the council looks for; the user can change it in the setup. Default: general."),
+  profile: profileIdSchema.optional().describe("What the council looks for; the user can change it in the setup. Default: that of the unstarted review this one replaces, else general."),
   depth: depthSchema
     .optional()
-    .describe("A preset for the two knobs below: quick (2 rounds, at most 3 findings per reviewer), standard (3 rounds, 6 findings) or deep (4 rounds, 10 findings); default standard."),
+    .describe("A preset for the two knobs below: quick (2 rounds, at most 3 findings per reviewer), standard (3 rounds, 6 findings) or deep (4 rounds, 10 findings). Default: the knobs of the unstarted review this one replaces, else standard."),
   rounds: roundsSchema.optional().describe("Deliberation rounds, 1 to 6; overrides the depth preset's. Only when the user asks for a number."),
   maxFindings: maxFindingsSchema.optional().describe("The most findings each reviewer reports, 1 to 20; overrides the depth preset's. Only when the user asks for a number."),
   agents: z
@@ -227,8 +227,9 @@ export function createCouncilHost({
   /** Reviewer conversations waiting for their turn to end, by conversation id; `replied` settles them. */
   const pending = new Map<string, (reply: ConversationReply) => void>();
   /**
-   * The items whose Start asked the agent to call council_begin: of the reviews in setup, only these may it start. Lost
-   * on a restart, after which the user presses Start again.
+   * The items whose Start asked the agent to call council_begin: of the reviews in setup, only these may it start. A
+   * change of setup takes the ask back, so the agent can't start what the user didn't start as it now stands. Lost on a
+   * restart, after which the user presses Start again.
    */
   const startsAsked = new Set<string>();
 
@@ -630,7 +631,9 @@ export function createCouncilHost({
     if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
       const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
       const what = review.phase === "setup" ? "started" : "resumed";
-      // Before the prompt, which resolves only once the turn it starts has ended, by when the agent has called council_begin.
+      // Before the prompt: sent to an idle agent, it resolves only once the turn it starts has ended, by when the agent has
+      // called council_begin. Queued behind a running turn, it resolves at once, before the agent has read it, so the ask
+      // can't end when it resolves; a change of setup ends it instead.
       startsAsked.add(item.id);
       try {
         await context.prompt(`The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`, { afterTurn: true });
@@ -904,23 +907,34 @@ export function createCouncilHost({
     tools: keepingContext({
       council_open: {
         description:
-          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile), by default the ones the user last started a review with; deterministic mock personas only when the user asks for a mock or demo review. A review in this conversation that the user hasn't started yet is replaced by the new one, in its tab, keeping its reviewers unless you name others; to run two at once, the user starts the first before you open the second. Read a review's progress and findings with council_status.",
+          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile), by default the ones the user last started a review with; deterministic mock personas only when the user asks for a mock or demo review. A review in this conversation that the user hasn't started yet is replaced by the new one, in its tab, keeping its reviewers, profile, depth and instructions unless you name others; to run two at once, the user starts the first before you open the second. Read a review's progress and findings with council_status.",
         input: jsonSchema(openInput),
         async run(input, context) {
           const parsed = openInput.safeParse(input);
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
-          const { target, profile = "general", depth = "standard", rounds, maxFindings, agents, instructions = "", title } = parsed.data;
+          const { target, profile: namedProfile, depth, rounds, maxFindings, agents, instructions: namedInstructions, title } = parsed.data;
           if (!isAbsolute(target)) throw new Error(`The target must be an absolute path; got ${target}.`);
           if ((await targetKind(target)) === null) throw new Error(`There is no file or folder at ${target}.`);
           const replaced = unstartedReview(context);
-          const keptSeats = agents || !replaced ? [] : seatedReviewers(replaced.data).filter((reviewer) => isProfileAgent(reviewer.agent)).map(seatOf);
+          const before = replaced?.data;
+          // What the agent doesn't name, the review taking an unstarted one's place keeps from it: the user may have set it there.
+          const keptSeats = agents || !before ? [] : seatedReviewers(before).filter((reviewer) => isProfileAgent(reviewer.agent)).map(seatOf);
+          const profile = namedProfile ?? before?.profile ?? "general";
+          const instructions = namedInstructions ?? before?.instructions ?? "";
+          const namesDepth = depth !== undefined || rounds !== undefined || maxFindings !== undefined;
+          const knobs = before && !namesDepth
+            ? { deliberationRounds: before.deliberationRounds, maxFindings: before.maxFindings }
+            : { ...(rounds === undefined ? {} : { deliberationRounds: rounds }), ...(maxFindings === undefined ? {} : { maxFindings }) };
+          const keptSetup = before
+            ? [namedProfile === undefined && "profile", !namesDepth && "depth", namedInstructions === undefined && before.instructions !== "" && "instructions"].filter((kept) => kept !== false)
+            : [];
           // Real agents unless asked otherwise: mocks only when the agent names them.
           const seats: Seat[] = agents
             ? agents.map((seat) => (typeof seat === "string" ? { agent: seat, enabled: true } : { agent: seat.agent, enabled: true, ...choiceOf(seat) }))
             : keptSeats.length > 0
               ? keptSeats
               : seatsByDefault(context.storage);
-          const setup: Setup = { target, profile, depth, seats, instructions, ...(rounds === undefined ? {} : { deliberationRounds: rounds }), ...(maxFindings === undefined ? {} : { maxFindings }) };
+          const setup: Setup = { target, profile, depth: depth ?? "standard", seats, instructions, ...knobs };
           const review = identified(newReview(newId(), setup, runnerKindOf(seats), clock.now()));
           const heading = title ?? `${PROFILES[profile].title} review · ${basename(target)}`;
           const item = replaced ? context.change(replaced.id, { title: heading, data: review }) : context.publish({ type: ITEM_TYPE, title: heading, data: review });
@@ -928,8 +942,9 @@ export function createCouncilHost({
             isProfileAgent(reviewer.agent) ? `${reviewer.label} (${[`${profileName(reviewer.agent)} profile`, choiceText(reviewer.choice)].filter(Boolean).join(", ")})` : reviewer.label,
           );
           const seating = seated.length > 0 ? `seating ${seated.join(", ")}${keptSeats.length > 0 ? ` (kept from review ${replaced!.data.id})` : ""}` : "with no reviewer seated yet (no Mirador profile is known)";
+          const keeping = keptSetup.length > 0 ? `, keeping its ${keptSetup.join(", ").replace(/, ([^,]*)$/, " and $1")}` : "";
           const opened = replaced
-            ? `Opened Spectra Council review ${review.id} in place of review ${replaced.data.id}, which the user hadn't started and is gone now: same tab (item ${item.id}), in setup`
+            ? `Opened Spectra Council review ${review.id} in place of review ${replaced.data.id}, which the user hadn't started and is gone now: same tab (item ${item.id}), in setup${keeping}`
             : `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup`;
           return `${opened}, ${seating}, ${knobsText(review)}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
         },
@@ -1086,6 +1101,7 @@ export function createCouncilHost({
       switch (parsed.data.kind) {
         case "configure":
           context.change(item.id, { data: identified(reduceOrSay(shownReview(item, parsed.data.review), { type: "configured", patch: parsed.data.patch })) });
+          startsAsked.delete(item.id);
           return null;
         case "start":
           return start(item, context, parsed.data.review);

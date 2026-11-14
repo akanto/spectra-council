@@ -290,6 +290,45 @@ for (const setup of setups) describe.skipIf(!setup.run)(`the view ${setup.name}`
     expect(await start.isEnabled()).toBe(true);
   });
 
+  test("a change of setup after a prompted start offers Start again", async () => {
+    const review = newReview("prompted-then-changed", { target: harness.target, profile: "code", depth: "quick", instructions: "", seats: [{ agent: "profile:alpha", enabled: true }] }, "mirador", 0);
+    harness.setReview(review);
+    harness.restartHost();
+    await freshPage();
+    const start = root.getByRole("button", { name: "Start review", exact: true });
+    await start.click();
+    const asked = root.getByRole("status").filter({ hasText: "Asked the agent to start the review" });
+    await asked.waitFor();
+    await root.getByRole("radio", { name: /Security/ }).click();
+    await asked.waitFor({ state: "detached" });
+    for (let i = 0; i < 50 && harness.review().profile !== "security"; i++) await page.waitForTimeout(50);
+    expect(harness.review().profile).toBe("security");
+    // Enabled again once the change has landed and nothing is in flight.
+    for (let i = 0; i < 50 && !(await start.isEnabled()); i++) await page.waitForTimeout(50);
+    expect(await start.isEnabled()).toBe(true);
+  });
+
+  test("a change of setup while Start is on its way offers Start again once it lands", async () => {
+    const review = newReview("changed-while-starting", { target: harness.target, profile: "code", depth: "quick", instructions: "", seats: [{ agent: "profile:alpha", enabled: true }] }, "mirador", 0);
+    harness.setReview(review);
+    harness.restartHost();
+    await freshPage();
+    const release = harness.holdPrompts();
+    const count = harness.prompts.length;
+    const start = root.getByRole("button", { name: "Start review", exact: true });
+    await start.click();
+    for (let i = 0; i < 50 && harness.prompts.length === count; i++) await page.waitForTimeout(50);
+    expect(harness.prompts.length).toBe(count + 1);
+    // Picked while the Start waits on the agent: the host hears it after the Start, and takes its ask back.
+    await root.getByRole("radio", { name: /Security/ }).click();
+    release();
+    for (let i = 0; i < 50 && harness.review().profile !== "security"; i++) await page.waitForTimeout(50);
+    expect(harness.review().profile).toBe("security");
+    for (let i = 0; i < 50 && !(await start.isEnabled()); i++) await page.waitForTimeout(50);
+    expect(await start.isEnabled()).toBe(true);
+    expect(await root.getByRole("status").filter({ hasText: "Asked the agent to start the review" }).count()).toBe(0);
+  });
+
   test("a review opened in place of an unstarted one shows its own setup, not the old one's half-made choices", async () => {
     const setupOn = (id: string, agent: string) => newReview(id, { target: harness.target, profile: "code", depth: "quick", instructions: "", seats: [{ agent, enabled: true }] }, "mirador", 0);
     harness.setReview(setupOn("unstarted", "profile:alpha"));
