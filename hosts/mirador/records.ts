@@ -133,7 +133,7 @@ export function miradorDatabase(env: Record<string, string | undefined> = proces
  */
 export function modelFromOptions(options: unknown, profileEffort: string | null = null): ModelInfo | null {
   const list = parseOptions(options);
-  const modelOption = list.find((o) => o.category === "model") ?? list.find((o) => o.id === "model");
+  const modelOption = modelOptionOf(list);
   if (!modelOption) return null;
   const choice = currentChoice(modelOption);
   if (!choice) return null;
@@ -161,7 +161,7 @@ export function modelFromOptions(options: unknown, profileEffort: string | null 
  */
 export function choicesFromOptions(options: unknown): { models: OptionChoice[]; efforts: OptionChoice[] } {
   const list = parseOptions(options);
-  const modelOption = list.find((o) => o.category === "model") ?? list.find((o) => o.id === "model");
+  const modelOption = modelOptionOf(list);
   const effortOption = list.find((o) => o.category === "thought_level") ?? list.find((o) => o.id === "effort" || o.id === "thought_level");
   const listed = (modelOption?.choices ?? []).filter((c) => c.value && c.value.toLowerCase() !== "default");
   const short = listed.map((c) => stripProvider(c.name || c.value) || c.value);
@@ -225,12 +225,34 @@ function cleanEffort(raw: string | null | undefined): string | null {
   return e === "" || e === "off" ? null : e;
 }
 
+/** The model option of parsed config options: the one of category "model", else the one with id "model". */
+function modelOptionOf(list: ParsedOption[]): ParsedOption | undefined {
+  return list.find((o) => o.category === "model") ?? list.find((o) => o.id === "model");
+}
+
+/**
+ * Whether a conversation's config options run on the model a profile sets (a choice's value, or its value or name in
+ * any case, as `offered` finds it): their model option's current choice is the one it names.
+ */
+export function runsOnModel(options: unknown, model: string): boolean {
+  const option = modelOptionOf(parseOptions(options));
+  if (!option?.currentValue) return false;
+  const lower = model.trim().toLowerCase();
+  const named = option.choices.find((c) => c.value === model) ?? option.choices.find((c) => c.value.toLowerCase() === lower || c.name.toLowerCase() === lower);
+  return named ? named.value === option.currentValue : option.currentValue.toLowerCase() === lower;
+}
+
 /**
  * The model a profile sets (its `model`, a value its agent offers, e.g. "opus"), named as the agent offers it ("Opus
- * 5.5"), with the effort the profile sets: what a new conversation on the profile starts on.
+ * 5.5"), with the effort the profile sets: what a new conversation on the profile starts on. The agent's own "default"
+ * choice, which `offeredModels` leaves out, takes its description from a conversation's `options`, as
+ * `modelFromOptions` names it.
  */
-export function profileModel(model: string, effort: string | null, offeredModels: OptionChoice[]): ModelInfo {
-  return { name: offered(offeredModels, model)?.name ?? (stripProvider(model) || model), effort: cleanEffort(effort) };
+export function profileModel(model: string, effort: string | null, offeredModels: OptionChoice[], options: unknown = null): ModelInfo {
+  const isDefault = model.trim().toLowerCase() === "default";
+  const defaultChoice = isDefault ? modelOptionOf(parseOptions(options))?.choices.find((c) => c.value.toLowerCase() === "default") : undefined;
+  const defaultName = defaultChoice ? stripProvider(defaultChoice.description || defaultChoice.name) : "";
+  return { name: offered(offeredModels, model)?.name ?? (defaultName || stripProvider(model) || model), effort: cleanEffort(effort) };
 }
 
 /** Records read from the database at `path`, opened read-only for each read. */
@@ -270,24 +292,31 @@ export function miradorRecords(path: string = miradorDatabase()): MiradorRecords
           .query(`SELECT id, name, harness, ${modelColumn}, effort FROM profiles ORDER BY created_at, rowid`)
           .all() as { id: string; name: string; harness: string; model: string | null; effort: string | null }[];
         const convs = db.query("SELECT config_options FROM conversations WHERE profile_id = ? AND config_options != '[]' ORDER BY created_at DESC, rowid DESC LIMIT 20");
-        /** The model the profile's latest conversation that names one ran on, and the choices that conversation offered. */
-        const latestRun = (r: (typeof rows)[number]) => {
+        /** The profile's latest conversations that name a model, newest first: the model each ran on, and its options. */
+        const runsOf = (r: (typeof rows)[number]) => {
           try {
-            for (const c of convs.all(r.id) as { config_options: string }[]) {
+            return (convs.all(r.id) as { config_options: string }[]).flatMap((c) => {
               const options = optionsOf(c.config_options);
               const model = modelFromOptions(options, r.effort);
-              if (model) return { model, ...choicesFromOptions(options) };
-            }
+              return model ? [{ model, options }] : [];
+            });
           } catch {
             // an unreadable conversation tells nothing
+            return [];
           }
-          return null;
         };
+        const none = { models: [], efforts: [] };
         return rows.map((r) => {
-          const latest = latestRun(r);
-          const profile = { name: String(r.name), harness: String(r.harness), models: latest?.models ?? [], efforts: latest?.efforts ?? [] };
-          if (r.model) return { ...profile, model: profileModel(r.model, r.effort, profile.models) };
-          return latest ? { ...profile, model: latest.model, lastRan: true } : { ...profile, model: null };
+          const runs = runsOf(r);
+          const latest = runs[0];
+          const name = String(r.name);
+          const harness = String(r.harness);
+          const own = r.model;
+          if (!own) return latest ? { name, harness, model: latest.model, lastRan: true, ...choicesFromOptions(latest.options) } : { name, harness, model: null, ...none };
+          // The efforts on offer depend on the model: a conversation's on the profile's model tells them, else the latest's.
+          const onIt = runs.find((run) => runsOnModel(run.options, own)) ?? latest;
+          const choices = onIt ? choicesFromOptions(onIt.options) : none;
+          return { name, harness, model: profileModel(own, r.effort, choices.models, latest?.options), ...choices };
         });
       });
     },

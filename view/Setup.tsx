@@ -236,10 +236,11 @@ function SeatCard({
   const choice = choiceOf(seat);
   const model = choice ? expectedModel(info, choice) : (reviewer?.model ?? info?.model ?? null);
   const harness = info?.harness ? harnessName(info.harness) : "";
-  const modelSource = choice ? "chosen for this seat" : info?.lastRan ? "what this profile ran last" : "this profile's model";
+  // Where the model comes from; unsaid until the profiles are listed, when the host may have named the seat already.
+  const modelSource = choice ? "chosen for this seat" : info?.lastRan ? "what this profile ran last" : info ? "this profile's model" : null;
   const detail = isProfile
     ? model
-      ? `${modelLabel(model)}${harness ? ` on ${harness}` : ""} (${modelSource})`
+      ? `${modelLabel(model)}${harness ? ` on ${harness}` : ""}${modelSource ? ` (${modelSource})` : ""}`
       : harness
         ? `Runs on ${harness}. Model shown once it starts`
         : "Model shown once it starts"

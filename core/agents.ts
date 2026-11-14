@@ -101,7 +101,10 @@ export interface ProfileInfo {
   model: ModelInfo | null;
   /** True when `model` is the one its latest conversation ran on, because the profile sets none. */
   lastRan?: boolean;
-  /** The models its agent offered in its latest conversation, for a seat to choose from; absent or [] when unknown. */
+  /**
+   * The models its agent offered, for a seat to choose from: in its latest conversation on the model the profile sets,
+   * else in its latest conversation. Absent or [] when unknown.
+   */
   models?: OptionChoice[];
   /** The efforts that conversation's model offered; absent or [] when unknown or it has none. */
   efforts?: OptionChoice[];
@@ -121,7 +124,7 @@ export function expectedModel(profile: ProfileInfo | undefined, choice: SeatChoi
   const named = (list: OptionChoice[] | undefined, wanted: string) => offered(list, wanted)?.name ?? wanted;
   const name = choice?.model ? named(profile?.models, choice.model) : profile?.model?.name;
   if (!name) return null;
-  // Another model than the profile's latest may have other efforts, or none: its effort is unknown until it runs.
+  // Another model than the profile's may have other efforts, or none: its effort is unknown until it runs.
   const ownEffort = name === profile?.model?.name ? profile.model.effort : null;
   const effort = choice?.effort ? named(profile?.efforts, choice.effort) : ownEffort;
   return { name, effort };

@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { choicesFromOptions, miradorDatabase, miradorRecords, modelFromOptions, noRecords, profileModel, replyFromEvents } from "../hosts/mirador/records.ts";
+import { choicesFromOptions, miradorDatabase, miradorRecords, modelFromOptions, noRecords, profileModel, replyFromEvents, runsOnModel } from "../hosts/mirador/records.ts";
 
 const claude = (current = "opus", effort: string | null = "high") => [
   { id: "mode", category: "mode", type: "select", currentValue: "default", options: [] },
@@ -194,6 +194,11 @@ describe("miradorRecords, profiles that set a model", () => {
   addConv("w1", "work", 100, claude("opus", "high"));
   addConv("w2", "work", 200, claude("sonnet", "low"));
   addConv("o1", "own", 100, claude("sonnet", "low"));
+  addProfile("deflt", "Default", 40, "default", null);
+  addConv("d1", "deflt", 100, claude("sonnet", "low"));
+  addProfile("deep", "Deep", 50, "opus", "high");
+  addConv("e1", "deep", 100, claude("opus", "high"));
+  addConv("e2", "deep", 200, claude("sonnet", null));
   db.close();
 
   test("a profile's own model names it, whatever its latest conversation moved to", () => {
@@ -215,6 +220,41 @@ describe("miradorRecords, profiles that set a model", () => {
     expect(fresh).toEqual({ name: "New", harness: "claude", model: { name: "some-model", effort: null }, models: [], efforts: [] });
   });
 
+  test("a profile set to the agent's default choice is named by that choice's description", () => {
+    const profiles = miradorRecords(path).profiles();
+    expect(profiles[3]).toMatchObject({ name: "Default", model: { name: "Opus 5.5", effort: null } });
+    expect(profiles[3]?.lastRan).toBeUndefined();
+    // No conversation runs on the default choice: the choices are the latest conversation's.
+    expect(profiles[3]?.models).toEqual([
+      { value: "opus", name: "Opus 5.5" },
+      { value: "sonnet", name: "Sonnet 5.5" },
+    ]);
+    expect(profiles[3]?.efforts).toEqual([
+      { value: "low", name: "low" },
+      { value: "high", name: "high" },
+    ]);
+  });
+
+  test("the efforts on offer are those of a conversation on the profile's model, not of the latest one's other model", () => {
+    const deep = miradorRecords(path).profiles()[4];
+    // e2, the latest, runs on Sonnet with no effort option; e1 runs on the profile's Opus.
+    expect(deep).toMatchObject({ name: "Deep", model: { name: "Opus 5.5", effort: "high" } });
+    expect(deep?.efforts).toEqual([
+      { value: "low", name: "low" },
+      { value: "high", name: "high" },
+    ]);
+  });
+
+  test("runsOnModel matches the current model choice by its value, or its value or name in any case", () => {
+    expect(runsOnModel(claude("opus"), "opus")).toBe(true);
+    expect(runsOnModel(claude("opus"), "OPUS 5.5")).toBe(true);
+    expect(runsOnModel(claude("default"), "Default")).toBe(true);
+    expect(runsOnModel(claude("sonnet"), "opus")).toBe(false);
+    expect(runsOnModel(claude("sonnet"), "default")).toBe(false);
+    expect(runsOnModel(pi, "opus")).toBe(false);
+    expect(runsOnModel(null, "opus")).toBe(false);
+  });
+
   test("profileModel names the model as the agent offers it, by its value or its name", () => {
     const offered = [
       { value: "opus", name: "claude-opus[1m] (opus)" },
@@ -223,6 +263,8 @@ describe("miradorRecords, profiles that set a model", () => {
     expect(profileModel("opus", "xhigh", offered)).toEqual({ name: "claude-opus[1m] (opus)", effort: "xhigh" });
     expect(profileModel("Claude-Haiku", null, offered)).toEqual({ name: "claude-haiku", effort: null });
     expect(profileModel("gateway/gpt6.1-sol", "Thinking: high", [])).toEqual({ name: "gpt6.1-sol", effort: "high" });
+    expect(profileModel("default", null, offered, claude("sonnet"))).toEqual({ name: "Opus 5.5", effort: null });
+    expect(profileModel("default", null, offered)).toEqual({ name: "default", effort: null });
   });
 });
 

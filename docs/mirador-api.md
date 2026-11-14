@@ -12,7 +12,7 @@ most important first.
 `models: { value: string; name: string }[]` and `efforts` alike.
 
 **Why:** the setup offers each seat the models its profile's agent offers. Today the plugin reads them from the config
-options of the profile's latest conversation in Mirador's database (`hosts/mirador/records.ts`), so a profile with no
+options of the profile's latest conversation (on the model the profile sets, where one is) in Mirador's database (`hosts/mirador/records.ts`), so a profile with no
 conversation yet offers none, and the user types a model's name instead.
 
 ## 2. Starting conversations from a view action
