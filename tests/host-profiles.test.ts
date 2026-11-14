@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UNNAMED_PROFILE } from "../core/agents.ts";
@@ -273,14 +273,32 @@ describe("the user starts a review", () => {
     expect(canvas.items[0]!.data.phase).toBe("complete");
   });
 
-  test("council_begin refuses, with the reason, a review whose seat became an unnamed profile after Start asked for it", async () => {
+  test("a Start whose seats can't run is refused with the reason, rather than asking the agent to start a run that would fail", async () => {
     const { canvas, context, options, host } = setup();
-    await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
+    await host.tools.council_open!.run({ target, agents: ["profile:alpha", "profile:beta"] }, context);
+    await host.action!(canvas.items[0]!, { kind: "configure", patch: { seats: [{ agent: "profile:alpha", enabled: true }, { agent: UNNAMED_PROFILE, enabled: true }] } }, context);
+    const restarted = createCouncilHost(options);
+    await expect(Promise.resolve().then(() => restarted.action!(canvas.items[0]!, { kind: "start" }, context))).rejects.toThrow("Name the Mirador profile for reviewer 2 before starting the review.");
+    expect(canvas.prompts).toEqual([]);
+    expect(canvas.items[0]!.data.phase).toBe("setup");
+    expect(canvas.started).toEqual([]);
+  });
+
+  test("a council_begin refused for a Start leaves the review for the user to start again, and replaceable", async () => {
+    const { canvas, context, options, host } = setup();
+    const gone = await mkdtemp(join(tmpdir(), "spectra-gone-"));
+    await host.tools.council_open!.run({ target: gone, agents: ["profile:alpha"] }, context);
     const restarted = createCouncilHost(options);
     expect(await restarted.action!(canvas.items[0]!, { kind: "start" }, context)).toEqual({ prompted: true });
-    await restarted.action!(canvas.items[0]!, { kind: "configure", patch: { seats: [{ agent: UNNAMED_PROFILE, enabled: true }] } }, context);
-    await expect(Promise.resolve().then(() => restarted.tools.council_begin!.run({}, context))).rejects.toThrow("Name the Mirador profile for reviewer 1 before starting the review.");
-    expect(canvas.items[0]!.data.phase).toBe("setup");
+    await rm(gone, { recursive: true });
+    await expect(Promise.resolve().then(() => restarted.tools.council_begin!.run({}, context))).rejects.toThrow(
+      `There is no file or folder at ${gone}; give the absolute path of what to review. Tell the user why; once it's fixed, they start it again in the canvas.`,
+    );
+    // Back in place, it still waits for the user's Start, not the agent's.
+    await mkdir(gone);
+    await expect(Promise.resolve().then(() => restarted.tools.council_begin!.run({}, context))).rejects.toThrow("The user hasn't pressed Start on review rev1");
+    await restarted.tools.council_open!.run({ target, agents: ["profile:beta"] }, context);
+    expect(canvas.items.map((item) => item.data.id)).toEqual(["rev2"]);
     expect(canvas.started).toEqual([]);
   });
 

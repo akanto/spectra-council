@@ -594,9 +594,10 @@ export function createCouncilHost({
     const review = shownReview(item, shown);
     if (hasFixedFinding(review)) return checkable(review);
     if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
-    if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before starting the review.");
-    // The seats may have changed since the user's Start asked the agent: a run that then can't start would only be logged.
+    // A review in setup is held to the reducer's own check, seats and all: they may have changed since the user's Start
+    // asked the agent, and a run that then can't start would only be logged.
     if (review.phase === "setup") reduceOrSay(review, { type: "started", at: clock.now() });
+    else if (seatedReviewers(review).length === 0) throw new Error("Seat at least one reviewer before resuming the review.");
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
       throw new Error(`There is no file or folder at ${review.target}; give the absolute path of what to review.`);
     }
@@ -967,7 +968,15 @@ export function createCouncilHost({
           const item = itemFor(context, parsed.data.review);
           // Retry start sends a second ask for a review the first one already started, so this answers plainly.
           if (sessions.has(item.id)) return `Spectra Council review ${item.data.id} is already running in the canvas; there is nothing to start. You hear when it ends.`;
-          const review = await startable(item, context);
+          let review: Review;
+          try {
+            review = await startable(item, context);
+          } catch (error) {
+            // A Start that can't go ahead is the user's to press again once it can: until then the agent may not start
+            // the review, and a new council_open may take its place.
+            if (startsAsked.delete(item.id) && error instanceof Error) error.message += " Tell the user why; once it's fixed, they start it again in the canvas.";
+            throw error;
+          }
           if (review.phase === "setup" && !startsAsked.has(item.id)) {
             throw new Error(
               `The user hasn't pressed Start on review ${review.id}. They start it in the canvas once they've chosen its reviewers, and it runs without you then: tell them it's ready there. Call council_begin only when the canvas asks you to.`,

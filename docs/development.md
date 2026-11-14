@@ -150,6 +150,9 @@ own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves t
   reaches the host before `council_begin` takes the ask back, and the view shows Start again. The ask can't end when
   Start's prompt resolves: queued behind a running turn, the prompt resolves before the agent reads it. Start doesn't
   wait for the prompt (below), so a change made while the agent's turn runs reaches the host before `council_begin`.
+  `startable` holds a review in setup to the reducer's own `started` check, so a Start whose seats can't run is refused
+  with the reason rather than failing in the launched run, where it would only be logged. A refused `council_begin`
+  takes the ask back too: the user starts the review again, and a `council_open` may take its place meanwhile.
 - **Asking the agent from the canvas.** The view's actions that ask the agent something (Start, Resume, Re-check,
   fetching a late reply, Fix, Ask, tickets, Run again, and a ruling on a finding with a ticket or a fix) send the prompt
   without awaiting it (`promptAfterTurn`). Mirador waits for an action's result, and in an idle conversation a prompt
