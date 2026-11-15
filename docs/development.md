@@ -20,7 +20,7 @@ read each time a review opens, so `bun run build` is enough for view changes.
 bun run typecheck
 bun test tests                        # reducer, engine, deliberation, mock reviewers and Mirador host, on a fake clock
 bun run build                         # dist/view.js; SPECTRA_MINIFY=0 for a readable bundle
-bun run harness [target]              # the view against a stand-in for Mirador: http://127.0.0.1:4830 (?theme=dark)
+bun run harness [target]              # the view against a stand-in for Mirador: http://127.0.0.1:4830 (?theme=dark, ?kind=research)
 bun scripts/screenshots.ts            # with the harness running: a mock review in Chrome, screenshots in .harness/
                                       # and the plugin catalog's pictures in screenshots/
 bun run e2e                           # build, then a mock review in Chrome and in WebKit framed as Mirador frames it
@@ -52,7 +52,25 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 
 ## How it works
 
-Research councils, the second kind of council beside the review, are designed in [research.md](research.md) and not built yet.
+### A research council, phase by phase
+
+A council of `kind: research` runs in the same `ReviewSession`, with the research rules in `core/research.ts` and its
+own turn prompts in `core/agent-turns.ts`. The decisions are in [research.md](research.md).
+
+1. **Setup.** `council_open` with `kind` research takes a `brief` path or a `question` (saved as a brief file when the
+   council starts), plus `answerFile` and `editor`. Each seat needs web search and fetch.
+2. **Research.** Each seat researches the brief alone and reports claims (`claim-reported`), capped past the limit
+   (`claims-capped`). The grouping turn then merges claims that repeat (`claims-merged`).
+3. **Check sources.** Each claim's sources go to a seat that didn't report it (`source-checked`, then `sources-checked`).
+4. **Deliberate.** The rounds back, challenge or doubt the claims, as they do findings in a review.
+5. **Synthesis.** `claim-resolved` settles each claim. A fact no check verified settles as `unverified`.
+6. **Answer.** The editor drafts (`answer-drafted`), the other seats object to misstatements (`draft-objected`), and the
+   editor revises once if anyone did. The plugin writes the answer file (`answer-written`) with the ledger appended.
+7. **Rulings and revision.** `claim-ruled` keeps or strikes a claim; "Revise answer" starts the editor again
+   (`revision-started`).
+8. **Follow-up.** `follow-up-asked` and `follow-up-started` send the council back on the same ledger, as a new run.
+
+A research council never reopens (`whyNoReopen`) and has no fix loop.
 
 ### Decisions
 
@@ -141,7 +159,9 @@ own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves t
   with a self-contained prompt (`core/agent-turns.ts`): the target, a read-only rule, the profile's brief, the user's
   instructions, the task, and the JSON reply shape with its schema and an example. Turns run in parallel, 15 minutes
   each at most (`TURN_LIMIT_MS`), or what the conversation's profile sets as its **Spectra Council turn limit**
-  (`turnLimitOf`, `hosts/mirador/host.ts`).
+  (`turnLimitOf`, `hosts/mirador/host.ts`). A research council's turns default to 60 minutes for a seat's own research
+  (`RESEARCH_TURN_LIMIT_MS`) and 20 minutes for its other turns (`RESEARCH_STEP_LIMIT_MS`), unless the profile sets a
+  limit.
 - **Replies.** The reply ends with a JSON block (`lastJson`, `core/replies.ts`) checked against the turn's schema in
   `core/schemas.ts`. A malformed item shows as an error and the rest still counts. A reply with no usable block is asked
   about once more in a new conversation (`repairPrompt`); a second miss fails the turn.

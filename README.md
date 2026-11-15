@@ -48,6 +48,18 @@ the current one. It is read-only; ✕ hides it, and the phase pill in the header
 
 To try it without spending tokens, ask for a mock review: stand-in reviewers that play the whole flow.
 
+## Research councils
+
+A research council has the seats research a brief or a question on the web, instead of reviewing your work. Each seat
+researches on its own, checks the others' sources, and the claims are argued out as in a review. One editor seat then
+writes one answer to a file, with the claim ledger appended: every claim, its status, its sources and any dissent.
+
+Ask for one with a brief, a Markdown file that says what to research: *"Convene a Spectra Council research council on
+journal/workload-research-brief.md"*. The seats need web search and fetch in their profiles.
+
+Afterwards you can strike claims you don't want and have the answer revised without them, or send a follow-up question
+that researches more on the same ledger.
+
 ## Advanced
 
 - **Tickets**: in a [beads](https://github.com/gastownhall/beads) workspace, the agent can file one issue per accepted
