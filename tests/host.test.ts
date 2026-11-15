@@ -28,6 +28,19 @@ function setup() {
 }
 
 describe("the Mirador host", () => {
+  test("every council tool loads on demand, so a conversation that opens no council carries none of them", () => {
+    const { host } = setup();
+    expect(Object.keys(host.tools)).toContain("council_open");
+    expect(Object.values(host.tools).every((tool) => tool.onDemand)).toBe(true);
+  });
+
+  test("the council loads on request, with a line that says what it does and that only the user's asking calls for it", () => {
+    const { host } = setup();
+    expect(host.guidance?.summary).toStartWith("several AI agents review a repository, folder or document");
+    expect(host.guidance?.summary).toContain("only when the user asks for a Spectra Council review");
+    expect(host.guidance?.summary).toContain("research");
+  });
+
   test("start after a restart reports that the agent was prompted", async () => {
     const { host, canvas, context } = setup();
     await host.tools.council_open!.run({ target, agents: ["profile:alpha"] }, context);
