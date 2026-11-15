@@ -453,17 +453,25 @@ export function draftPrompt(job: DraftJob): string {
       "Use only claims that stand: status agreed, confirmed or disputed, and not struck. Never state a withdrawn or struck claim.",
       "A disputed claim goes in only with its dissent: say who disagrees and why (see its dissent line).",
       'A claim with status "unverified" (no source passed the check) may appear only in a final section headed "Leads", worded as something to follow up, not as a finding.',
-      ...(review.rounds === 0 ? ["The council did not deliberate: every claim has status 'reported'. You may use them, but say once near the top that the claims were not deliberated or source-checked."] : []),
+      ...(review.rounds === 0
+        ? [`The council did not deliberate this run: its claims${(review.research?.pass ?? 0) > 0 ? ` (follow-up ${review.research!.pass})` : ""} have status 'reported'. You may use them, but say once near the top that they were not deliberated or source-checked.`]
+        : []),
       "Gaps and inferences are claims too: cite them, and keep what is known apart from what is inferred or missing.",
       "Don't reproduce the ledger: the plugin appends it to your answer. Don't write any file.",
       'Reply with { "answer": "<the answer in Markdown>" }, writing each line break inside the JSON string as \\n and escaping quotes.',
     ]),
   ];
+  if (job.revision === 0 && job.previous) {
+    // A follow-up run's first draft revises the answer the council gave before, with the new claims in.
+    task.push(`The council answered before; this run is a follow-up, and its new claims are in the ledger. Revise that answer: keep what still holds, work the new claims in, and change what they contradict. The answer so far:\n<draft>\n${job.previous.markdown}\n</draft>`);
+    if (job.problems.length > 0) task.push(`Problems the plugin finds in it now, which you must fix:\n${bullets(job.problems)}`);
+  }
   if (job.revision > 0 && job.previous) {
     task.push(`This is revision ${job.revision}. Your previous draft:\n<draft>\n${job.previous.markdown}\n</draft>`);
     if (job.objections.length > 0) task.push(`The council's objections to it; fix each that is right, and leave the text alone where it is not:\n${job.objections.map((o) => `- ${o.id} by ${o.reviewerId}${o.claimId ? ` on ${o.claimId}` : ""}: "${o.excerpt}" -> ${o.problem}`).join("\n")}`);
     if (job.problems.length > 0) task.push(`Problems the plugin found, which you must fix:\n${bullets(job.problems)}`);
-    if (review.research?.revisionDue) task.push("The user has kept or struck claims since the last draft (see the ledger): revise the answer to match.");
+    const ruled = (review.research?.claims ?? []).filter((claim) => claim.ruling && claim.ruling.at > job.previous!.at);
+    if (ruled.length > 0) task.push(`The user ruled on claims since that draft; revise the answer to match:\n${bullets(ruled.map((claim) => `${claim.id} ${claim.ruling!.decision}${claim.ruling!.note ? ` (${claim.ruling!.note})` : ""}: ${claim.title}`))}`);
   }
   return [
     researchHeader(job, job.revision > 0 ? `Revise the answer ${job.revision}` : "Write the answer"),

@@ -41,7 +41,7 @@ import {
   type RunnerKind,
   type Stance,
 } from "./model.ts";
-import { currentClaims } from "./research.ts";
+import { currentClaims, researchSummary } from "./research.ts";
 import {
   SEVERITIES,
   type ArgumentInput,
@@ -532,9 +532,11 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       const problem = knobsProblem(review.kind, knobs);
       if (problem) throw new ReviewError(problem);
       const researchPatch = { brief, question, answerFile, editor };
-      const research = review.research
+      const patched = review.research
         ? { ...review.research, ...Object.fromEntries(Object.entries(researchPatch).filter(([, value]) => value !== undefined)) }
         : undefined;
+      // An editor whose seat went with a change of seats gives way to the first seat.
+      const research = patched && !reviewers.some((reviewer) => reviewer.id === patched.editor) ? { ...patched, editor: reviewers[0]?.id ?? "r1" } : patched;
       if (!research && Object.values(researchPatch).some((value) => value !== undefined)) throw new ReviewError("A review has no brief, question, answer file or editor; those are a research council's.");
       return { ...review, ...rest, ...knobs, depth: depthOf(knobs, review.kind), reviewers, runner: runnerKindOf(reviewers), ...(research ? { research } : {}) };
     }
@@ -599,8 +601,13 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (seatedReviewers(review).some((reviewer) => reviewer.status === "waiting" || reviewer.status === "reviewing")) {
         throw new ReviewError("The review can't conclude while reviewers are still reviewing.");
       }
+      // A research run that ended with claims but no draft of its own (the editor's turns failed) can still be answered:
+      // the user asks for a revision, which drafts it.
+      const research = review.research;
+      const unanswered = research !== undefined && research.claims.length > 0 && !research.drafts.some((draft) => draft.pass === research.pass);
       return {
         ...review,
+        ...(research ? { research: { ...research, revisionDue: research.revisionDue || unanswered } } : {}),
         phase: "complete",
         endedAt: event.at,
         verdict: { summary: event.summary, at: event.at },
@@ -778,6 +785,18 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
     case "interrupted": {
       if (review.phase === "verification") return endVerification(review, event.at, event.type === "stopped" ? "Re-check stopped" : "Re-check interrupted", false);
       if (!isRunning(review)) return review;
+      // A follow-up or a revision the user stops leaves the council answered as it was: the answer and ledger stay, the
+      // stopped run's claims stay unsettled, and the seats can be sent back again.
+      if (event.type === "stopped" && review.research && (review.research.pass > 0 || review.research.drafts.length > 0)) {
+        const stopped: Review = {
+          ...review,
+          phase: "complete",
+          endedAt: event.at,
+          agentHeardAt: review.agentHeardAt ?? event.at,
+          reviewers: review.reviewers.map((reviewer) => (isActive(reviewer) ? { ...reviewer, status: "completed", current: "Stopped", endedAt: event.at } : reviewer)),
+        };
+        return { ...stopped, verdict: { summary: researchSummary(stopped), at: event.at } };
+      }
       const cutIn = review.phase as ResumablePhase;
       const interruptedPhase = event.type === "interrupted" ? cutIn : null;
       const stoppedPhase = event.type === "stopped" ? cutIn : null;
@@ -935,8 +954,9 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (review.phase !== "complete" || !review.research) throw new ReviewError(`A follow-up starts from a research council that has answered; this one is ${review.phase}.`);
       const followUp = review.research.followUps.at(-1);
       if (!followUp || followUp.startedAt !== null) throw new ReviewError("No follow-up waits to start.");
-      const researchers = seatedReviewers(review).filter((reviewer) => reviewer.status === "completed");
-      if (researchers.length === 0) throw new ReviewError("No seat that completed the research is left to follow it up.");
+      // A seat that failed a turn of an earlier run gets another chance in this one.
+      const researchers = seatedReviewers(review).filter((reviewer) => reviewer.status === "completed" || reviewer.status === "failed");
+      if (researchers.length === 0) throw new ReviewError("No seat is left at the council to follow it up.");
       const ids = new Set(researchers.map(({ id }) => id));
       return {
         ...review,
@@ -968,13 +988,14 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       // Only a strike or its undoing changes what the answer may state.
       const due = struck(claim.ruling?.decision) !== struck(event.decision);
       const ruled = updateClaim(review, claim.id, (it) => ({ ...it, ruling }));
-      return due ? withResearch(ruled, (research) => ({ ...research, revisionDue: research.drafts.length > 0 })) : ruled;
+      return due ? withResearch(ruled, (research) => ({ ...research, revisionDue: true })) : ruled;
     }
     case "revision-started": {
       if (review.phase !== "complete" || !review.research) throw new ReviewError(`The answer is revised once the council has answered; it is ${review.phase}.`);
       if (!review.research.revisionDue) throw new ReviewError("Nothing to revise: no claim was struck or restored since the latest draft.");
-      const editor = review.reviewers.find((reviewer) => reviewer.id === review.research!.editor && reviewer.enabled && reviewer.status === "completed")
-        ?? seatedReviewers(review).find((reviewer) => reviewer.status === "completed");
+      // A seat that failed a turn before may still write: the revision is a turn of its own.
+      const able = (reviewer: Reviewer) => reviewer.enabled && (reviewer.status === "completed" || reviewer.status === "failed");
+      const editor = review.reviewers.find((reviewer) => reviewer.id === review.research!.editor && able(reviewer)) ?? review.reviewers.find(able);
       if (!editor) throw new ReviewError("No seat that completed the research is left to revise the answer.");
       return {
         ...updateReviewer(review, editor.id, (it) => ({ ...it, status: "deliberating", current: "Revising the answer" })),
@@ -982,7 +1003,6 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
         verdict: null,
         endedAt: null,
         agentHeardAt: null,
-        research: { ...review.research, revisionDue: false },
       };
     }
     case "agent-heard":
@@ -1120,7 +1140,8 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
       const drafted = updateReviewer(review, reviewer.id, (it) =>
         withActivity(it, { at: event.at, kind: "proposal", text: `${revision === 0 ? "Drafted" : "Revised"} the answer${event.problems.length > 0 ? ` (${event.problems.length} problem${event.problems.length === 1 ? "" : "s"})` : ""}` }),
       );
-      return { ...drafted, research: { ...research, drafts: [...research.drafts, draft] } };
+      // A draft takes in the user's rulings as they stand: no revision is due any more.
+      return { ...drafted, research: { ...research, drafts: [...research.drafts, draft], revisionDue: false } };
     }
     case "draft-objected": {
       if (review.phase !== "synthesis" || !review.research) throw new ReviewError(`A draft is checked in the synthesis; the council is in ${review.phase}.`);
@@ -1275,14 +1296,13 @@ function resume(review: Review, at: number): Review {
     round: review.rounds,
     reviewers: back,
     findings: review.findings.map((finding) => ({ ...finding, status: "reported", resolution: null, proposal: null })),
-    // A research council settles its run's claims and drafts its answer again.
+    // A research council settles its run's claims again and drafts its answer anew, as a further revision: the drafts so
+    // far stay, and a new draft's revision number keeps its turns apart from those a restart left running.
     ...(research
       ? {
           research: {
             ...research,
             claims: research.claims.map((claim) => (claim.pass === research.pass ? { ...claim, status: "reported" as const, resolution: null } : claim)),
-            drafts: research.drafts.filter((draft) => draft.pass !== research.pass),
-            objections: research.objections.filter((objection) => objection.pass !== research.pass),
           },
         }
       : {}),

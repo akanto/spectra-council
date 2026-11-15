@@ -64,6 +64,9 @@ export function turnLimitSetOf(context: Pick<CanvasPluginContext<unknown>, "prof
 /** Where a question typed for a research council is saved as its brief, under the workspace. */
 export const QUESTION_FOLDER = ".spectra-council";
 
+/** A complete research council's work the user starts: a follow-up run, or the editor's revision. */
+type ResearchWork = "follow-up" | "revise";
+
 /** Where the plugin's storage keeps the view's preferences, for every review. */
 const VIEW_PREFS_KEY = "viewPrefs";
 
@@ -260,6 +263,11 @@ export function createCouncilHost({
    * restart, after which the user presses Start again.
    */
   const startsAsked = new Set<string>();
+  /**
+   * The research councils whose follow-up or revision the user asked for and the agent was asked to start
+   * (council_begin), by item: council_begin starts only that, never work nobody pressed for.
+   */
+  const researchAsked = new Map<string, ResearchWork>();
 
   /** Notes a profile the council seated, most recent first, for the setup to offer. */
   function rememberProfile(storage: CanvasPluginContext<Review>["storage"], name: string) {
@@ -610,11 +618,16 @@ export function createCouncilHost({
     return { path, digest: digestOf(text) };
   }
 
-  /** What a complete research council has waiting for a start: a follow-up the user asked, or a revision after their rulings. */
-  const researchWork = (review: Review): "follow-up" | "revise" | null => {
+  /**
+   * What a complete research council has waiting for a start: a follow-up the user asked, or a revision after their
+   * rulings; `want` picks the one the user pressed for, when both wait.
+   */
+  const researchWork = (review: Review, want?: ResearchWork): ResearchWork | null => {
     if (review.phase !== "complete" || !review.research) return null;
-    if (review.research.followUps.at(-1)?.startedAt === null) return "follow-up";
-    return review.research.revisionDue ? "revise" : null;
+    const followUp = review.research.followUps.at(-1)?.startedAt === null;
+    const revise = review.research.revisionDue;
+    if (want) return (want === "follow-up" ? followUp : revise) ? want : null;
+    return followUp ? "follow-up" : revise ? "revise" : null;
   };
 
   /**
@@ -646,14 +659,15 @@ export function createCouncilHost({
   /**
    * The review of an item, if it can start now (in setup) or resume (cut short by a restart); otherwise says why not.
    */
-  async function startable(item: PluginItem<Review>, context: CanvasPluginContext<Review>, shown?: string): Promise<Review> {
+  async function startable(item: PluginItem<Review>, context: CanvasPluginContext<Review>, shown?: string, want?: ResearchWork): Promise<Review> {
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const review = shownReview(item, shown);
     if (hasFixedFinding(review)) return checkable(review);
-    if (researchWork(review)) {
-      if (!seatedReviewers(review).some((reviewer) => reviewer.status === "completed")) throw new Error("No seat that completed the research is left; ask the agent to open a new research council.");
+    if (researchWork(review, want)) {
+      if (seatedReviewers(review).length === 0) throw new Error("No seat is left at the council; ask the agent to open a new research council.");
       return review;
     }
+    if (want === "revise" && review.research) throw new Error("Nothing to revise: no claim was struck or restored since the latest draft.");
     if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     // A review in setup is held to the reducer's own check, seats and all: they may have changed since the user's Start
     // asked the agent, and a run that then can't start would only be logged.
@@ -686,9 +700,10 @@ export function createCouncilHost({
    * Runs a review in setup, resumes one a restart cut short, re-checks the fixes of a complete one, or runs a research
    * council's follow-up or revision.
    */
-  async function begin(item: PluginItem<Review>, context: CanvasPluginContext<Review>, given: Review) {
+  async function begin(item: PluginItem<Review>, context: CanvasPluginContext<Review>, given: Review, want?: ResearchWork) {
     const review = await withBriefSaved(item, context, given);
-    const work = researchWork(review);
+    const work = researchWork(review, want);
+    researchAsked.delete(item.id);
     launch(item, context, review, (session) =>
       hasFixedFinding(review) ? session.verify() : work === "follow-up" ? session.followUp() : work === "revise" ? session.revise() : review.phase === "setup" ? session.run() : session.resume(),
     );
@@ -700,8 +715,8 @@ export function createCouncilHost({
    * The user's Start or Resume: runs the review, or, with profile seats and no tool context to start them from, asks the
    * agent to.
    */
-  async function start(item: PluginItem<Review>, context: CanvasActionContext<Review>, shown?: string) {
-    const review = await startable(item, context, shown);
+  async function start(item: PluginItem<Review>, context: CanvasActionContext<Review>, shown?: string, want?: ResearchWork) {
+    const review = await startable(item, context, shown, want);
     const profiles = seatedReviewers(review).filter((reviewer) => isProfileAgent(reviewer.agent));
     if (profiles.length > 0 && !toolContexts.has(context.conversationId)) {
       const names = profiles.map((reviewer) => profileName(reviewer.agent)).join(", ");
@@ -709,16 +724,17 @@ export function createCouncilHost({
       // Before the send, which nothing waits for: the agent may call council_begin before it has resolved. Nor can the ask
       // end when it resolves: queued behind a running turn, it resolves before the agent has read it; a change of setup
       // ends it instead.
-      startsAsked.add(item.id);
-      const work = researchWork(review);
+      const work = researchWork(review, want);
+      if (work) researchAsked.set(item.id, work);
+      else startsAsked.add(item.id);
       const asked = work === "follow-up" ? "sent back with a follow-up" : work === "revise" ? "asked for a revised answer of" : what;
       const text = `The user ${asked} Spectra Council ${review.research ? "research council" : "review"} ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`;
       void promptAfterTurn(context, text, `the user ${what} review ${review.id}`).then((sent) => {
-        if (!sent) startsAsked.delete(item.id);
+        if (!sent) (startsAsked.delete(item.id), researchAsked.delete(item.id));
       });
       return { prompted: true };
     }
-    await begin(item, context, review);
+    await begin(item, context, review, want);
     return null;
   }
 
@@ -939,9 +955,11 @@ export function createCouncilHost({
       ...(review.research
         ? {
             kind: "research",
-            ...(review.research.brief ? { brief: review.research.brief } : { question: review.research.question }),
+            // A typed question goes again as itself: its saved brief's default answer file is the old council's.
+            ...(review.research.question.trim() ? { question: review.research.question } : { brief: review.research.brief }),
             ...(review.research.answerFile ? { answerFile: review.research.answerFile } : {}),
-            editor: review.research.editor,
+            // The seats go again without the removed ones, so the editor goes by its place among those that sat.
+            ...(seatedReviewers(review).some(({ id }) => id === review.research!.editor) ? { editor: `r${seatedReviewers(review).findIndex(({ id }) => id === review.research!.editor) + 1}` } : {}),
           }
         : {}),
     };
@@ -1056,6 +1074,9 @@ export function createCouncilHost({
             if (error instanceof ReviewError) throw new Error(error.message);
             throw error;
           }
+          if (made.research && !seatedReviewers(made).some((reviewer) => reviewer.id === made.research!.editor)) {
+            throw new Error(`The editor ${made.research.editor} isn't a seat of this council; its seats are ${seatedReviewers(made).map(({ id }) => id).join(", ") || "none"}.`);
+          }
           const review = identified(made);
           const subject = kind === "research" ? (brief ? basename(brief) : (question ?? "").slice(0, 48)) : basename(target);
           const heading = title ?? (kind === "research" ? `Research · ${subject}` : `${PROFILES[profile].title} review · ${basename(target)}`);
@@ -1087,8 +1108,14 @@ export function createCouncilHost({
           // Retry start sends a second ask for a review the first one already started, so this answers plainly.
           if (sessions.has(item.id)) return `Spectra Council review ${item.data.id} is already running in the canvas; there is nothing to start. You hear when it ends.`;
           let review: Review;
+          // A complete research council starts only the follow-up or revision the user pressed for.
+          const want = researchAsked.get(item.id);
+          const answered = settled(item);
+          if (answered.research && answered.phase === "complete" && !want) {
+            throw new Error(`The user hasn't asked for a follow-up or a revision of research council ${answered.id}; they ask in the canvas. Call council_begin only when the canvas asks you to.`);
+          }
           try {
-            review = await startable(item, context);
+            review = await startable(item, context, undefined, want);
           } catch (error) {
             // A Start that can't go ahead is the user's to press again once it can: until then the agent may not start
             // the review, and a new council_open may take its place.
@@ -1100,8 +1127,8 @@ export function createCouncilHost({
               `The user hasn't pressed Start on review ${review.id}. They start it in the canvas once they've chosen its reviewers, and it runs without you then: tell them it's ready there. Call council_begin only when the canvas asks you to.`,
             );
           }
-          const work = researchWork(review);
-          await begin(item, context, review);
+          const work = researchWork(review, want);
+          await begin(item, context, review, want);
           if (work === "follow-up") return `Started the follow-up of research council ${review.id}. It runs in the canvas on its own; you hear when the revised answer is written. There is nothing more for you to do now.`;
           if (work === "revise") return `Started the editor's revision of research council ${review.id}'s answer. You hear when it is written. There is nothing more for you to do now.`;
           const seated = seatedReviewers(review).map((reviewer) => (isProfileAgent(reviewer.agent) ? `${reviewer.label} (${profileName(reviewer.agent)} profile)` : reviewer.label));
@@ -1316,12 +1343,12 @@ export function createCouncilHost({
         case "follow-up":
           applyTo(item, context, { type: "follow-up-asked", at: clock.now(), question: parsed.data.text });
           // The item handed in is the one before the ask.
-          return start(fresh(item, context), context);
+          return start(fresh(item, context), context, undefined, "follow-up");
         case "rule-claim":
           applyTo(item, context, { type: "claim-ruled", at: clock.now(), claimId: parsed.data.claimId, decision: parsed.data.decision, note: parsed.data.note });
           return null;
         case "revise":
-          return start(item, context);
+          return start(item, context, undefined, "revise");
         case "stop": {
           const session = sessions.get(item.id);
           if (session) session.stop();

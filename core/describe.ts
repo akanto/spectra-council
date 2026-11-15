@@ -26,6 +26,11 @@ const evidenceText = (finding: Finding) =>
 /** One line for the canvas's bar: how many findings, how many of them serious, and with a verdict how they were settled. */
 export function outcomeOf(review: Review): string | undefined {
   if (review.kind === "research" && isFinished(review)) return researchSummary(review);
+  if (review.kind === "research" && review.phase !== "setup") {
+    const claims = review.research?.claims.length ?? 0;
+    const doing = review.phase === "independent-review" ? "researching" : review.phase === "deliberation" ? (review.round === 0 ? "checking sources" : `deliberating · round ${review.round} of ${review.rounds}`) : "writing the answer";
+    return `${doing} · ${claims} claim${claims === 1 ? "" : "s"}`;
+  }
   if (review.phase === "setup") return "setup";
   if (review.phase === "deliberation") return `deliberating · round ${review.round} of ${review.rounds}`;
   if (review.phase === "synthesis") return "settling the findings";
@@ -57,8 +62,11 @@ export function finishedPrompt(review: Review): string {
   const failed = seated.filter((reviewer) => reviewer.status === "failed").length;
   const failures = failed > 0 ? `; ${failed} of its ${seated.length} reviewers failed` : "";
   if (review.kind === "research") {
-    const path = review.research?.written?.path ?? answerPathOf(review);
-    return `Spectra Council research council ${review.id} is finished (${outcomeOf(review)}${failures}). The consolidated answer is written to ${path ?? "its answer file"} and shown in the canvas's Answer tab. Tell the user that in one or two lines, without calling any council tool.`;
+    const written = review.research?.written;
+    const answered = written && review.research!.drafts.length > 0 && written.at >= review.research!.drafts.at(-1)!.at
+      ? `The consolidated answer is written to ${written.path} and shown in the canvas's Answer tab.`
+      : `No answer was written${review.research?.drafts.length ? " to the file this time (the canvas's Answer tab shows the latest draft, and the editor's activity says why)" : ": the editor's turns failed; the user can ask for the answer again with Revise answer in the canvas"}${answerPathOf(review) ? `; it goes to ${answerPathOf(review)}` : ""}.`;
+    return `Spectra Council research council ${review.id} is finished (${outcomeOf(review)}${failures}). ${answered} Tell the user that in one or two lines, without calling any council tool.`;
   }
   return `Spectra Council review ${review.id} is finished (${outcomeOf(review)}${failures}). Tell the user in one or two lines what came of it, without calling any council tool.`;
 }

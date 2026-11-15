@@ -104,7 +104,7 @@ export class AgentRunner implements ReviewerRunner {
   }
 
   deliberate(job: DeliberationJob, report: Reporter, signal: AbortSignal) {
-    return this.#turn(job, report, signal, ["deliberate", `round ${job.round}`], `to argue round ${job.round}`, deliberationPrompt(job), deliberationReplySchema, ({ arguments: made }) => {
+    return this.#turn(job, report, signal, ["deliberate", ...(job.review.research ? [`pass ${job.review.research.pass}`] : []), `round ${job.round}`], `to argue round ${job.round}`, deliberationPrompt(job), deliberationReplySchema, ({ arguments: made }) => {
       for (const argument of made) report({ type: "argued", argument });
       return plural(made.length, "argument");
     });

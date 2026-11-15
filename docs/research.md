@@ -49,7 +49,9 @@ and the deliverable's shape and path (a literature search for published medical-
    after the claims are settled.
 9. **The editor** is one of the council's seats, not a profile of its own: the setup picks one (`editor`, `r1` by
    default). It researches like the others, and it is the seat that drafts and revises the answer. If it has failed,
-   the first seat still at the council writes it.
+   the first seat still at the council writes it; if its draft turn brings no draft, the next seat sitting tries once
+   and edits from then on. A run that ends with claims and no draft has a revision due, so the user can ask for the
+   answer again. Removing the editor's seat in the setup makes the first seat the editor.
 10. **One check of the draft.** Every other seat still at the council reads the draft against the ledger and reports
     concrete misstatements (sentence, claim id, what's wrong). With any, the editor revises once; objections left after
     that are printed at the top of the answer as the council's objections to the text. No second loop.
@@ -59,14 +61,18 @@ and the deliverable's shape and path (a literature search for published medical-
 12. **The answer file** is a setup field. The agent fills it in `council_open` when the brief names a path; otherwise it
     is `<brief name>-answer.md` beside the brief.
 13. **Follow-ups.** After the answer, the user can send the council back with a question ("RQ2 came back thin: look at
-    RSNA informatics 2018 to 2025"). The seats that completed research research it as a new run, with the ledger handed
-    to them as known. New claims go through the source check and rounds, and the editor revises the same answer. One
-    session, one growing ledger, one answer. A research council doesn't reopen; a finished one is sent back with a
-    follow-up instead.
+    RSNA informatics 2018 to 2025"). Every seat still at the council researches it as a new run (one that failed a
+    turn before gets another chance), with the ledger handed to them as known. New claims go through the source check
+    and rounds, and the editor revises the same answer, which its first draft of the run is handed. One session, one
+    growing ledger, one answer. A research council doesn't reopen; a finished one is sent back with a follow-up instead.
+    Stopping a follow-up or a revision leaves the council answered as it was, ready to be sent back again.
 14. **Rulings on claims.** The user keeps or strikes a claim (`kept` or `struck`), with an optional note. Rulings are
     recorded, and the answer is not rewritten by them: the user presses **Revise answer**, which has the editor write
     the answer again without the struck claims. A struck claim stays in the ledger, marked struck. Several rulings take
-    one revision, not one each. The first answer doesn't wait for rulings.
+    one revision, not one each. The first answer doesn't wait for rulings. The revision stays due until a draft comes
+    in, so one whose turn failed can be asked for again; the editor is told which claims were ruled on since its last
+    draft, and what that draft now gets wrong. `council_begin` starts only the follow-up or revision the user pressed
+    for.
 15. **Turn limits.** A seat's own research may take 60 minutes; the source check, a round, a draft and a check take 20
     minutes each. A profile's Spectra Council turn limit still overrides both.
 16. **Web access.** Researchers need web search and fetch, which the plugin can't see in a profile. The setup says so,

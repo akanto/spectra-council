@@ -258,6 +258,8 @@ export class ReviewSession {
   readonly #onChange: (review: Review) => void;
   readonly #writeAnswer: SessionOptions["writeAnswer"];
   readonly #abort = new AbortController();
+  /** Research: the claims each seat was given to check in the source check under way, by seat. */
+  #checking = new Map<string, Set<string>>();
   /** The independent reviews under way, the retried ones included; the review moves on once none is left. */
   readonly #reviewing = new Set<Promise<void>>();
 
@@ -420,12 +422,14 @@ export class ReviewSession {
     const signal = this.#abort.signal;
     const review = this.#review;
     const assignments = assignSourceChecks(review);
+    this.#checking = new Map([...assignments].map(([id, claims]) => [id, new Set(claims)]));
     await Promise.all(
       [...assignments].map(([reviewerId, claimIds]) => {
         const reviewer = review.reviewers.find(({ id }) => id === reviewerId)!;
         return this.#aside(reviewerId, "checking sources", () => this.#runner.checkSources!({ review, reviewer, profile, claimIds }, this.#reporter(reviewerId), signal));
       }),
     );
+    this.#checking = new Map();
     if (!signal.aborted) this.#dispatch({ type: "sources-checked", at: this.#clock.now() });
   }
 
@@ -436,29 +440,45 @@ export class ReviewSession {
    */
   async #answer(profile: ReviewProfile, check: boolean): Promise<boolean> {
     const signal = this.#abort.signal;
-    const editor = editorOf(this.#review);
-    if (!editor) return !signal.aborted;
+    const first = editorOf(this.#review);
+    if (!first) return !signal.aborted;
     const pass = () => this.#review.research!.pass;
-    const latest = () => this.#review.research!.drafts.filter((draft) => draft.pass === pass()).at(-1) ?? null;
-    const draft = async (objections: DraftObjection[]) => {
-      const previous = latest() ?? this.#review.research!.drafts.at(-1) ?? null;
-      const revision = this.#review.research!.drafts.filter((each) => each.pass === pass()).length;
-      const job: DraftJob = { review: this.#review, reviewer: editor, profile, revision, previous, objections, problems: previous?.problems ?? [] };
-      await this.#aside(editor.id, revision === 0 ? "drafting the answer" : "revising the answer", () => this.#runner.draft!(job, this.#reporter(editor.id), signal));
+    const drafts = () => this.#review.research!.drafts;
+    const latest = () => drafts().filter((draft) => draft.pass === pass()).at(-1) ?? null;
+    let editor: Reviewer = first;
+    /** One draft by the editor; when its turn brings none, one more by the next seat sitting, which then edits. */
+    const draft = async (objections: DraftObjection[]): Promise<AnswerDraft | null> => {
+      const before = drafts().length;
+      const sitting = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "deliberating");
+      const writers = [editor, ...sitting.filter((reviewer) => reviewer.id !== editor.id)].slice(0, 2);
+      for (const writer of writers) {
+        if (signal.aborted) return null;
+        // The latest draft, this run's or the one before, is what a revision revises; its problems are worked out
+        // against the ledger as it stands now, so a claim the user struck since shows up as one.
+        const previous = latest() ?? drafts().at(-1) ?? null;
+        const revision = drafts().filter((each) => each.pass === pass()).length;
+        const problems = previous ? draftProblems(this.#review, previous.markdown) : [];
+        const job: DraftJob = { review: this.#review, reviewer: writer, profile, revision, previous, objections, problems };
+        await this.#aside(writer.id, revision === 0 ? "drafting the answer" : "revising the answer", () => this.#runner.draft!(job, this.#reporter(writer.id), signal));
+        if (drafts().length > before) {
+          editor = writer;
+          return latest();
+        }
+      }
+      return null;
     };
-    await draft([]);
+    const drafted = await draft([]);
     if (signal.aborted) return false;
-    const first = latest();
-    if (check && first) {
+    if (check && drafted) {
       const checkers = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "deliberating" && reviewer.id !== editor.id);
       const table = this.#review;
-      await Promise.all(checkers.map((reviewer) => this.#aside(reviewer.id, "checking the draft", () => this.#runner.checkDraft!({ review: table, reviewer, profile, draft: first }, this.#reporter(reviewer.id), signal))));
+      await Promise.all(checkers.map((reviewer) => this.#aside(reviewer.id, "checking the draft", () => this.#runner.checkDraft!({ review: table, reviewer, profile, draft: drafted }, this.#reporter(reviewer.id), signal))));
       if (signal.aborted) return false;
-      const objections = this.#review.research!.objections.filter((objection) => objection.pass === pass() && objection.revision === first.revision);
-      if (objections.length > 0 || first.problems.length > 0) await draft(objections);
+      const objections = this.#review.research!.objections.filter((objection) => objection.pass === pass() && objection.revision === drafted.revision);
+      if (objections.length > 0 || drafted.problems.length > 0) await draft(objections);
       if (signal.aborted) return false;
     }
-    if (latest() && this.#writeAnswer) {
+    if (drafted && this.#writeAnswer) {
       try {
         const written = await this.#writeAnswer(this.#review);
         this.#dispatch({ type: "answer-written", at: this.#clock.now(), ...written });
@@ -661,6 +681,7 @@ export class ReviewSession {
           const claim = claimById(this.#review, parsed.data.claimId);
           if (!claim || claim.pass !== this.#review.research?.pass) return rejected("source check", `there is no claim ${parsed.data.claimId} in this run`);
           if (!claim.sources[parsed.data.source - 1]) return rejected("source check", `${claim.id} has no source ${parsed.data.source}`);
+          if (!this.#checking.get(reviewerId)?.has(claim.id)) return rejected("source check", `${claim.id} wasn't given to it to check`);
           this.#dispatch({ type: "source-checked", reviewerId, at: at(), check: parsed.data });
           return;
         }

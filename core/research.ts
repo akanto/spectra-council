@@ -80,7 +80,7 @@ export function citedClaimIds(markdown: string): string[] {
 
 /**
  * What is wrong with a draft against the ledger: it cites a claim that doesn't exist, or one that doesn't stand
- * (withdrawn, struck or still unsettled), or, with claims standing, cites none. An unverified claim may be cited, among
+ * (withdrawn, struck, or left unsettled by the current run's deliberation), or, with claims standing, cites none. An unverified claim may be cited, among
  * the leads. Empty when the draft is fine.
  */
 export function draftProblems(review: Review, markdown: string): string[] {
@@ -92,6 +92,10 @@ export function draftProblems(review: Review, markdown: string): string[] {
     if (!claim) problems.push(`It cites ${id}, which no claim has.`);
     else if (claim.ruling?.decision === "struck") problems.push(`It cites ${id}, which the user struck.`);
     else if (claim.status === "withdrawn") problems.push(`It cites ${id}, which its reporter withdrew.`);
+    // A claim of a deliberated run that nobody backs at the end stays reported: unsettled, so not a finding.
+    else if (claim.status === "reported" && claim.pass === review.research!.pass && review.rounds > 0 && review.phase !== "independent-review" && review.phase !== "deliberation") {
+      problems.push(`It cites ${id}, which the council left unsettled: nobody backs it.`);
+    }
   }
   if (cited.length === 0 && claims.some(isClaimStanding)) problems.push("It cites no claim: every statement must cite the claims it rests on, as [C3].");
   return problems;

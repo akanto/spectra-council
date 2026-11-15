@@ -91,8 +91,10 @@ describe("a research council's process strip", () => {
     ]);
     expect(states(review)).toMatchObject({ research: "done", answer: "done", followup: "current" });
     expect(detail(review, "followup")).toMatch(/researched/);
+    // A stopped follow-up leaves the council answered as before, ready to be sent back again.
     review = run(review, [{ type: "stopped", at: 14 }]);
-    expect(states(review).followup).toBe("stopped");
+    expect(review.phase).toBe("complete");
+    expect(states(review).followup).not.toBe("current");
   });
 
   test("with one seat the rounds and the source check are skipped", () => {

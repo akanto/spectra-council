@@ -667,7 +667,13 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
           className="primary"
           disabled={busy || startState !== "idle" || count === 0 || unnamed.length > 0 || noBrief}
           onClick={() => {
+            // Commit what was typed and not yet left: the start must see it.
             instructions.onBlur();
+            if (research) {
+              brief.onBlur();
+              question.onBlur();
+              answerFile.onBlur();
+            }
             void requestStart();
           }}
         >
