@@ -1,5 +1,6 @@
 /** A review in words, for an agent: what the host's tools answer, and what it hears when a review ends. */
 import { isProfileAgent, profileName } from "./agents.ts";
+import { answerPathOf, researchSummary } from "./research.ts";
 import { knobsText } from "./depth.ts";
 import type { WhenFetchable } from "./late-replies.ts";
 import { argumentsOn, isFinished, seatedReviewers, type Finding, type Review, type Reviewer } from "./model.ts";
@@ -24,6 +25,7 @@ const evidenceText = (finding: Finding) =>
 
 /** One line for the canvas's bar: how many findings, how many of them serious, and with a verdict how they were settled. */
 export function outcomeOf(review: Review): string | undefined {
+  if (review.kind === "research" && isFinished(review)) return researchSummary(review);
   if (review.phase === "setup") return "setup";
   if (review.phase === "deliberation") return `deliberating · round ${review.round} of ${review.rounds}`;
   if (review.phase === "synthesis") return "settling the findings";
@@ -54,6 +56,10 @@ export function finishedPrompt(review: Review): string {
   const seated = seatedReviewers(review);
   const failed = seated.filter((reviewer) => reviewer.status === "failed").length;
   const failures = failed > 0 ? `; ${failed} of its ${seated.length} reviewers failed` : "";
+  if (review.kind === "research") {
+    const path = review.research?.written?.path ?? answerPathOf(review);
+    return `Spectra Council research council ${review.id} is finished (${outcomeOf(review)}${failures}). The consolidated answer is written to ${path ?? "its answer file"} and shown in the canvas's Answer tab. Tell the user that in one or two lines, without calling any council tool.`;
+  }
   return `Spectra Council review ${review.id} is finished (${outcomeOf(review)}${failures}). Tell the user in one or two lines what came of it, without calling any council tool.`;
 }
 
@@ -92,7 +98,33 @@ export function fixerFinishedPrompt(review: Review, profile: string, outcome: { 
     .join(" ");
 }
 
+function describeResearch(review: Review): string {
+  const research = review.research!;
+  const label = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id)?.label ?? id;
+  const lines = [
+    `Spectra Council research council ${review.id}: ${PHASE_WORDS[review.phase]}.`,
+    research.brief ? `Brief: ${research.brief}.` : research.question ? `Question: ${research.question}` : "",
+    `Reviewers: ${seatedReviewers(review).map((reviewer) => `${reviewer.label} (${reviewer.status}${reviewer.problem ? `: ${reviewer.problem}` : ""})`).join(", ") || "none seated"}.`,
+    `Answer file: ${answerPathOf(review) ?? "none yet"}${research.written ? ` (written, ${research.written.path})` : " (not written yet)"}.`,
+    review.verdict ? `Verdict: ${review.verdict.summary}` : "",
+  ].filter(Boolean);
+  const claims = research.claims;
+  const counts = (["agreed", "confirmed", "disputed", "unverified", "withdrawn", "reported"] as const).map((status) => [status, claims.filter((claim) => claim.status === status).length] as const).filter(([, n]) => n > 0);
+  const struck = claims.filter((claim) => claim.ruling?.decision === "struck").length;
+  lines.push(`Claims (${claims.length}): ${counts.map(([status, n]) => `${n} ${status}`).concat(struck > 0 ? [`${struck} struck`] : []).join(", ") || "none yet"}.`);
+  for (const claim of claims) {
+    const checks = claim.sources.flatMap((source) => source.checks.map((check) => check.outcome));
+    lines.push(`- ${claim.id} [${claim.rq || "no RQ"}, ${claim.kind}, ${claim.status}${claim.ruling?.decision === "struck" ? ", struck" : ""}] ${claim.title} — ${claim.sources.length} source${claim.sources.length === 1 ? "" : "s"}${checks.length > 0 ? `, checks: ${checks.join(", ")}` : ""}; by ${label(claim.reviewerId)}`);
+  }
+  const draft = research.drafts.at(-1);
+  if (draft) {
+    lines.push(`Latest draft: revision ${draft.revision} by ${label(draft.editorId)}${draft.problems.length > 0 ? `; problems: ${draft.problems.join(" ")}` : "; no problems"}.`);
+  } else lines.push("No draft of the answer yet.");
+  return lines.join("\n");
+}
+
 export function describeReview(review: Review): string {
+  if (review.kind === "research" && review.research) return describeResearch(review);
   const reviewers = seatedReviewers(review);
   const lines = [
     `Spectra Council review ${review.id} of ${review.target}: ${PROFILES[review.profile].title} profile, ${review.depth} depth (${knobsText(review)}), ${PHASE_WORDS[review.phase]}.`,

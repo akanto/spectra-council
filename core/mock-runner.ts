@@ -5,9 +5,10 @@
  * only plays it on a clock.
  */
 import { shortName } from "./agents.ts";
-import type { Clock, DeliberationJob, ProposalJob, Report, ReviewerJob, ReviewerRunner, VerificationJob } from "./engine.ts";
-import { argumentsOn, reportersOf, type Argument, type Finding } from "./model.ts";
-import type { ProfileId, Evidence, FindingInput, FixCheckInput, ProposalInput, Severity, Confidence, Stance } from "./schemas.ts";
+import type { Clock, DeliberationJob, DraftCheckJob, DraftJob, ProposalJob, Report, ReviewerJob, ReviewerRunner, SourceCheckJob, VerificationJob } from "./engine.ts";
+import { argumentsOn, claimReportersOf, isClaimStanding, reportersOf, type Argument, type Claim, type Finding } from "./model.ts";
+import { currentClaims, editorOf } from "./research.ts";
+import type { ClaimInput, ProfileId, Evidence, FindingInput, FixCheckInput, ProposalInput, Severity, Confidence, SourceCheckInput, SourceInput, Stance } from "./schemas.ts";
 
 /** Lists a review target's files, relative to it, for a mock to pick from. */
 export type FileLister = (target: string) => Promise<string[]>;
@@ -513,6 +514,294 @@ export function mockVerification(job: VerificationJob): MockStep[] {
   return steps;
 }
 
+/* ---- Research councils: mock researchers, source checkers, debaters, editor and draft checkers ---- */
+
+interface ClaimTemplate {
+  rq: string;
+  kind: ClaimInput["kind"];
+  title: string;
+  text: string;
+  confidence: Confidence;
+  fields: Record<string, string>;
+  /** Slugs of the mock sources it rests on; the same slug is the same source for every persona. */
+  sources: string[];
+}
+
+const MOCK_SOURCES: Record<string, { title: string; authors: string; venue: string; year: number; quote: string; locator: string }> = {
+  "cohort-filters": { title: "Selecting cohorts by series attributes (mock)", authors: "A. Mock, B. Example", venue: "Mock Journal of Imaging Informatics", year: 2022, quote: "cohorts are selected on series-level attributes before any pixel data is read", locator: "Sec. 3.1" },
+  "whole-series": { title: "Training on whole series: a survey of practice (mock)", authors: "C. Mock", venue: "Proc. Mock Medical Imaging Workshop", year: 2023, quote: "most pipelines load every slice of a series, even when a few slices carry the label", locator: "Table 2" },
+  "lesion-reads": { title: "Reading only the slices that show the lesion (mock)", authors: "D. Mock, E. Sample", venue: "Mock Transactions on Medical Data", year: 2021, quote: "restricting reads to lesion slices reduced the data transferred by a factor of four", locator: "p. 6" },
+  "metadata-index": { title: "Metadata indexes for large image archives (mock)", authors: "F. Mock", venue: "Mock Archive Technology Review", year: 2024, quote: "an index over header fields answers most cohort queries without opening the files", locator: "Sec. 4" },
+  "conversion-cost": { title: "The cost of converting archives to a chunked format (mock)", authors: "G. Mock, H. Example", venue: "Proc. Mock Data Engineering Conference", year: 2020, quote: "conversion took 1.8 times as long as the first full read of the archive", locator: "Fig. 5" },
+};
+
+const CLAIM_POOL: ClaimTemplate[] = [
+  { rq: "RQ1", kind: "fact", title: "Cohorts are selected on series attributes", text: "Public archives let users filter cohorts on **series-level** attributes such as modality and body part before any pixel data is read.", confidence: "high", fields: { level: "series", projection: "metadata" }, sources: ["cohort-filters"] },
+  { rq: "RQ1", kind: "fact", title: "Training pipelines read whole series", text: "Common training pipelines load every slice of a series, even when only a few slices carry the label.", confidence: "medium", fields: { level: "series", projection: "pixels" }, sources: ["whole-series"] },
+  { rq: "RQ2", kind: "fact", title: "Lesion-only slice reads are published", text: "A published study reads only the slices that show the lesion and reports about a quarter of the data transferred.", confidence: "medium", fields: { level: "instance", projection: "pixels" }, sources: ["lesion-reads"] },
+  { rq: "RQ2", kind: "inference", title: "Metadata-only access would cut transfer", text: "If cohort queries run on a header index, only the chosen series need be fetched, which would cut the transfer for selective cohorts.", confidence: "medium", fields: { level: "series", projection: "metadata" }, sources: ["cohort-filters", "metadata-index"] },
+  { rq: "RQ3", kind: "gap", title: "No study of access logs found", text: "Searched mock venues for studies of how researchers access archives in practice (query logs, access patterns) and found none.", confidence: "medium", fields: {}, sources: [] },
+  { rq: "RQ3", kind: "fact", title: "Format conversion cost is reported", text: "The one-off cost of converting an archive to a chunked format is reported as comparable to a first full read.", confidence: "medium", fields: { level: "study", projection: "pixels" }, sources: ["conversion-cost"] },
+  { rq: "RQ1", kind: "fact", title: "Header indexes answer most cohort queries", text: "An index over header fields answers most cohort queries without opening the files.", confidence: "high", fields: { level: "series", projection: "metadata" }, sources: ["metadata-index"] },
+];
+
+/** Which pool entries each persona reports, in order; every persona draws the first one, so the demo has corroboration. */
+const CLAIM_ORDER: Record<string, number[]> = {
+  "mock-claude": [0, 1, 4, 3, 5, 6],
+  "mock-codex": [0, 2, 1, 6, 3, 4],
+  "mock-gemini": [0, 3, 5, 4, 2, 6],
+  "mock-qwen": [6, 0, 2, 4, 1, 5],
+  "mock-glm": [1, 0, 3, 5, 2, 4],
+};
+const DEFAULT_CLAIM_ORDER = [0, 1, 2, 3, 4, 5];
+
+const slugOf = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+
+const mockSource = (slug: string): SourceInput => {
+  const known = MOCK_SOURCES[slug]!;
+  return { url: `https://example.org/mock/${slug}`, authors: known.authors, title: known.title, venue: known.venue, year: known.year, quote: known.quote, locator: known.locator, read: "full-text" };
+};
+
+const researchTarget = (job: Pick<ReviewerJob, "review">): string => {
+  const research = job.review.research;
+  if (!research) return job.review.target;
+  if (research.pass > 0) return research.followUps.find((each) => each.pass === research.pass)?.question ?? "the follow-up question";
+  return research.brief || research.question || job.review.target;
+};
+
+/** The steps one mock researcher takes: some searching and reading, and 3 to 6 claims, never more than the review allows. */
+export function mockResearch(job: ReviewerJob): MockStep[] {
+  const { review, reviewer } = job;
+  const research = review.research;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const pass = research?.pass ?? 0;
+  const next = random(hash(`${reviewer.agent}|research|${review.depth}|${pass}`));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const steps: MockStep[] = [];
+  const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
+  const activity = (delayMs: number, kind: Extract<Report, { type: "activity" }>["kind"], text: string, path?: string) =>
+    step(delayMs, { type: "activity", kind, text, ...(path === undefined ? {} : { path }) });
+
+  const target = researchTarget(job);
+  activity(pause(300), "status", pass > 0 ? `Reading the follow-up question: ${target}` : `Reading the brief ${target}`);
+
+  if (pass > 0) {
+    const count = Math.min(review.maxFindings, 1 + (hash(`${reviewer.agent}|${target}`) % 2));
+    const slug = slugOf(target) || "follow-up";
+    activity(pause(500), "search", `Searching for sources on “${target.slice(0, 60)}”`);
+    activity(pause(500), "read", "Reading https://example.org/mock/follow-up", "https://example.org/mock/follow-up");
+    for (let index = 0; index < count; index++) {
+      const claim: ClaimInput = {
+        rq: "RQ1",
+        kind: index === 0 ? "fact" : "inference",
+        title: index === 0 ? `Follow-up: what the mock literature says (${shortName(reviewer)})` : `Follow-up: a reading of it (${shortName(reviewer)})`,
+        text: `On the follow-up question (“${target}”), the mock sources agree on the main point${index === 0 ? "" : ", from which I infer a narrower one"}.`,
+        confidence: "medium",
+        fields: { level: "series", projection: "metadata" },
+        sources: [{ ...mockSource("cohort-filters"), url: `https://example.org/mock/${slug}-${index + 1}`, title: `On the follow-up question, part ${index + 1} (mock)` }],
+      };
+      activity(pause(400), "status", `Writing up “${claim.title}”`);
+      step(pause(400), { type: "claim-reported", claim });
+    }
+    activity(pause(300), "status", "Summarising the research");
+    return steps;
+  }
+
+  const order = CLAIM_ORDER[reviewer.agent] ?? DEFAULT_CLAIM_ORDER;
+  const count = Math.max(1, Math.min(review.maxFindings, order.length, 3 + persona.findingBias + (hash(reviewer.agent) % 2) + Math.floor(review.maxFindings / 4)));
+  const picked = order.slice(0, Math.min(count, 6)).map((index) => CLAIM_POOL[index]!);
+  const seatFocus = reviewer.focus ? ` (focus: ${reviewer.focus})` : "";
+  activity(pause(300), "status", `Planning the search${seatFocus}`);
+  picked.forEach((template, index) => {
+    activity(pause(500), "search", `Searching for ${template.title.toLowerCase()}`);
+    for (const slug of template.sources) {
+      const url = `https://example.org/mock/${slug}`;
+      activity(pause(600), "read", `Reading ${url}`, url);
+    }
+    if (index % 2 === 1) activity(pause(300), "note", persona.habit);
+    const claim: ClaimInput = {
+      rq: template.rq,
+      kind: template.kind,
+      title: template.title,
+      text: template.text,
+      confidence: template.confidence,
+      fields: { ...template.fields },
+      sources: template.sources.map(mockSource),
+    };
+    activity(pause(400), "status", `Writing up “${template.title}”`);
+    step(pause(400), { type: "claim-reported", claim });
+  });
+  activity(pause(500), "status", "Summarising the research");
+  return steps;
+}
+
+/** One check per source of each assigned claim: mostly verified, some quote-not-found or paywalled by a stable rule. */
+export function mockSourceChecks(job: SourceCheckJob): MockStep[] {
+  const { review, reviewer } = job;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const next = random(hash(`${reviewer.agent}|source-checks|${job.claimIds.join(",")}`));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const steps: MockStep[] = [];
+  const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
+  for (const id of job.claimIds) {
+    const claim = review.research?.claims.find((each) => each.id === id);
+    if (!claim) continue;
+    claim.sources.forEach((source, index) => {
+      step(pause(250), { type: "activity", kind: "status", text: `Checking ${id}, source ${index + 1}` });
+      step(pause(350), { type: "activity", kind: "read", text: `Opening ${source.url}`, path: source.url });
+      const roll = hash(`${claim.title}|${reviewer.agent}|${index}`) % 6;
+      const outcome: SourceCheckInput["outcome"] = roll === 0 ? "quote-not-found" : roll === 1 ? "paywalled" : "verified";
+      const note = outcome === "verified" ? `Opened ${source.url}; the quoted passage is there and says what the claim says.` : outcome === "paywalled" ? `${source.url} is behind a paywall; I could read only the abstract.` : `Opened ${source.url} and searched for the quoted passage; it is not in the text.`;
+      step(pause(500), { type: "source-checked", check: { claimId: id, source: index + 1, outcome, note } satisfies SourceCheckInput });
+    });
+  }
+  if (steps.length === 0) step(pause(300), { type: "activity", kind: "status", text: "No sources to check" });
+  return steps;
+}
+
+const RESEARCH_SUPPORTS = [
+  "I checked {id}, “{title}”, against the sources myself and it holds.",
+  "{id} is consistent with what I found on the same question; I back it.",
+  "Reading the cited sources, {id} says no more than they do.",
+];
+const RESEARCH_CHALLENGES = [
+  "{id}, “{title}”, claims more than its source says; the quoted passage is about a narrower case.",
+  "I found a later mock source that qualifies {id}: it holds only for some archives.",
+];
+const RESEARCH_REBUTTALS = ["{who}'s objection to {id} reads the source too narrowly; the passage covers the case as stated.", "The qualification {who} raises is in the source, and {id} already allows for it."];
+const RESEARCH_CONCESSIONS = ["{who} is right: {id} overstates its source. I withdraw it.", "On a second reading {id} doesn't follow from the source. I'm dropping it."];
+
+/** A research council's deliberation turn: argue on current-run claims this seat didn't report; reporters answer challenges. */
+export function mockResearchDeliberation(job: DeliberationJob): MockStep[] {
+  const { review, reviewer, round } = job;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const odds = ODDS[reviewer.agent] ?? DEFAULT_ODDS;
+  const next = random(hash(`${reviewer.agent}|research-round|${round}|${currentClaims(review).length}`));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const steps: MockStep[] = [];
+  const step = (delayMs: number, report: Report) => steps.push({ delayMs, report });
+  const pickFrom: PickOne = (options) => options[Math.floor(next() * options.length)]!;
+  const nameOf = (id: string) => {
+    const each = review.reviewers.find((seat) => seat.id === id);
+    return each ? shortName(each) : id;
+  };
+
+  const argue = (claim: Claim, stance: Stance, confidence: Confidence, text: string, replyTo?: string) => {
+    const url = claim.sources[0]?.url;
+    step(pause(250), { type: "activity", kind: "status", text: `Weighing ${claim.id}: “${claim.title}”` });
+    if (url) step(pause(350), { type: "activity", kind: "read", text: `Reading ${url}`, path: url });
+    const evidence: Evidence[] = url ? [{ path: url, note: stance === "challenges" ? "Where the claim overreaches." : "Where the source says it." }] : [];
+    step(pause(400), { type: "argued", argument: { findingId: claim.id, stance, confidence, text, evidence, ...(replyTo === undefined ? {} : { replyTo }) } });
+  };
+
+  for (const claim of currentClaims(review)) {
+    const own = claimReportersOf(claim).includes(reviewer.id);
+    const mine = argumentsOn(review, claim.id).filter((each) => each.reviewerId === reviewer.id);
+    const reporterStance = claim.positions.find((each) => each.reviewerId === claim.reviewerId)?.stance;
+    if (reporterStance !== undefined && reporterStance !== "supports") continue;
+    const slots = { id: claim.id, title: claim.title };
+    if (round === 1 && !own) {
+      if (claim.positions.some((each) => each.reviewerId === reviewer.id)) continue;
+      // Whether this seat challenges a claim is its own stable view of it, not of the round.
+      const roll = random(hash(`${reviewer.agent}|${claim.title}|stance`))();
+      if (claim.kind !== "gap" && roll < odds[1] * 0.45) argue(claim, "challenges", "medium", fill(pickFrom(RESEARCH_CHALLENGES), slots));
+      else if (roll > 0.94) argue(claim, "uncertain", "low", `I can't tell whether ${claim.id}, “${claim.title}”, holds without the full text.`);
+      else argue(claim, "supports", pickFrom(["medium", "high"] as Confidence[]), fill(pickFrom(RESEARCH_SUPPORTS), slots));
+    } else if (own && round > 1) {
+      const open = argumentsOn(review, claim.id).filter((each) => each.reviewerId !== reviewer.id && each.stance === "challenges" && !mine.some((m) => m.replyTo === each.id));
+      // A reporter makes up its mind about a claim once: it defends it, or concedes.
+      const concede = random(hash(`${reviewer.agent}|${claim.title}|concede`))() < 0.4;
+      for (const challenge of open) {
+        const who = nameOf(challenge.reviewerId);
+        if (concede) argue(claim, "challenges", "medium", fill(pickFrom(RESEARCH_CONCESSIONS), { ...slots, who }), challenge.id);
+        else argue(claim, "supports", "high", fill(pickFrom(RESEARCH_REBUTTALS), { ...slots, who }), challenge.id);
+      }
+    }
+  }
+  if (steps.length === 0) step(pause(300), { type: "activity", kind: "status", text: `Nothing new to answer in round ${round}` });
+  return steps;
+}
+
+const stripCitations = (text: string) => text.replace(/\[C\d+(?:\s*[,;]\s*C\d+)*\]/g, "").replace(/\s+/g, " ").trim();
+
+/** The editor's draft, from the ledger: a summary, sections by research question, gaps and leads, each claim cited. */
+export function mockDraft(job: DraftJob): MockStep[] {
+  const { review, reviewer, revision } = job;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const next = random(hash(`${reviewer.agent}|draft|${revision}|${review.research?.claims.length ?? 0}`));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const claims = review.research?.claims ?? [];
+  const alive = claims.filter((claim) => claim.ruling?.decision !== "struck" && claim.status !== "withdrawn");
+  const standing = alive.filter(isClaimStanding);
+  const facts = standing.filter((claim) => claim.kind !== "gap");
+  const gaps = standing.filter((claim) => claim.kind === "gap");
+  const leads = alive.filter((claim) => claim.status === "unverified");
+  const cite = (claim: Claim) => `[${claim.id}]`;
+
+  const lines: string[] = ["# Answer (mock)", ""];
+  const target = researchTarget(job);
+  lines.push(`This mock answer to “${stripCitations(target).slice(0, 120)}” rests on ${standing.length} claim${standing.length === 1 ? "" : "s"} that stand${standing.length === 1 ? "s" : ""}${standing.length > 0 ? ` (${standing.map(cite).join(", ")})` : ""}. The content is an illustrative demo, not real research.`, "");
+  if (revision > 0) {
+    lines.push("> Revised after the council's check:");
+    for (const objection of job.objections) lines.push(`> - ${stripCitations(objection.problem)}${objection.claimId ? ` (about ${objection.claimId})` : ""}`);
+    for (const problem of job.problems) lines.push(`> - ${stripCitations(problem)}`);
+    lines.push("");
+  }
+  const rqs = [...new Set(facts.map((claim) => claim.rq))].sort();
+  for (const rq of rqs) {
+    lines.push(`## ${rq || "Findings"}`, "");
+    const here = facts.filter((claim) => claim.rq === rq);
+    for (const claim of here) {
+      lines.push(`- **${claim.title}.** ${stripCitations(claim.text)} ${cite(claim)}${claim.kind === "inference" ? " (inference)" : ""}`);
+      if (claim.status === "disputed") {
+        const dissent = claim.resolution?.dissent?.[0]?.reason;
+        lines.push(`  - Disputed: ${dissent ? stripCitations(dissent) : "a seat still challenges it."}`);
+      }
+    }
+    const withFields = here.filter((claim) => Object.keys(claim.fields).length > 0);
+    if (withFields.length > 0) {
+      const keys = [...new Set(withFields.flatMap((claim) => Object.keys(claim.fields)))];
+      lines.push("", `| Claim | ${keys.join(" | ")} |`, `| --- | ${keys.map(() => "---").join(" | ")} |`);
+      for (const claim of withFields) lines.push(`| ${cite(claim)} | ${keys.map((key) => claim.fields[key] ?? "").join(" | ")} |`);
+    }
+    lines.push("");
+  }
+  if (gaps.length > 0) {
+    lines.push("## Gaps", "");
+    for (const claim of gaps) lines.push(`- ${claim.title}: ${stripCitations(claim.text)} ${cite(claim)}`);
+    lines.push("");
+  }
+  if (leads.length > 0) {
+    lines.push("## Leads", "", "Not verified against a source, so not stated as findings:", "");
+    for (const claim of leads) lines.push(`- ${claim.title} ${cite(claim)}`);
+    lines.push("");
+  }
+  const steps: MockStep[] = [
+    { delayMs: pause(300), report: { type: "activity", kind: "status", text: revision > 0 ? `Revising the answer (revision ${revision})` : "Reading the ledger" } },
+    { delayMs: pause(500), report: { type: "activity", kind: "note", text: `${standing.length} claims stand, ${leads.length} unverified` } },
+    { delayMs: pause(800), report: { type: "answer-drafted", markdown: lines.join("\n").trimEnd() + "\n" } },
+  ];
+  return steps;
+}
+
+/** One stable seat objects once to a run's first draft; the others find nothing wrong. */
+export function mockDraftCheck(job: DraftCheckJob): MockStep[] {
+  const { review, reviewer, draft } = job;
+  const persona = PERSONAS[reviewer.agent] ?? DEFAULT_PERSONA;
+  const next = random(hash(`${reviewer.agent}|draft-check|${draft.revision}`));
+  const pause = (base: number) => Math.round((base + next() * base) * persona.pace);
+  const steps: MockStep[] = [{ delayMs: pause(300), report: { type: "activity", kind: "status", text: "Checking the draft against the ledger" } }];
+  const editor = editorOf(review);
+  const objector = review.reviewers.find((seat) => seat.enabled && seat.id !== editor?.id && seat.status !== "failed");
+  const line = draft.markdown.split("\n").find((each) => each.startsWith("- **") && /\[C\d+\]/.test(each));
+  if (draft.revision === 0 && objector?.id === reviewer.id && line) {
+    const claimId = /\[(C\d+)\]/.exec(line)?.[1];
+    const excerpt = line.replace(/^-\s*/, "");
+    steps.push({ delayMs: pause(600), report: { type: "draft-objected", objection: { ...(claimId ? { claimId } : {}), excerpt, problem: "States this more firmly than the sources and the council's argument allow." } } });
+  } else steps.push({ delayMs: pause(400), report: { type: "activity", kind: "note", text: "Nothing to object to" } });
+  return steps;
+}
+
 /** Plays mock scripts on a clock. */
 export class MockRunner implements ReviewerRunner {
   constructor(
@@ -530,7 +819,7 @@ export class MockRunner implements ReviewerRunner {
   }
 
   async deliberate(job: DeliberationJob, report: (report: Report) => void, signal: AbortSignal) {
-    for (const { delayMs, report: each } of mockDeliberation(job)) {
+    for (const { delayMs, report: each } of job.review.research ? mockResearchDeliberation(job) : mockDeliberation(job)) {
       await this.clock.sleep(delayMs, signal);
       report(each);
     }
@@ -548,5 +837,28 @@ export class MockRunner implements ReviewerRunner {
       await this.clock.sleep(delayMs, signal);
       report(each);
     }
+  }
+
+  private async play(steps: MockStep[], report: (report: Report) => void, signal: AbortSignal) {
+    for (const { delayMs, report: each } of steps) {
+      await this.clock.sleep(delayMs, signal);
+      report(each);
+    }
+  }
+
+  research(job: ReviewerJob, report: (report: Report) => void, signal: AbortSignal) {
+    return this.play(mockResearch(job), report, signal);
+  }
+
+  checkSources(job: SourceCheckJob, report: (report: Report) => void, signal: AbortSignal) {
+    return this.play(mockSourceChecks(job), report, signal);
+  }
+
+  draft(job: DraftJob, report: (report: Report) => void, signal: AbortSignal) {
+    return this.play(mockDraft(job), report, signal);
+  }
+
+  checkDraft(job: DraftCheckJob, report: (report: Report) => void, signal: AbortSignal) {
+    return this.play(mockDraftCheck(job), report, signal);
   }
 }

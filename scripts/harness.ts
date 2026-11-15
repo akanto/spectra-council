@@ -5,7 +5,8 @@
  *
  *   bun run harness [target] [--port 4830]
  *
- * Open http://127.0.0.1:4830 (add ?theme=dark for Mirador's dark colours). Each page load gets a fresh review.
+ * Open http://127.0.0.1:4830 (add ?theme=dark for Mirador's dark colours). Each page load gets a fresh review; with
+ * ?kind=research, a fresh research council of mock researchers on a demo brief (.harness/research-brief.md).
  * Only that address (or localhost:<port>) answers: other Host headers are refused, and /socket needs the page's own
  * Origin and a random per-process token that only the HTML page carries (see harness-auth.ts).
  *
@@ -22,6 +23,14 @@ import { AUTH_TIMEOUT_MS, hostAllowed, newToken, parseSocketMessage, tokenMatche
 const repo = join(import.meta.dir, "..");
 
 const handoffs = join(repo, ".harness", "handoff");
+
+/** The demo brief a research council in the harness researches. */
+const researchBrief = join(repo, ".harness", "research-brief.md");
+await mkdir(join(repo, ".harness"), { recursive: true });
+await Bun.write(
+  researchBrief,
+  "# Research brief: published query workloads for medical imaging data lakes\n\nRQ1. What queries against imaging archives are published, at which DICOM level?\nRQ2. What do access-pattern studies of clinical archives show?\nRQ3. How do ML pipelines select and read imaging data?\n\nDeliverable: a summary, a workload table, gaps and leads.\n",
+);
 const host = createCouncilHost({
   // Stand-ins for Mirador's profiles, so the setup offers them with their models as it does in Mirador.
   records: {
@@ -77,6 +86,8 @@ const storage = new Map<string, unknown>([["seatedProfiles", ["Home", "pi home"]
 
 interface SocketData {
   canvas: Canvas;
+  /** The page asked for a research council (?kind=research). */
+  research: boolean;
   state: SocketState;
   authTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -139,7 +150,7 @@ const page = (dark: boolean, token: string) => `<!doctype html>
 <style>${dark ? `:root{color-scheme:dark;${Object.entries(DARK).map(([name, value]) => `${name}:${value}`).join(";")}}` : ":root{color-scheme:light}"}</style>
 <script>
 (() => {
-  const socket = new WebSocket("ws://" + location.host + "/socket");
+  const socket = new WebSocket("ws://" + location.host + "/socket" + (new URLSearchParams(location.search).get("kind") === "research" ? "?kind=research" : ""));
   const listeners = new Set();
   const waiting = new Map();
   let latest = null, next = 1;
@@ -186,7 +197,8 @@ export function startHarness({ target, port }: { target: string; port: number })
       const url = new URL(request.url);
       if (url.pathname === "/socket") {
         if (!upgradeAllowed(request.headers, server.port!)) return refuse();
-        if (server.upgrade(request, { data: { canvas: new Canvas(), state: "unauthenticated", authTimer: null } satisfies SocketData })) return undefined;
+        const research = url.searchParams.get("kind") === "research";
+        if (server.upgrade(request, { data: { canvas: new Canvas(), research, state: "unauthenticated", authTimer: null } satisfies SocketData })) return undefined;
         return new Response("Expected a WebSocket", { status: 400 });
       }
       if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
@@ -219,7 +231,10 @@ export function startHarness({ target, port }: { target: string; port: number })
           data.state = "opening";
           data.canvas.socket = socket;
           try {
-            await host.tools.council_open!.run({ target, profile: "architecture", agents: ["mock-codex", "mock-claude"] }, data.canvas.context());
+            const open = data.research
+              ? { target, kind: "research", brief: researchBrief, agents: ["mock-codex", "mock-claude", "mock-gemini"] }
+              : { target, profile: "architecture", agents: ["mock-codex", "mock-claude"] };
+            await host.tools.council_open!.run(open, data.canvas.context());
           } catch (error) {
             console.error(`[harness] could not open the review: ${error instanceof Error ? error.message : error}`);
             return void socket.close(1011, "Could not open the review");

@@ -9,6 +9,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AgentRunner, replyFetched, type LateReply } from "../../core/agent-runner.ts";
 import { promptTitle } from "../../core/agent-turns.ts";
+import { answerMarkdown } from "../../core/answer.ts";
 import { knobsText } from "../../core/depth.ts";
 import { checkersOf, uncheckableFixes } from "../../core/deliberation.ts";
 import { choiceOf, choiceText, expectedModel, isProfileAgent, modelLabel, offered, profileAgent, profileName, runnerKindOf, seatOf, type ProfileInfo } from "../../core/agents.ts";
@@ -20,9 +21,10 @@ import { lastTurnOf, whenFetchable, whyNoFetch } from "../../core/late-replies.t
 import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
+import { answerPathOf } from "../../core/research.ts";
 import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type NewSetup, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
-import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, viewPrefsSchema, DEFAULT_VIEW_PREFS, type Decision, type Seat, type Setup, type ViewPrefs } from "../../core/schemas.ts";
+import { councilKindSchema, depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, viewPrefsSchema, DEFAULT_VIEW_PREFS, type Decision, type Seat, type ViewPrefs } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
 import { askFixerPrompt, askPrompt, ticketsPrompt, unticketed, waitingTickets } from "../../core/tickets.ts";
 import type { CanvasActionContext, CanvasHost, CanvasPluginContext, CanvasTool, CanvasToolContext, ConversationReply, PluginItem } from "./api.ts";
@@ -47,9 +49,20 @@ export const FIXER_SETTING = "fixer";
 export const TURN_LIMIT_SETTING = "turn-limit";
 
 export function turnLimitOf(context: Pick<CanvasPluginContext<unknown>, "profileSetting">): number {
-  const minutes = Number(context.profileSetting(TURN_LIMIT_SETTING));
-  return minutes > 0 ? minutes * 60_000 : TURN_LIMIT_MS;
+  return turnLimitSetOf(context) ?? TURN_LIMIT_MS;
 }
+
+/**
+ * The turn limit the conversation's profile sets, for every turn; undefined when it sets none, so each turn takes its
+ * own default (a review's 15 minutes, a research council's 60 for the research and 20 for the rest).
+ */
+export function turnLimitSetOf(context: Pick<CanvasPluginContext<unknown>, "profileSetting">): number | undefined {
+  const minutes = Number(context.profileSetting(TURN_LIMIT_SETTING));
+  return minutes > 0 ? minutes * 60_000 : undefined;
+}
+
+/** Where a question typed for a research council is saved as its brief, under the workspace. */
+export const QUESTION_FOLDER = ".spectra-council";
 
 /** Where the plugin's storage keeps the view's preferences, for every review. */
 const VIEW_PREFS_KEY = "viewPrefs";
@@ -95,7 +108,9 @@ const openInput = z.object({
     .array(
       z.union([
         z.string().min(1),
-        seatSchema.pick({ agent: true, model: true, effort: true }).describe("A Mirador profile seat on a model or effort of its own, e.g. {\"agent\": \"profile:Home\", \"model\": \"opus\", \"effort\": \"high\"}."),
+        seatSchema
+          .pick({ agent: true, model: true, effort: true, focus: true })
+          .describe("A Mirador profile seat on a model or effort of its own, e.g. {\"agent\": \"profile:Home\", \"model\": \"opus\", \"effort\": \"high\"}; for research, a focus too, e.g. {\"agent\": \"profile:Home\", \"focus\": \"RQ4, database venues\"}."),
       ]),
     )
     .min(1)
@@ -104,6 +119,19 @@ const openInput = z.object({
     .describe(`The reviewers to seat, in order, 1 to ${MAX_SEATS}: a Mirador profile as "profile:" and its name (e.g. "profile:pi home"), or a mock persona (mock-claude, mock-codex, mock-gemini, mock-qwen, mock-glm). A profile seat runs on its profile's model and effort; only when the user names a model or effort for it, pass it as an object with model and effort. Seat mocks only when the user asks for a mock or demo review: their findings are illustrative, not an analysis. Default: the reviewers of the unstarted review this one replaces, else the profiles the user last started a review with, else their first two Mirador profiles, or none for the user to pick when no profile is known. The user can add and remove reviewers and choose their models in the setup.`),
   instructions: z.string().optional().describe("What the user asked the reviewers to pay attention to, in their words."),
   title: z.string().min(1).optional().describe('The review\'s title, e.g. "Architecture review of the payment service".'),
+  kind: councilKindSchema
+    .optional()
+    .describe(
+      "review (default): the council reviews the target. research: the council researches a brief (or a question), checks each other's sources, argues the claims out, and an editor seat writes one consolidated answer to a file.",
+    ),
+  brief: z.string().min(1).optional().describe("Research: the absolute path of the brief, a Markdown file stating what to research. The target is then the workspace folder the brief may refer to."),
+  question: z.string().min(1).optional().describe("Research without a brief file: the question to research, in the user's words; saved as a brief file when the council starts."),
+  answerFile: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Research: the absolute path the answer is written to. Read the brief: when it names a deliverable file, pass that path (resolved against the folder it means). Default: <brief name>-answer.md beside the brief."),
+  editor: z.string().regex(/^r\d+$/).optional().describe('Research: the seat that writes the answer, as "r1", "r2", …; default r1.'),
 });
 
 const markFixedInput = z.object({
@@ -552,9 +580,9 @@ export function createCouncilHost({
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const out = writer(context, item.id);
     const mock = new MockRunner(listFiles, clock);
-    const agents = new AgentRunner(conversationsOf(context.conversationId, review.id, context.storage), clock, turnLimitOf(context));
+    const agents = new AgentRunner(conversationsOf(context.conversationId, review.id, context.storage), clock, turnLimitSetOf(context));
     const runner = routeByAgent((agent) => runnerFor(agent) ?? (isProfileAgent(agent) ? agents : mock));
-    const session = new ReviewSession(review, { runner, clock, onChange: (next) => out.write(next) });
+    const session = new ReviewSession(review, { runner, clock, onChange: (next) => out.write(next), writeAnswer });
     sessions.set(item.id, session);
     // The engine ends each reviewer itself, failed or not; the work rejects only on a bug, which is logged.
     work(session)
@@ -571,6 +599,35 @@ export function createCouncilHost({
           for (const [id, flight] of Object.entries(all)) if (flight.review === review.id && !pending.has(id) && !flight.gaveUp) delete all[id];
         });
       });
+  }
+
+  /** Writes a research council's answer (the latest draft and the ledger) to its answer file. */
+  async function writeAnswer(review: Review): Promise<{ path: string; digest: string }> {
+    const path = answerPathOf(review);
+    if (!path) throw new Error("It has no answer file: give the council a brief or an answer file.");
+    const text = answerMarkdown(review);
+    await writeFile(path, text);
+    return { path, digest: digestOf(text) };
+  }
+
+  /** What a complete research council has waiting for a start: a follow-up the user asked, or a revision after their rulings. */
+  const researchWork = (review: Review): "follow-up" | "revise" | null => {
+    if (review.phase !== "complete" || !review.research) return null;
+    if (review.research.followUps.at(-1)?.startedAt === null) return "follow-up";
+    return review.research.revisionDue ? "revise" : null;
+  };
+
+  /**
+   * A research council about to start with a typed question and no brief: the question saved as its brief file, under
+   * the workspace's `.spectra-council` folder, and the council pointed at it.
+   */
+  async function withBriefSaved(item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review): Promise<Review> {
+    const research = review.research;
+    if (review.phase !== "setup" || !research || research.brief.trim()) return review;
+    const folder = (await targetKind(review.target)) === "file" ? dirname(review.target) : review.target;
+    const brief = join(folder, QUESTION_FOLDER, `research-${review.id}-brief.md`);
+    await writeFile(brief, `# Research question\n\n${research.question.trim()}\n`);
+    return context.change(item.id, { data: reduceOrSay(review, { type: "configured", patch: { brief } }) }).data;
   }
 
   /** Why a start or a change of setup isn't for the review the item holds: the agent opened another one in its place. */
@@ -593,6 +650,10 @@ export function createCouncilHost({
     if (sessions.has(item.id)) throw new Error("This review is already running.");
     const review = shownReview(item, shown);
     if (hasFixedFinding(review)) return checkable(review);
+    if (researchWork(review)) {
+      if (!seatedReviewers(review).some((reviewer) => reviewer.status === "completed")) throw new Error("No seat that completed the research is left; ask the agent to open a new research council.");
+      return review;
+    }
     if (review.phase !== "setup" && !isResumable(review)) throw new Error(`This review is ${review.phase}; ask the agent to open a new one.`);
     // A review in setup is held to the reducer's own check, seats and all: they may have changed since the user's Start
     // asked the agent, and a run that then can't start would only be logged.
@@ -601,6 +662,10 @@ export function createCouncilHost({
     if (!isAbsolute(review.target) || (await targetKind(review.target)) === null) {
       throw new Error(`There is no file or folder at ${review.target}; give the absolute path of what to review.`);
     }
+    const brief = review.research?.brief.trim();
+    if (brief && (!isAbsolute(brief) || !(await isFile(brief)))) throw new Error(`There is no brief file at ${brief}; give its absolute path.`);
+    const answerFile = review.research?.answerFile.trim();
+    if (answerFile && !isAbsolute(answerFile)) throw new Error(`The answer file must be an absolute path; got ${answerFile}.`);
     const inItsPlace = current(item, context);
     if (inItsPlace.id !== review.id) throw new Error(replacedBy(review.id, inItsPlace));
     return review;
@@ -617,9 +682,16 @@ export function createCouncilHost({
   /** A complete review with a fixed finding is one whose fixes can be re-checked. */
   const hasFixedFinding = (review: Review) => review.phase === "complete" && review.findings.some((finding) => finding.fix?.state === "fixed");
 
-  /** Runs a review in setup, resumes one a restart cut short, or re-checks the fixes of a complete one. */
-  function begin(item: PluginItem<Review>, context: CanvasPluginContext<Review>, review: Review) {
-    launch(item, context, review, (session) => (hasFixedFinding(review) ? session.verify() : review.phase === "setup" ? session.run() : session.resume()));
+  /**
+   * Runs a review in setup, resumes one a restart cut short, re-checks the fixes of a complete one, or runs a research
+   * council's follow-up or revision.
+   */
+  async function begin(item: PluginItem<Review>, context: CanvasPluginContext<Review>, given: Review) {
+    const review = await withBriefSaved(item, context, given);
+    const work = researchWork(review);
+    launch(item, context, review, (session) =>
+      hasFixedFinding(review) ? session.verify() : work === "follow-up" ? session.followUp() : work === "revise" ? session.revise() : review.phase === "setup" ? session.run() : session.resume(),
+    );
     startsAsked.delete(item.id);
     if (review.phase === "setup") rememberStartedSeats(context.storage, review);
   }
@@ -638,13 +710,15 @@ export function createCouncilHost({
       // end when it resolves: queued behind a running turn, it resolves before the agent has read it; a change of setup
       // ends it instead.
       startsAsked.add(item.id);
-      const text = `The user ${what} Spectra Council review ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`;
+      const work = researchWork(review);
+      const asked = work === "follow-up" ? "sent back with a follow-up" : work === "revise" ? "asked for a revised answer of" : what;
+      const text = `The user ${asked} Spectra Council ${review.research ? "research council" : "review"} ${review.id}, which seats agents on Mirador profiles (${names}). Call council_begin (review ${review.id}) to start their conversations.`;
       void promptAfterTurn(context, text, `the user ${what} review ${review.id}`).then((sent) => {
         if (!sent) startsAsked.delete(item.id);
       });
       return { prompted: true };
     }
-    begin(item, context, review);
+    await begin(item, context, review);
     return null;
   }
 
@@ -857,9 +931,19 @@ export function createCouncilHost({
       ...(review.depth === "custom" ? {} : { depth: review.depth }),
       rounds: review.deliberationRounds,
       maxFindings: review.maxFindings,
-      ...(seatedReviewers(review).length > 0 ? { agents: seatedReviewers(review).map((reviewer) => (reviewer.choice ? { agent: reviewer.agent, ...reviewer.choice } : reviewer.agent)) } : {}),
+      ...(seatedReviewers(review).length > 0
+        ? { agents: seatedReviewers(review).map((reviewer) => (reviewer.choice || reviewer.focus ? { agent: reviewer.agent, ...reviewer.choice, ...(reviewer.focus ? { focus: reviewer.focus } : {}) } : reviewer.agent)) }
+        : {}),
       ...(review.instructions ? { instructions: review.instructions } : {}),
       title: item.title,
+      ...(review.research
+        ? {
+            kind: "research",
+            ...(review.research.brief ? { brief: review.research.brief } : { question: review.research.question }),
+            ...(review.research.answerFile ? { answerFile: review.research.answerFile } : {}),
+            editor: review.research.editor,
+          }
+        : {}),
     };
     void promptAfterTurn(context, `The user wants to run Spectra Council review ${review.id} again. Call council_open with ${JSON.stringify(open)}; the user starts it in the canvas.`, `the user asked to run review ${review.id} again`);
     return null;
@@ -916,16 +1000,24 @@ export function createCouncilHost({
     tools: keepingContext({
       council_open: {
         description:
-          "Open a Spectra Council review in the canvas: several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile), by default the ones the user last started a review with; deterministic mock personas only when the user asks for a mock or demo review. A review in this conversation that the user hasn't started yet is replaced by the new one, in its tab, keeping its reviewers, profile, depth and instructions unless you name others; to run two at once, the user starts the first before you open the second. Read a review's progress and findings with council_status.",
+          "Open a Spectra Council review or research council in the canvas. A review (the default): several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. A research council (kind research, with a brief file or a question): the seats research it on the web independently and report sourced claims, check each other's sources, argue the claims out, and an editor seat writes one consolidated answer to a file, so the user reads one answer rather than one report per agent; the target is then the workspace folder. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile), by default the ones the user last started a review with; deterministic mock personas only when the user asks for a mock or demo review. A review in this conversation that the user hasn't started yet is replaced by the new one, in its tab, keeping its reviewers, profile, depth and instructions unless you name others; to run two at once, the user starts the first before you open the second. Read a review's progress and findings with council_status.",
         input: jsonSchema(openInput),
         async run(input, context) {
           const parsed = openInput.safeParse(input);
           if (!parsed.success) throw new Error(problemsOf(parsed.error));
-          const { target, profile: namedProfile, depth, rounds, maxFindings, agents, instructions: namedInstructions, title } = parsed.data;
+          const { target, profile: namedProfile, depth, rounds, maxFindings, agents, instructions: namedInstructions, title, brief, question, answerFile, editor } = parsed.data;
+          const kind = parsed.data.kind ?? (brief !== undefined || question !== undefined ? "research" : "review");
           if (!isAbsolute(target)) throw new Error(`The target must be an absolute path; got ${target}.`);
           if ((await targetKind(target)) === null) throw new Error(`There is no file or folder at ${target}.`);
+          if (kind === "review" && (brief || question || answerFile || editor)) throw new Error("brief, question, answerFile and editor are a research council's; pass kind research.");
+          if (kind === "research") {
+            if (!brief && !question) throw new Error("A research council needs a brief (the absolute path of a Markdown file) or a question.");
+            if (brief && (!isAbsolute(brief) || !(await isFile(brief)))) throw new Error(`There is no brief file at ${brief}; give its absolute path.`);
+            if (answerFile && !isAbsolute(answerFile)) throw new Error(`The answer file must be an absolute path; got ${answerFile}.`);
+          }
           const replaced = unstartedReview(context);
-          const before = replaced?.data;
+          // What the agent doesn't name is kept only from an unstarted council of the same kind.
+          const before = replaced?.data.kind === kind ? replaced.data : undefined;
           // What the agent doesn't name, the review taking an unstarted one's place keeps from it: the user may have set it there.
           const keptSeats = agents || !before ? [] : seatedReviewers(before).filter((reviewer) => isProfileAgent(reviewer.agent)).map(seatOf);
           const profile = namedProfile ?? before?.profile ?? "general";
@@ -939,13 +1031,34 @@ export function createCouncilHost({
             : [];
           // Real agents unless asked otherwise: mocks only when the agent names them.
           const seats: Seat[] = agents
-            ? agents.map((seat) => (typeof seat === "string" ? { agent: seat, enabled: true } : { agent: seat.agent, enabled: true, ...choiceOf(seat) }))
+            ? agents.map((seat) =>
+                typeof seat === "string" ? { agent: seat, enabled: true } : { agent: seat.agent, enabled: true, ...choiceOf(seat), ...(seat.focus && kind === "research" ? { focus: seat.focus } : {}) },
+              )
             : keptSeats.length > 0
               ? keptSeats
               : seatsByDefault(context.storage);
-          const setup: NewSetup = { target, profile, depth: depth ?? "standard", seats, instructions, ...knobs };
-          const review = identified(newReview(newId(), setup, runnerKindOf(seats), clock.now()));
-          const heading = title ?? `${PROFILES[profile].title} review · ${basename(target)}`;
+          const keptResearch = before?.research;
+          const research =
+            kind === "research"
+              ? {
+                  kind,
+                  brief: brief ?? (question ? "" : (keptResearch?.brief ?? "")),
+                  question: question ?? (brief ? "" : (keptResearch?.question ?? "")),
+                  answerFile: answerFile ?? keptResearch?.answerFile ?? "",
+                  editor: editor ?? keptResearch?.editor ?? "r1",
+                }
+              : {};
+          const setup: NewSetup = { target, profile, depth: depth ?? "standard", seats, instructions, ...knobs, ...research };
+          let made: Review;
+          try {
+            made = newReview(newId(), setup, runnerKindOf(seats), clock.now());
+          } catch (error) {
+            if (error instanceof ReviewError) throw new Error(error.message);
+            throw error;
+          }
+          const review = identified(made);
+          const subject = kind === "research" ? (brief ? basename(brief) : (question ?? "").slice(0, 48)) : basename(target);
+          const heading = title ?? (kind === "research" ? `Research · ${subject}` : `${PROFILES[profile].title} review · ${basename(target)}`);
           const item = replaced ? context.change(replaced.id, { title: heading, data: review }) : context.publish({ type: ITEM_TYPE, title: heading, data: review });
           const seated = seatedReviewers(review).map((reviewer) =>
             isProfileAgent(reviewer.agent) ? `${reviewer.label} (${[`${profileName(reviewer.agent)} profile`, choiceText(reviewer.choice)].filter(Boolean).join(", ")})` : reviewer.label,
@@ -955,6 +1068,11 @@ export function createCouncilHost({
           const opened = replaced
             ? `Opened Spectra Council review ${review.id} in place of review ${replaced.data.id}, which the user hadn't started and is gone now: same tab (item ${item.id}), in setup${keeping}`
             : `Opened Spectra Council review ${review.id} (item ${item.id}) in the canvas, in setup`;
+          if (review.research) {
+            const answer = answerPathOf(review);
+            const what = review.research.brief ? `the brief ${review.research.brief}` : `the question "${review.research.question}"`;
+            return `${opened.replace("review", "research council")}, ${seating}, researching ${what}, ${knobsText(review, "research")}; the editor is ${review.research.editor.toUpperCase()}, and the answer goes to ${answer ?? "a file beside the brief"}. The user checks the setup there and starts it; you hear when the answer is written, and council_status reads its claims. Each seat needs web search and fetch.`;
+          }
           return `${opened}, ${seating}, ${knobsText(review)}. The user picks the profile, depth and reviewers there and starts it; you hear when it ends, and council_status reads its findings.`;
         },
       },
@@ -982,7 +1100,10 @@ export function createCouncilHost({
               `The user hasn't pressed Start on review ${review.id}. They start it in the canvas once they've chosen its reviewers, and it runs without you then: tell them it's ready there. Call council_begin only when the canvas asks you to.`,
             );
           }
-          begin(item, context, review);
+          const work = researchWork(review);
+          await begin(item, context, review);
+          if (work === "follow-up") return `Started the follow-up of research council ${review.id}. It runs in the canvas on its own; you hear when the revised answer is written. There is nothing more for you to do now.`;
+          if (work === "revise") return `Started the editor's revision of research council ${review.id}'s answer. You hear when it is written. There is nothing more for you to do now.`;
           const seated = seatedReviewers(review).map((reviewer) => (isProfileAgent(reviewer.agent) ? `${reviewer.label} (${profileName(reviewer.agent)} profile)` : reviewer.label));
           if (hasFixedFinding(review)) return `Started the re-check of the fixes of review ${review.id}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
           return `${review.phase === "setup" ? "Started" : "Resumed"} review ${review.id} with ${seated.join(", ")}. It runs in the canvas on its own; you hear when it ends. There is nothing more for you to do now.`;
@@ -1112,7 +1233,7 @@ export function createCouncilHost({
     }),
     guidance: {
       instructions:
-        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. Leave agents out to seat the user's profiles, or name them as council_profiles lists them; seat mock personas only when the user asks for a mock or demo review. Opening another while one is unstarted replaces it. Never start a review yourself: call council_begin only when the canvas asks you to; when the user asks you to stop a running review, call council_stop. council_status reads its progress and findings; council_rule records a ruling the user gives you on a finding, never one of your own; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
+        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. When they want several agents to research something and come back with one consolidated answer, open a research council (kind research) with the brief's absolute path (or their question) and the workspace folder as target; read the brief first and pass answerFile when it names a deliverable file. Leave agents out to seat the user's profiles, or name them as council_profiles lists them; seat mock personas only when the user asks for a mock or demo review. Opening another while one is unstarted replaces it. Never start a review yourself: call council_begin only when the canvas asks you to; when the user asks you to stop a running review, call council_stop. council_status reads its progress and findings; council_rule records a ruling the user gives you on a finding, never one of your own; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
     },
     async action(item, action, context) {
       const parsed = viewActionSchema.safeParse(action);
@@ -1192,6 +1313,15 @@ export function createCouncilHost({
           if (parsed.data.set) context.storage.set(VIEW_PREFS_KEY, prefs);
           return { prefs };
         }
+        case "follow-up":
+          applyTo(item, context, { type: "follow-up-asked", at: clock.now(), question: parsed.data.text });
+          // The item handed in is the one before the ask.
+          return start(fresh(item, context), context);
+        case "rule-claim":
+          applyTo(item, context, { type: "claim-ruled", at: clock.now(), claimId: parsed.data.claimId, decision: parsed.data.decision, note: parsed.data.note });
+          return null;
+        case "revise":
+          return start(item, context);
         case "stop": {
           const session = sessions.get(item.id);
           if (session) session.stop();

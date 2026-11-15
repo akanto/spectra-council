@@ -5,14 +5,14 @@
  * grouping, proposal and verification turns).
  */
 import type { z } from "zod";
-import { deliberationPrompt, groupingPrompt, proposalPrompt, repairPrompt, reviewPrompt, verificationPrompt } from "./agent-turns.ts";
+import { claimGroupingPrompt, deliberationPrompt, draftCheckPrompt, draftPrompt, groupingPrompt, researchPrompt, sourceCheckPrompt, proposalPrompt, repairPrompt, reviewPrompt, verificationPrompt } from "./agent-turns.ts";
 import { profileName } from "./agents.ts";
-import { TURN_LIMIT_MS, TurnTimeout, type AgentReply, type Clock, type Conversations, type DeliberationJob, type ProposalJob, type Report, type ReviewerJob, type ReviewerRunner, type VerificationJob } from "./engine.ts";
+import { RESEARCH_STEP_LIMIT_MS, RESEARCH_TURN_LIMIT_MS, TURN_LIMIT_MS, TurnTimeout, type AgentReply, type Clock, type Conversations, type DeliberationJob, type DraftCheckJob, type DraftJob, type SourceCheckJob, type ProposalJob, type Report, type ReviewerJob, type ReviewerRunner, type VerificationJob } from "./engine.ts";
 import { askingText, REVIEW_TURN, startedText } from "./late-replies.ts";
 import type { SeatChoice } from "./model.ts";
 import { jsonProblem, lastJson } from "./replies.ts";
 import type { ReplyFetched } from "./review.ts";
-import { deliberationReplySchema, findingInputSchema, groupingReplySchema, problemsOf, proposalReplySchema, reviewReplySchema, verificationReplySchema, type FindingInput } from "./schemas.ts";
+import { deliberationReplySchema, draftCheckReplySchema, draftReplySchema, findingInputSchema, researchReplySchema, sourceCheckReplySchema, groupingReplySchema, problemsOf, proposalReplySchema, reviewReplySchema, verificationReplySchema, type FindingInput } from "./schemas.ts";
 
 type Reporter = (report: Report) => void;
 
@@ -46,9 +46,10 @@ function proseBefore(text: string): string | null {
 export class AgentRunner implements ReviewerRunner {
   readonly #conversations: Conversations;
   readonly #clock: Clock;
-  readonly #limitMs: number;
+  /** A profile's setting, for every turn; absent, each kind of turn has its own default. */
+  readonly #limitMs: number | undefined;
 
-  constructor(conversations: Conversations, clock: Clock, limitMs = TURN_LIMIT_MS) {
+  constructor(conversations: Conversations, clock: Clock, limitMs?: number) {
     this.#conversations = conversations;
     this.#clock = clock;
     this.#limitMs = limitMs;
@@ -62,9 +63,43 @@ export class AgentRunner implements ReviewerRunner {
   }
 
   group(job: ReviewerJob, report: Reporter, signal: AbortSignal) {
-    return this.#turn(job, report, signal, ["group"], "to group duplicate findings", groupingPrompt(job), groupingReplySchema, ({ groups }) => {
+    const claims = job.review.research !== undefined;
+    return this.#turn(job, report, signal, ["group"], claims ? "to group duplicate claims" : "to group duplicate findings", claims ? claimGroupingPrompt(job) : groupingPrompt(job), groupingReplySchema, ({ groups }) => {
       for (const group of groups) report({ type: "duplicates-grouped", group });
       return plural(groups.length, "group");
+    });
+  }
+
+  research(job: ReviewerJob, report: Reporter, signal: AbortSignal) {
+    const pass = job.review.research?.pass ?? 0;
+    return this.#turn(job, report, signal, ["research", `pass ${pass}`], "to research the brief", researchPrompt(job), researchReplySchema, ({ webAccess, claims }) => {
+      if (!webAccess) throw new Error("It has no web access: give its profile web search and fetch, or seat another profile.");
+      for (const claim of claims) report({ type: "claim-reported", claim });
+      return plural(claims.length, "claim");
+    });
+  }
+
+  checkSources(job: SourceCheckJob, report: Reporter, signal: AbortSignal) {
+    const pass = job.review.research?.pass ?? 0;
+    return this.#turn(job, report, signal, ["sources", `pass ${pass}`, ...[...job.claimIds].sort()], "to check sources", sourceCheckPrompt(job), sourceCheckReplySchema, ({ checks }) => {
+      for (const check of checks) report({ type: "source-checked", check });
+      return plural(checks.length, "source check");
+    });
+  }
+
+  draft(job: DraftJob, report: Reporter, signal: AbortSignal) {
+    const pass = job.review.research?.pass ?? 0;
+    return this.#turn(job, report, signal, ["draft", `pass ${pass}`, `revision ${job.revision}`], job.revision > 0 ? "to revise the answer" : "to draft the answer", draftPrompt(job), draftReplySchema, ({ answer }) => {
+      report({ type: "answer-drafted", markdown: answer });
+      return "the answer";
+    });
+  }
+
+  checkDraft(job: DraftCheckJob, report: Reporter, signal: AbortSignal) {
+    const pass = job.review.research?.pass ?? 0;
+    return this.#turn(job, report, signal, ["check-draft", `pass ${pass}`, `revision ${job.draft.revision}`], "to check the draft", draftCheckPrompt(job), draftCheckReplySchema, ({ objections }) => {
+      for (const objection of objections) report({ type: "draft-objected", objection });
+      return plural(objections.length, "objection");
     });
   }
 
@@ -111,12 +146,13 @@ export class AgentRunner implements ReviewerRunner {
    */
   async #turn<S extends z.ZodType>(job: ReviewerJob, report: Reporter, signal: AbortSignal, task: string[], what: string, prompt: string, schema: S, apply: (reply: z.infer<S>) => string) {
     const profile = profileName(job.reviewer.agent);
+    const limitMs = this.#limitMs ?? (task[0] === "research" ? RESEARCH_TURN_LIMIT_MS : job.review.research ? RESEARCH_STEP_LIMIT_MS : TURN_LIMIT_MS);
     // A repair also names the reply it repairs: after a restart the first ask is asked anew, and its new reply must not
     // take over the repair of the old one.
     const turn = (attempt: string, repairing?: string) => JSON.stringify([job.review.id, job.reviewer.id, ...task, attempt, ...(repairing === undefined ? [] : [repairing])]);
     report({ type: "activity", kind: "status", text: askingText(profile, what) });
     const choice = job.reviewer.choice ?? {};
-    let reply = await this.#ask(profile, choice, prompt, turn("ask"), report, signal);
+    let reply = await this.#ask(profile, choice, prompt, turn("ask"), limitMs, report, signal);
     if (reply.ended !== "finished") throw new Error(reply.ended === "failed" ? "Its conversation failed" : "Its conversation was stopped");
     let parsed = lastJson(reply.text, schema);
     if (parsed === null) {
@@ -124,7 +160,7 @@ export class AgentRunner implements ReviewerRunner {
       const problem = jsonProblem(reply.text, schema);
       const short = problem.length > PROBLEM_LENGTH ? `${problem.slice(0, PROBLEM_LENGTH - 1).trimEnd()}…` : problem;
       report({ type: "activity", kind: "error", text: `Its reply had no valid JSON block (${short}); asking again` });
-      const again = await this.#ask(profile, choice, repairPrompt(prompt, reply.text ?? "", problem), turn("repair", reply.text ?? ""), report, signal);
+      const again = await this.#ask(profile, choice, repairPrompt(prompt, reply.text ?? "", problem), turn("repair", reply.text ?? ""), limitMs, report, signal);
       if (again.ended !== "finished") throw new Error(`Its reply had no valid JSON block (${short}), and the follow-up conversation ${again.ended === "failed" ? "failed" : "was stopped"}`);
       parsed = lastJson(again.text, schema);
       if (parsed === null) throw new Error(`Its reply had no valid JSON block, twice: ${jsonProblem(again.text, schema)}`);
@@ -137,7 +173,7 @@ export class AgentRunner implements ReviewerRunner {
   }
 
   /** Asks with a time limit; the limit's timer and the ask are both cancelled once either settles. */
-  async #ask(profile: string, choice: SeatChoice, prompt: string, turn: string, report: Reporter, signal: AbortSignal): Promise<AgentReply> {
+  async #ask(profile: string, choice: SeatChoice, prompt: string, turn: string, limitMs: number, report: Reporter, signal: AbortSignal): Promise<AgentReply> {
     const child = new AbortController();
     const link = () => child.abort(signal.reason);
     if (signal.aborted) throw signal.reason;
@@ -153,8 +189,8 @@ export class AgentRunner implements ReviewerRunner {
     });
     // Rejects with the timeout, or with the signal's reason when the sleep is cancelled by an abort. The ask is aborted
     // with the same error: a host's ask rejects with its signal's reason at once, and may win the race.
-    const limit = this.#clock.sleep(this.#limitMs, child.signal).then((): never => {
-      const timeout = new TurnTimeout(`Its turn took longer than ${Math.round(this.#limitMs / 60_000)} minutes`);
+    const limit = this.#clock.sleep(limitMs, child.signal).then((): never => {
+      const timeout = new TurnTimeout(`Its turn took longer than ${Math.round(limitMs / 60_000)} minutes`);
       child.abort(timeout);
       throw timeout;
     });
