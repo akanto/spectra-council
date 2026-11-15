@@ -108,7 +108,8 @@ export interface CanvasPluginNote {
 export interface CanvasHost<Data = unknown> {
   items: Record<string, PluginItemType<Data>>;
   tools: Record<string, CanvasTool<Data>>;
-  guidance?: { instructions?: string; often?: string };
+  /** summary: one line of what the plugin does and when; with it, Mirador loads the plugin's tools and instructions when the agent asks. */
+  guidance?: { instructions?: string; often?: string; summary?: string };
   action?(item: PluginItem<Data>, action: unknown, context: CanvasActionContext<Data>): unknown;
   note?(context: CanvasPluginContext<Data>): CanvasPluginNote | null;
   /**
