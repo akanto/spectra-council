@@ -52,6 +52,8 @@ reads Mirador's `shared/` from `MIRADOR_SHARED`, `.mirador/shared` or the instal
 
 ## How it works
 
+Research councils, the second kind of council beside the review, are designed in [research.md](research.md) and not built yet.
+
 ### Decisions
 
 - **Event-sourced state.** `reduce(review, event)` (`core/review.ts`) is the only way a review changes: deterministic,
