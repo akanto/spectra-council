@@ -34,7 +34,7 @@ describe("reduce", () => {
       ["r3", "R3 · Gemini (mock)", false],
       ["r4", "R4 · Qwen (mock)", false],
     ]);
-    expect(setupOf(review)).toEqual({ ...setup, deliberationRounds: 2, maxFindings: 3 });
+    expect(setupOf(review)).toEqual({ ...setup, deliberationRounds: 2, maxFindings: 3, kind: "review", brief: "", question: "", answerFile: "", editor: "r1" });
   });
 
   test("configure changes the setup, and only before the start", () => {
@@ -626,7 +626,7 @@ describe("upgradeReview", () => {
   });
 
   test("the review format is 8", () => {
-    expect(REVIEW_FORMAT).toBe(8);
+    expect(REVIEW_FORMAT).toBe(9);
   });
 
   test("a review stored without stoppedPhase reads as stopped nowhere", () => {

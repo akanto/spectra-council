@@ -8,10 +8,23 @@ import { checkersOf, settle, verdictSummary } from "./deliberation.ts";
 import { overLimit } from "./depth.ts";
 import { isProfileAgent } from "./agents.ts";
 import { currentFinding, duplicateGroups, keeperOf } from "./duplicates.ts";
-import { isRunning, isStanding, reportersOf, seatedReviewers, type Finding, type ModelInfo, type Review, type Reviewer } from "./model.ts";
+import { claimsOverLimit } from "./depth.ts";
+import { isRunning, isStanding, reportersOf, seatedReviewers, type AnswerDraft, type DraftObjection, type Finding, type ModelInfo, type Review, type Reviewer } from "./model.ts";
 import { PROFILES, type ReviewProfile } from "./profiles.ts";
+import { assignSourceChecks, claimById, currentClaims, draftProblems, editorOf, researchSummary, settleClaim } from "./research.ts";
 import { reduce, type ReplyFetched, type ReviewEvent, type ReviewerEvent } from "./review.ts";
-import { argumentInputSchema, duplicateGroupInputSchema, findingInputSchema, fixCheckInputSchema, problemsOf, proposalInputSchema } from "./schemas.ts";
+import {
+  argumentInputSchema,
+  claimGroupInputSchema,
+  claimInputSchema,
+  draftObjectionInputSchema,
+  duplicateGroupInputSchema,
+  findingInputSchema,
+  fixCheckInputSchema,
+  problemsOf,
+  proposalInputSchema,
+  sourceCheckInputSchema,
+} from "./schemas.ts";
 
 /** How long the synthesis takes over each finding, so the user sees the verdicts come in. */
 export const SYNTHESIS_PAUSE_MS = 400;
@@ -68,7 +81,15 @@ export type Report =
   /** Findings the reviewer judges the same problem, in the grouping turn; they merge into one. */
   | { type: "duplicates-grouped"; group: unknown }
   /** The model the reviewer's conversation runs on, once the host can tell. */
-  | { type: "model-seen"; model: ModelInfo };
+  | { type: "model-seen"; model: ModelInfo }
+  /** Research: a claim from the seat's research of the brief (or of a follow-up's question). */
+  | { type: "claim-reported"; claim: unknown }
+  /** Research: the seat's check of one source of a claim it was given (`SourceCheckJob`). */
+  | { type: "source-checked"; check: unknown }
+  /** Research: the editor's answer, as Markdown. */
+  | { type: "answer-drafted"; markdown: unknown }
+  /** Research: an objection to a sentence of the draft (`DraftCheckJob`). */
+  | { type: "draft-objected"; objection: unknown };
 
 /**
  * What a runner gets to propose fixes, in the synthesis: the findings this reviewer reported that stand, settled, with
@@ -86,6 +107,29 @@ export interface VerificationJob extends ReviewerJob {
   findingIds: string[];
   /** The verification round, 1-based. */
   pass: number;
+}
+
+/** Research: what a runner gets to check the sources of claims this seat didn't report, before the rounds. */
+export interface SourceCheckJob extends ReviewerJob {
+  claimIds: string[];
+}
+
+/**
+ * Research: what the editor gets to write the answer. Every claim (with its sources, checks, status and dissent) is in
+ * `review.research.claims`; the brief's deliverable says the answer's shape. For a revision, the draft it revises and
+ * what was wrong with it: the council's objections and the plugin's `problems`.
+ */
+export interface DraftJob extends ReviewerJob {
+  /** 0 for a run's first draft, then each revision's number. */
+  revision: number;
+  previous: AnswerDraft | null;
+  objections: DraftObjection[];
+  problems: string[];
+}
+
+/** Research: what a seat gets to check the editor's draft against the ledger. */
+export interface DraftCheckJob extends ReviewerJob {
+  draft: AnswerDraft;
 }
 
 /**
@@ -107,6 +151,26 @@ export interface ReviewerRunner {
    * meaning); a runner without it skips the turn.
    */
   group?(job: ReviewerJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /**
+   * Research: the seat's own research of the brief, or of the follow-up's question when `review.research.pass` is past
+   * 0 (the claims of the runs before are known then), reporting one "claim-reported" each. It rejects, failing the seat,
+   * when the seat has no web access. With `deliberate` (whose job's review then has claims, not findings) and the
+   * three below, what a research council needs; a runner without them can't sit at one.
+   */
+  research?(job: ReviewerJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /** Research: opens each source of the given claims, reporting one "source-checked" per source. */
+  checkSources?(job: SourceCheckJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /** Research: the editor writes (or revises) the answer, reporting one "answer-drafted". */
+  draft?(job: DraftJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+  /** Research: checks the draft against the ledger, reporting one "draft-objected" per misstatement. */
+  checkDraft?(job: DraftCheckJob, report: (report: Report) => void, signal: AbortSignal): Promise<void>;
+}
+
+/** A runner's research turn, or an error saying it can't do research. */
+function researchTurn<K extends "research" | "checkSources" | "draft" | "checkDraft">(runner: ReviewerRunner, kind: K): NonNullable<ReviewerRunner[K]> {
+  const turn = runner[kind];
+  if (!turn) throw new Error("This seat's runner can't do research.");
+  return turn.bind(runner) as NonNullable<ReviewerRunner[K]>;
 }
 
 /** How an agent's turn in a conversation ended: its last message, if it said anything in words. */
@@ -146,6 +210,10 @@ export interface Conversations {
 
 /** How long a real reviewer's turn may take before its seat gives up on it. */
 export const TURN_LIMIT_MS = 15 * 60_000;
+/** How long a research seat's own research may take: a thorough search of the literature takes longer than a review. */
+export const RESEARCH_TURN_LIMIT_MS = 60 * 60_000;
+/** How long a research council's other turns may take: the source check, a round, the editor's draft, its check. */
+export const RESEARCH_STEP_LIMIT_MS = 20 * 60_000;
 
 /**
  * Why a runner gave up on a turn that ran past its limit: the reason its ask's signal aborts with, and the seat's
@@ -164,6 +232,10 @@ export function routeByAgent(byAgent: (agent: string) => ReviewerRunner): Review
       const runner = byAgent(job.reviewer.agent);
       if (runner.group) await runner.group(job, report, signal);
     },
+    research: (job, report, signal) => researchTurn(byAgent(job.reviewer.agent), "research")(job, report, signal),
+    checkSources: (job, report, signal) => researchTurn(byAgent(job.reviewer.agent), "checkSources")(job, report, signal),
+    draft: (job, report, signal) => researchTurn(byAgent(job.reviewer.agent), "draft")(job, report, signal),
+    checkDraft: (job, report, signal) => researchTurn(byAgent(job.reviewer.agent), "checkDraft")(job, report, signal),
   };
 }
 
@@ -172,6 +244,11 @@ export interface SessionOptions {
   clock?: Clock;
   /** Hears every new review, after each event. */
   onChange(review: Review): void;
+  /**
+   * Research: writes the answer (the latest draft and the ledger) where it goes, and gives back where and a digest of
+   * what; rejects, saying why, when it can't. Without it the answer stays in the review.
+   */
+  writeAnswer?(review: Review): Promise<{ path: string; digest: string }>;
 }
 
 export class ReviewSession {
@@ -179,15 +256,17 @@ export class ReviewSession {
   readonly #runner: ReviewerRunner;
   readonly #clock: Clock;
   readonly #onChange: (review: Review) => void;
+  readonly #writeAnswer: SessionOptions["writeAnswer"];
   readonly #abort = new AbortController();
   /** The independent reviews under way, the retried ones included; the review moves on once none is left. */
   readonly #reviewing = new Set<Promise<void>>();
 
-  constructor(review: Review, { runner, clock = systemClock, onChange }: SessionOptions) {
+  constructor(review: Review, { runner, clock = systemClock, onChange, writeAnswer }: SessionOptions) {
     this.#review = review;
     this.#runner = runner;
     this.#clock = clock;
     this.#onChange = onChange;
+    this.#writeAnswer = writeAnswer;
   }
 
   get review() {
@@ -250,8 +329,25 @@ export class ReviewSession {
     this.#dispatch(event);
   }
 
+  /**
+   * Research: sends the council back with the follow-up the user asked (`follow-up-asked`): the seats that completed
+   * research it as a new run, its claims are checked and argued, and the editor revises the answer.
+   */
+  async followUp(): Promise<Review> {
+    this.#dispatch({ type: "follow-up-started", at: this.#clock.now() });
+    return this.#onwards();
+  }
+
+  /** Research: the editor revises the answer after the user struck or restored claims, and the answer is written again. */
+  async revise(): Promise<Review> {
+    this.#dispatch({ type: "revision-started", at: this.#clock.now() });
+    if (!(await this.#answer(PROFILES[this.#review.profile], false))) return this.#review;
+    return this.#conclude();
+  }
+
   /** Whatever is left from where the review is: the independent reviews still to do, the deliberation, the verdict. */
   async #onwards(): Promise<Review> {
+    if (this.#review.research) return this.#researchOnwards();
     const profile = PROFILES[this.#review.profile];
     if (this.#review.phase === "independent-review") {
       const now = this.#review;
@@ -273,8 +369,105 @@ export class ReviewSession {
   }
 
   #conclude(): Review {
-    this.#dispatch({ type: "concluded", at: this.#clock.now(), summary: verdictSummary(this.#review) });
+    const summary = this.#review.research ? researchSummary(this.#review) : verdictSummary(this.#review);
+    this.#dispatch({ type: "concluded", at: this.#clock.now(), summary });
     return this.#review;
+  }
+
+  /**
+   * Research, from where the council is: the seats' research still to do; the deliberation (the grouping turn, the
+   * source check, the rounds), which a council with fewer than two seats done or no claims skips; the synthesis, which
+   * settles the run's claims; and the answer, drafted, checked, revised and written.
+   */
+  async #researchOnwards(): Promise<Review> {
+    const profile = PROFILES[this.#review.profile];
+    const signal = this.#abort.signal;
+    if (this.#review.phase === "independent-review") {
+      const now = this.#review;
+      for (const reviewer of seatedReviewers(now).filter((each) => each.status === "waiting")) this.#startReviewing({ review: now, reviewer, profile });
+      while (this.#reviewing.size > 0) await Promise.all([...this.#reviewing]);
+      if (!isRunning(this.#review)) return this.#review;
+      const finished = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "completed");
+      if (finished.length === 0) return this.#conclude();
+      const deliberates = finished.length >= 2 && currentClaims(this.#review).length > 0;
+      this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds: deliberates ? this.#review.deliberationRounds : 0 });
+    }
+    if (this.#review.phase === "deliberation") {
+      if (this.#review.rounds > 0 && this.#review.round === 0) {
+        if (!this.#review.duplicatesChecked) await this.#group(profile);
+        if (signal.aborted) return this.#review;
+        if (!this.#review.research!.sourcesChecked) await this.#checkSources(profile);
+        if (signal.aborted) return this.#review;
+      }
+      if (!(await this.#rounds(profile))) return this.#review;
+      this.#dispatch({ type: "synthesis-started", at: this.#clock.now() });
+    }
+    for (const claim of currentClaims(this.#review)) {
+      try {
+        await this.#clock.sleep(SYNTHESIS_PAUSE_MS, signal);
+      } catch {
+        return this.#review;
+      }
+      const settlement = settleClaim(this.#review, claimById(this.#review, claim.id)!);
+      if (settlement) this.#dispatch({ type: "claim-resolved", at: this.#clock.now(), claimId: claim.id, ...settlement });
+    }
+    if (!(await this.#answer(profile, true))) return this.#review;
+    return this.#conclude();
+  }
+
+  /** Research: each seat checks the sources it was given (`assignSourceChecks`), all at once; then the check is over. */
+  async #checkSources(profile: ReviewProfile) {
+    const signal = this.#abort.signal;
+    const review = this.#review;
+    const assignments = assignSourceChecks(review);
+    await Promise.all(
+      [...assignments].map(([reviewerId, claimIds]) => {
+        const reviewer = review.reviewers.find(({ id }) => id === reviewerId)!;
+        return this.#aside(reviewerId, "checking sources", () => this.#runner.checkSources!({ review, reviewer, profile, claimIds }, this.#reporter(reviewerId), signal));
+      }),
+    );
+    if (!signal.aborted) this.#dispatch({ type: "sources-checked", at: this.#clock.now() });
+  }
+
+  /**
+   * Research: the editor drafts the answer; with `check`, every other seat still sitting checks the draft, and the
+   * editor revises it once when anyone objected or the draft has problems. The answer is then written. False when the
+   * council was stopped on the way. With no editor left (every seat failed), nothing is drafted.
+   */
+  async #answer(profile: ReviewProfile, check: boolean): Promise<boolean> {
+    const signal = this.#abort.signal;
+    const editor = editorOf(this.#review);
+    if (!editor) return !signal.aborted;
+    const pass = () => this.#review.research!.pass;
+    const latest = () => this.#review.research!.drafts.filter((draft) => draft.pass === pass()).at(-1) ?? null;
+    const draft = async (objections: DraftObjection[]) => {
+      const previous = latest() ?? this.#review.research!.drafts.at(-1) ?? null;
+      const revision = this.#review.research!.drafts.filter((each) => each.pass === pass()).length;
+      const job: DraftJob = { review: this.#review, reviewer: editor, profile, revision, previous, objections, problems: previous?.problems ?? [] };
+      await this.#aside(editor.id, revision === 0 ? "drafting the answer" : "revising the answer", () => this.#runner.draft!(job, this.#reporter(editor.id), signal));
+    };
+    await draft([]);
+    if (signal.aborted) return false;
+    const first = latest();
+    if (check && first) {
+      const checkers = seatedReviewers(this.#review).filter((reviewer) => reviewer.status === "deliberating" && reviewer.id !== editor.id);
+      const table = this.#review;
+      await Promise.all(checkers.map((reviewer) => this.#aside(reviewer.id, "checking the draft", () => this.#runner.checkDraft!({ review: table, reviewer, profile, draft: first }, this.#reporter(reviewer.id), signal))));
+      if (signal.aborted) return false;
+      const objections = this.#review.research!.objections.filter((objection) => objection.pass === pass() && objection.revision === first.revision);
+      if (objections.length > 0 || first.problems.length > 0) await draft(objections);
+      if (signal.aborted) return false;
+    }
+    if (latest() && this.#writeAnswer) {
+      try {
+        const written = await this.#writeAnswer(this.#review);
+        this.#dispatch({ type: "answer-written", at: this.#clock.now(), ...written });
+      } catch (error) {
+        const problem = error instanceof Error ? error.message : String(error);
+        this.#dispatch({ type: "activity", reviewerId: editor.id, at: this.#clock.now(), kind: "error", text: `Couldn't write the answer: ${problem}` });
+      }
+    }
+    return !signal.aborted;
   }
 
   #startReviewing(job: ReviewerJob) {
@@ -282,11 +475,9 @@ export class ReviewSession {
     this.#reviewing.add(work);
   }
 
-  /** The rounds (from where they got to, on a resumed review) and the synthesis; false when the review was stopped on the way. */
-  async #deliberate(profile: ReviewProfile): Promise<boolean> {
+  /** The rounds, from where they got to on a resumed review; false when the review was stopped on the way. */
+  async #rounds(profile: ReviewProfile): Promise<boolean> {
     const signal = this.#abort.signal;
-    if (this.#review.phase !== "deliberation") this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds: this.#review.deliberationRounds });
-    if (this.#review.round === 0 && !this.#review.duplicatesChecked) await this.#group(profile);
     const rounds = this.#review.rounds;
     for (let round = this.#review.round + 1; round <= rounds; round++) {
       if (signal.aborted) return false;
@@ -296,7 +487,15 @@ export class ReviewSession {
       if (sitting.length === 0) break;
       await Promise.all(sitting.map((reviewer) => this.#deliberateOne({ review: table, reviewer, profile, round, rounds })));
     }
-    if (signal.aborted) return false;
+    return !signal.aborted;
+  }
+
+  /** The rounds (from where they got to, on a resumed review) and the synthesis; false when the review was stopped on the way. */
+  async #deliberate(profile: ReviewProfile): Promise<boolean> {
+    const signal = this.#abort.signal;
+    if (this.#review.phase !== "deliberation") this.#dispatch({ type: "deliberation-started", at: this.#clock.now(), rounds: this.#review.deliberationRounds });
+    if (this.#review.round === 0 && !this.#review.duplicatesChecked) await this.#group(profile);
+    if (!(await this.#rounds(profile))) return false;
     this.#dispatch({ type: "synthesis-started", at: this.#clock.now() });
     for (const { id } of this.#review.findings) {
       try {
@@ -334,7 +533,8 @@ export class ReviewSession {
     const signal = this.#abort.signal;
     const review = this.#review;
     const runner = this.#runner;
-    if (!runner.group || review.findings.length < 2) return;
+    const items = review.research ? currentClaims(review).length : review.findings.length;
+    if (!runner.group || items < 2) return;
     const grouper = seatedReviewers(review).find((reviewer) => reviewer.status === "deliberating" && isProfileAgent(reviewer.agent));
     if (!grouper) return;
     await this.#aside(grouper.id, "grouping duplicate findings", () => runner.group!({ review, reviewer: grouper, profile }, this.#reporter(grouper.id), signal));
@@ -406,7 +606,9 @@ export class ReviewSession {
           const parsed = argumentInputSchema.safeParse(report.argument);
           if (!parsed.success) return rejected("argument", problemsOf(parsed.error));
           const { findingId, replyTo } = parsed.data;
-          if (!this.#review.findings.some(({ id }) => id === findingId)) return rejected("argument", `there is no finding ${findingId}`);
+          if (this.#review.research) {
+            if (!currentClaims(this.#review).some(({ id }) => id === findingId)) return rejected("argument", `there is no claim ${findingId} in this run`);
+          } else if (!this.#review.findings.some(({ id }) => id === findingId)) return rejected("argument", `there is no finding ${findingId}`);
           if (replyTo !== undefined && !this.#review.arguments.some(({ id }) => id === replyTo)) return rejected("argument", `there is no argument ${replyTo}`);
           this.#dispatch({ type: "argued", reviewerId, at: at(), argument: parsed.data });
           return;
@@ -420,6 +622,19 @@ export class ReviewSession {
           return;
         }
         case "duplicates-grouped": {
+          if (this.#review.research) {
+            const parsed = claimGroupInputSchema.safeParse(report.group);
+            if (!parsed.success) return rejected("group", problemsOf(parsed.error));
+            const review = this.#review;
+            if (review.phase !== "deliberation" || review.round !== 0) return rejected("group", "claims are grouped before the first round");
+            const current = currentClaims(review);
+            // An id merged earlier no longer names a claim; the rest of the group still merges.
+            const group = [...new Set(parsed.data.claimIds)].map((id) => current.find((claim) => claim.id === id)).filter((claim) => claim !== undefined);
+            if (group.length < 2) return;
+            const [keeper, ...merged] = group.sort((a, b) => a.reportedAt - b.reportedAt || Number(a.id.slice(1)) - Number(b.id.slice(1)));
+            this.#dispatch({ type: "claims-merged", at: at(), into: keeper!.id, merged: merged.map(({ id }) => id), by: reviewerId, reason: parsed.data.reason });
+            return;
+          }
           const parsed = duplicateGroupInputSchema.safeParse(report.group);
           if (!parsed.success) return rejected("group", problemsOf(parsed.error));
           const review = this.#review;
@@ -432,6 +647,34 @@ export class ReviewSession {
           const keeper = keeperOf(review, group);
           const merged = group.filter((finding) => finding !== keeper).map(({ id }) => id);
           this.#dispatch({ type: "findings-merged", at: at(), into: keeper.id, merged, by: reviewerId, reason: parsed.data.reason });
+          return;
+        }
+        case "claim-reported": {
+          const parsed = claimInputSchema.safeParse(report.claim);
+          if (parsed.success) this.#dispatch({ type: "claim-reported", reviewerId, at: at(), claim: parsed.data });
+          else rejected("claim", problemsOf(parsed.error));
+          return;
+        }
+        case "source-checked": {
+          const parsed = sourceCheckInputSchema.safeParse(report.check);
+          if (!parsed.success) return rejected("source check", problemsOf(parsed.error));
+          const claim = claimById(this.#review, parsed.data.claimId);
+          if (!claim || claim.pass !== this.#review.research?.pass) return rejected("source check", `there is no claim ${parsed.data.claimId} in this run`);
+          if (!claim.sources[parsed.data.source - 1]) return rejected("source check", `${claim.id} has no source ${parsed.data.source}`);
+          this.#dispatch({ type: "source-checked", reviewerId, at: at(), check: parsed.data });
+          return;
+        }
+        case "answer-drafted": {
+          if (typeof report.markdown !== "string" || !report.markdown.trim()) return rejected("answer", "it is empty");
+          const markdown = report.markdown.trim();
+          this.#dispatch({ type: "answer-drafted", reviewerId, at: at(), markdown, problems: draftProblems(this.#review, markdown) });
+          return;
+        }
+        case "draft-objected": {
+          const parsed = draftObjectionInputSchema.safeParse(report.objection);
+          if (!parsed.success) return rejected("objection", problemsOf(parsed.error));
+          if (parsed.data.claimId !== undefined && !claimById(this.#review, parsed.data.claimId)) return rejected("objection", `there is no claim ${parsed.data.claimId}`);
+          this.#dispatch({ type: "draft-objected", reviewerId, at: at(), objection: parsed.data });
           return;
         }
         case "fix-checked": {
@@ -466,6 +709,12 @@ export class ReviewSession {
     await this.#attempt(
       reviewerId,
       async () => {
+        if (this.#review.research) {
+          await researchTurn(this.#runner, "research")(job, this.#reporter(reviewerId), this.#abort.signal);
+          const dropped = claimsOverLimit(this.#review, reviewerId);
+          if (dropped.length > 0 && !this.#abort.signal.aborted) this.#dispatch({ type: "claims-capped", reviewerId, at: this.#clock.now(), claimIds: dropped });
+          return;
+        }
         await this.#runner.run(job, this.#reporter(reviewerId), this.#abort.signal);
         // Past the limit, only the most severe count.
         const dropped = overLimit(this.#review, reviewerId);

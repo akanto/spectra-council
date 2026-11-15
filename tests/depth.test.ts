@@ -8,13 +8,13 @@ import { ReviewSession, type ReviewerRunner } from "../core/engine.ts";
 import { REVIEW_FORMAT, type Review } from "../core/model.ts";
 import { MockRunner, mockScript } from "../core/mock-runner.ts";
 import { PROFILES } from "../core/profiles.ts";
-import { newReview, reduce, ReviewError, setupOf, upgradeReview } from "../core/review.ts";
+import { newReview, reduce, ReviewError, setupOf, upgradeReview, type NewSetup } from "../core/review.ts";
 import { setupPatchSchema, viewActionSchema, type FindingInput, type Setup } from "../core/schemas.ts";
 import { createCouncilHost } from "../hosts/mirador/host.ts";
 import { FakeCanvas, FakeClock, FILES } from "./support.ts";
 
 const seats3 = ["mock-claude", "mock-codex", "mock-gemini"].map((agent) => ({ agent, enabled: true }));
-const setup = (extra: Partial<Setup> = {}): Setup => ({ target: "/repo", profile: "code", depth: "standard", instructions: "", seats: seats3, ...extra });
+const setup = (extra: Partial<Setup> = {}): NewSetup => ({ target: "/repo", profile: "code", depth: "standard", instructions: "", seats: seats3, ...extra });
 const fresh = (extra: Partial<Setup> = {}) => newReview("rev1", setup(extra), "mock", 0);
 
 const finding = (title: string, severity: FindingInput["severity"] = "medium", confidence: FindingInput["confidence"] = "high"): FindingInput => ({
@@ -113,7 +113,7 @@ describe("newReview and configured", () => {
 
 describe("schemas", () => {
   test("setupPatchSchema and viewActionSchema refuse knobs out of range", () => {
-    for (const patch of [{ deliberationRounds: 0 }, { deliberationRounds: 7 }, { maxFindings: 0 }, { maxFindings: 21 }, { deliberationRounds: 1.5 }, { maxFindings: 2.5 }]) {
+    for (const patch of [{ deliberationRounds: 0 }, { deliberationRounds: 7 }, { maxFindings: 0 }, { maxFindings: 101 }, { deliberationRounds: 1.5 }, { maxFindings: 2.5 }]) {
       expect(setupPatchSchema.safeParse(patch).success).toBe(false);
       expect(viewActionSchema.safeParse({ kind: "configure", patch }).success).toBe(false);
     }
@@ -121,6 +121,15 @@ describe("schemas", () => {
       expect(setupPatchSchema.safeParse(patch).success).toBe(true);
       expect(viewActionSchema.safeParse({ kind: "configure", patch }).success).toBe(true);
     }
+  });
+
+  test("a review holds the most findings to 20, a research council its claims to 100", () => {
+    expect(() => reduce(fresh(), { type: "configured", patch: { maxFindings: 21 } })).toThrow(ReviewError);
+    expect(() => newReview("rev2", setup({ maxFindings: 21 }), "mock", 0)).toThrow(ReviewError);
+    const research = newReview("rev3", setup({ kind: "research", brief: "/repo/brief.md" }), "mock", 0);
+    expect(research).toMatchObject({ deliberationRounds: 2, maxFindings: 30, depth: "standard" });
+    expect(reduce(research, { type: "configured", patch: { maxFindings: 100 } }).maxFindings).toBe(100);
+    expect(reduce(research, { type: "configured", patch: { depth: "deep" } })).toMatchObject({ deliberationRounds: 3, maxFindings: 60, depth: "deep" });
   });
 });
 
@@ -131,12 +140,12 @@ describe("upgradeReview", () => {
   };
 
   test("the format is 8", () => {
-    expect(REVIEW_FORMAT).toBe(8);
+    expect(REVIEW_FORMAT).toBe(9);
   });
 
   test("a format 7 review gets its depth preset's knobs", () => {
     const upgraded = upgradeReview(stored({}));
-    expect(upgraded).toMatchObject({ format: 8, depth: "deep", deliberationRounds: 4, maxFindings: 10 });
+    expect(upgraded).toMatchObject({ format: 9, depth: "deep", deliberationRounds: 4, maxFindings: 10 });
     expect(upgradeReview(stored({ depth: "quick" }))).toMatchObject({ deliberationRounds: 2, maxFindings: 3 });
   });
 

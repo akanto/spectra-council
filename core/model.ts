@@ -3,11 +3,11 @@
  * so any host (Mirador's canvas, a standalone app) can store, replay and draw it the same way.
  */
 import type { DepthChoice } from "./depth.ts";
-import type { Confidence, Decision, Evidence, ProfileId, Severity, Stance } from "./schemas.ts";
+import type { ClaimDecision, ClaimKind, Confidence, CouncilKind, Decision, Evidence, ProfileId, ReadDepth, Severity, SourceInput, SourceOutcome, Stance } from "./schemas.ts";
 
-export type { Decision, Stance };
+export type { ClaimDecision, ClaimKind, CouncilKind, Decision, ReadDepth, SourceOutcome, Stance };
 
-export const REVIEW_FORMAT = 8;
+export const REVIEW_FORMAT = 9;
 
 /**
  * Where a review is: set up, reviewed independently, deliberated in rounds, synthesised into a verdict, and ended. After
@@ -75,6 +75,8 @@ export interface Reviewer {
    * own (and for a mock, and in reviews from before seats could choose).
    */
   choice?: SeatChoice;
+  /** A research seat's lean, as the user gave it in the setup ("RQ4, database venues"); absent for none. */
+  focus?: string;
   /** False for a seat that takes no part: one the user removed after it failed, or an unseated seat of an older review. */
   enabled: boolean;
   status: ReviewerStatus;
@@ -322,6 +324,8 @@ export type RunnerKind = "mock" | "mirador" | "mixed";
 export interface Review {
   format: typeof REVIEW_FORMAT;
   id: string;
+  /** What the council does: review the target, or research a brief and answer it. Reviews stored before format 9 are reviews. */
+  kind: CouncilKind;
   target: string;
   profile: ProfileId;
   /** The preset the knobs match, or "custom". */
@@ -366,13 +370,24 @@ export interface Review {
   duplicatesChecked: boolean;
   /** What the user asked the agent about the accepted findings, oldest first; absent in reviews from before asks. */
   asks?: Ask[];
+  /** A research council's own state (its claims and answer); absent on a review. */
+  research?: Research;
+}
+
+/** What the deliberation argues over and the synthesis settles: a review's finding, or a research council's claim. */
+export interface Debated {
+  id: string;
+  reviewerId: string;
+  confidence: Confidence;
+  positions: Position[];
+  alsoReported: { reviewerId: string }[];
 }
 
 /** The phases a review cut short by a restart can resume in. (A cut-short re-check just ends; it can be run again.) */
 export type ResumablePhase = "independent-review" | "deliberation" | "synthesis";
 
 /** Who reported a finding: its reporter first, then whoever's report of it was merged in. */
-export const reportersOf = (finding: Finding): string[] => [...new Set([finding.reviewerId, ...finding.alsoReported.map((report) => report.reviewerId)])];
+export const reportersOf = (finding: Pick<Debated, "reviewerId" | "alsoReported">): string[] => [...new Set([finding.reviewerId, ...finding.alsoReported.map((report) => report.reviewerId)])];
 
 export const isResumable = (review: Review) => review.phase === "interrupted" && review.interruptedPhase !== null;
 
@@ -400,3 +415,150 @@ export const isStanding = (finding: Finding) => finding.status === "agreed" || f
  */
 export const isRulable = (review: Review, finding: Finding) => isStanding(finding) ||
   (finding.status === "reported" && (review.rounds === 0 || finding.late === true) && (review.phase === "complete" || review.phase === "verification"));
+
+/*
+ * Research councils (docs/research.md). The seats research a brief on their own and report claims; the claims are merged,
+ * their sources checked by seats that didn't report them, and argued in rounds as findings are; the synthesis settles
+ * each claim, and an editor seat writes one answer from the claims that stand, which the plugin writes to a file.
+ */
+
+/** What the council made of a claim: a finding's statuses, plus `unverified` for a fact none of whose sources passed the check. */
+export type ClaimStatus = FindingStatus | "unverified";
+
+/** One seat's check of a source: whether it says what the claim quotes it saying. */
+export interface SourceCheck {
+  reviewerId: string;
+  outcome: SourceOutcome;
+  /** What the checker did and saw, in a sentence or two. */
+  note: string;
+  at: number;
+}
+
+/** A source a claim rests on, as its reporter gave it, with the checks other seats made of it. */
+export interface Source extends SourceInput {
+  checks: SourceCheck[];
+}
+
+/** How the synthesis settled a claim: a finding's statuses, or `unverified` for a fact no checked source bears out. */
+export interface ClaimResolution extends Omit<Resolution, "status"> {
+  status: Exclude<ClaimStatus, "reported">;
+}
+
+/** Another seat's report of the same claim, merged into it after the research. */
+export interface ClaimCoReport {
+  reviewerId: string;
+  /** The id it was reported under, which no longer names a claim of its own. */
+  claimId: string;
+  title: string;
+  mergedBy?: string;
+  reason?: string;
+}
+
+/** The user's ruling on a claim: keep it, or strike it from the answer. */
+export interface ClaimRuling {
+  decision: ClaimDecision;
+  note: string;
+  at: number;
+}
+
+/**
+ * One atomic, sourced statement a seat reports: a published `fact`, the seat's own `inference`, or a `gap` (what it
+ * searched for and didn't find). Argued over in the rounds like a finding (`Argument.findingId` names the claim).
+ */
+export interface Claim {
+  /** "C1", "C2", … across the council, in the order they came in. */
+  id: string;
+  reviewerId: string;
+  /** The run it came in: 0 for the first, n for the nth follow-up. */
+  pass: number;
+  /** The brief's research question it answers ("RQ1"), or "" when the brief numbers none. */
+  rq: string;
+  kind: ClaimKind;
+  /** The claim in a few words. */
+  title: string;
+  /** The claim in full (Markdown). */
+  text: string;
+  confidence: Confidence;
+  /** Fields the brief asks for on each record ("DICOM level": "series"); empty when it asks for none. */
+  fields: Record<string, string>;
+  sources: Source[];
+  status: ClaimStatus;
+  reportedAt: number;
+  positions: Position[];
+  resolution: ClaimResolution | null;
+  alsoReported: ClaimCoReport[];
+  ruling: ClaimRuling | null;
+}
+
+/** One draft of the answer by the editor: the first of a run, its revision after the council's check, or one after strikes. */
+export interface AnswerDraft {
+  editorId: string;
+  /** The run it answers (the research's `pass` then). */
+  pass: number;
+  /** 0 for a run's first draft, then 1, 2, … for each revision. */
+  revision: number;
+  markdown: string;
+  /** What the plugin found wrong with it: claim ids cited that don't exist or don't stand. Empty when none. */
+  problems: string[];
+  at: number;
+}
+
+/** A seat's objection to a sentence of a draft, in the council's check of it. */
+export interface DraftObjection {
+  /** "O1", "O2", … across the council. */
+  id: string;
+  reviewerId: string;
+  pass: number;
+  /** The revision objected to. */
+  revision: number;
+  /** The claim the sentence misstates, if one. */
+  claimId?: string;
+  /** The sentence objected to, quoted from the draft. */
+  excerpt: string;
+  problem: string;
+  at: number;
+}
+
+/** A question the user sent the council back with, after an answer. */
+export interface FollowUp {
+  question: string;
+  at: number;
+  /** The run that researches it: the research's `pass` once it starts. */
+  pass: number;
+  /** When its run started; null while it waits for a start. */
+  startedAt: number | null;
+}
+
+export interface Research {
+  /** The brief's absolute path; empty until a question typed in the setup is saved as one, at the start. */
+  brief: string;
+  /** A question typed in the setup, for a council without a brief file; saved as the brief at the start. */
+  question: string;
+  /** Where the answer goes (absolute); empty for the default, `<brief name>-answer.md` beside the brief. */
+  answerFile: string;
+  /** The seat that writes the answer, "r1" by default. */
+  editor: string;
+  claims: Claim[];
+  /** How many claim ids were given out, C1 to C<n>. */
+  claimsIssued: number;
+  /** The current run: 0 for the first, n for the nth follow-up. */
+  pass: number;
+  followUps: FollowUp[];
+  /** Whether the current run's sources were checked (the check turn at the start of its deliberation). */
+  sourcesChecked: boolean;
+  drafts: AnswerDraft[];
+  objections: DraftObjection[];
+  /** The answer file as last written: where, when, and a digest of what. */
+  written: { path: string; at: number; digest: string } | null;
+  /** The user kept or struck a claim since the latest draft: the editor should revise the answer. */
+  revisionDue: boolean;
+}
+
+/** The claims a research council has, or none on a review. */
+export const claimsOf = (review: Review): Claim[] => review.research?.claims ?? [];
+
+/** Who reported a claim: its reporter first, then whoever's report of it was merged in. */
+export const claimReportersOf = (claim: Claim): string[] => [...new Set([claim.reviewerId, ...claim.alsoReported.map((report) => report.reviewerId)])];
+
+/** A claim that stands after the synthesis and isn't struck: the answer may state it. Unverified ones go among the leads only. */
+export const isClaimStanding = (claim: Claim) => (claim.status === "agreed" || claim.status === "confirmed" || claim.status === "disputed") && claim.ruling?.decision !== "struck";

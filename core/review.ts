@@ -12,7 +12,7 @@
  */
 import { agentLabel, choiceOf, isRunnableAgent, runnerKindOf, sameChoice, seatOf, withLabels } from "./agents.ts";
 import { verdictSummary } from "./deliberation.ts";
-import { DEPTH_PRESETS, depthOf, overLimit, type DepthChoice, type Knobs } from "./depth.ts";
+import { DEPTH_PRESETS, depthOf, knobsProblem, overLimit, presetsOf, type DepthChoice, type Knobs } from "./depth.ts";
 import {
   MAX_ACTIVITY,
   REVIEW_FORMAT,
@@ -23,6 +23,11 @@ import {
   type ActivityKind,
   type Argument,
   type Ask,
+  type Claim,
+  type ClaimDecision,
+  type ClaimStatus,
+  type Debated,
+  type Research,
   type CoReport,
   type Decision,
   type Dissent,
@@ -36,7 +41,21 @@ import {
   type RunnerKind,
   type Stance,
 } from "./model.ts";
-import { SEVERITIES, type ArgumentInput, type Evidence, type FindingInput, type FixCheckInput, type ProposalInput, type Seat, type Setup, type SetupPatch } from "./schemas.ts";
+import { currentClaims } from "./research.ts";
+import {
+  SEVERITIES,
+  type ArgumentInput,
+  type ClaimInput,
+  type DraftObjectionInput,
+  type Evidence,
+  type FindingInput,
+  type FixCheckInput,
+  type ProposalInput,
+  type Seat,
+  type Setup,
+  type SetupPatch,
+  type SourceCheckInput,
+} from "./schemas.ts";
 
 export type ReviewerOutcome = "completed" | "failed" | "stopped";
 
@@ -51,6 +70,14 @@ export type ReviewerEvent =
   | { type: "fix-proposed"; reviewerId: string; at: number; proposal: ProposalInput }
   /** A re-check of a fixed finding, in a verification round. */
   | { type: "fix-checked"; reviewerId: string; at: number; check: FixCheckInput }
+  /** Research: a claim a seat reports in its own research of the brief (or of the follow-up question). */
+  | { type: "claim-reported"; reviewerId: string; at: number; claim: ClaimInput }
+  /** Research: a seat's check of a source of a claim it was given to check, at the start of the deliberation. */
+  | { type: "source-checked"; reviewerId: string; at: number; check: SourceCheckInput }
+  /** Research: the editor's draft of the answer, with what the plugin found wrong with it (`draftProblems`). */
+  | { type: "answer-drafted"; reviewerId: string; at: number; markdown: string; problems: string[] }
+  /** Research: a seat's objection to a sentence of the latest draft, in the council's check of it. */
+  | { type: "draft-objected"; reviewerId: string; at: number; objection: DraftObjectionInput }
   | { type: "reviewer-finished"; reviewerId: string; at: number; outcome: ReviewerOutcome; problem?: string };
 
 /**
@@ -163,6 +190,24 @@ export type ReviewEvent =
   | { type: "stopped"; at: number }
   /** The host lost the run, as when Mirador restarted while it went on. */
   | { type: "interrupted"; at: number }
+  /** Research: a researcher's claims past the limit (`maxFindings`), the least telling, are dropped. */
+  | { type: "claims-capped"; reviewerId: string; at: number; claimIds: string[] }
+  /** Research: claims that state the same thing merge into `into`, by the grouping turn's agent (`by`). */
+  | { type: "claims-merged"; at: number; into: string; merged: string[]; by?: string; reason?: string }
+  /** Research: the source check at the start of the deliberation is over. */
+  | { type: "sources-checked"; at: number }
+  /** Research: the synthesis settles a claim of the current run. */
+  | { type: "claim-resolved"; at: number; claimId: string; status: Exclude<ClaimStatus, "reported">; rationale: string; dissenters: string[]; dissent?: Dissent[] }
+  /** Research: the plugin wrote the answer (the latest draft and the ledger) to `path`. */
+  | { type: "answer-written"; at: number; path: string; digest: string }
+  /** Research: the user sends the council back with a question; it waits for a start (`follow-up-started`). */
+  | { type: "follow-up-asked"; at: number; question: string }
+  /** Research: the waiting follow-up's run starts: the seats that completed research it, as a new run. */
+  | { type: "follow-up-started"; at: number }
+  /** Research: the user keeps or strikes a claim (null clears it); a change to what the answer may state makes a revision due. */
+  | { type: "claim-ruled"; at: number; claimId: string; decision: ClaimDecision | null; note: string }
+  /** Research: the editor revises the answer after the user's rulings; the council is back in its synthesis till it's written. */
+  | { type: "revision-started"; at: number }
   /** The host's agent was told how the review ended. */
   | { type: "agent-heard"; at: number }
   /** The telling was lost before it reached the agent: the ended note may carry the review again. */
@@ -190,6 +235,7 @@ export class ReviewError extends Error {}
  * ruled on, handed off, ticketed, asked about or re-checked its findings since.
  */
 export function whyNoReopen(review: Review): string | null {
+  if (review.research) return "A research council doesn't reopen; send it back with a follow-up.";
   if (review.phase !== "complete") return `Only a complete review reopens; this one is ${review.phase}.`;
   if (review.rounds > 0) return "The council deliberated this review already.";
   const touched = review.verifications > 0 || review.handoff !== null || (review.asks?.length ?? 0) > 0 || review.findings.some((finding) => finding.ruling || finding.fix || finding.ticket);
@@ -215,6 +261,7 @@ const reviewerOf = (seat: Seat, index: number): Reviewer => {
     label: agentLabel(seat.agent),
     model: null,
     ...(choice ? { choice } : {}),
+    ...(seat.focus ? { focus: seat.focus } : {}),
     enabled: seat.enabled,
     status: "idle",
     current: null,
@@ -227,19 +274,48 @@ const reviewerOf = (seat: Seat, index: number): Reviewer => {
 };
 
 /** The knobs a setup asks for: its depth preset's, with any knob it sets itself. */
-const knobsOf = (setup: Pick<Setup, "depth" | "deliberationRounds" | "maxFindings">): Knobs => ({
-  deliberationRounds: setup.deliberationRounds ?? DEPTH_PRESETS[setup.depth].deliberationRounds,
-  maxFindings: setup.maxFindings ?? DEPTH_PRESETS[setup.depth].maxFindings,
+const knobsOf = (setup: Pick<Setup, "depth" | "deliberationRounds" | "maxFindings" | "kind">): Knobs => ({
+  deliberationRounds: setup.deliberationRounds ?? presetsOf(setup.kind)[setup.depth].deliberationRounds,
+  maxFindings: setup.maxFindings ?? presetsOf(setup.kind)[setup.depth].maxFindings,
 });
 
-export function newReview(id: string, setup: Setup, runner: RunnerKind, at: number): Review {
+/** A research council's state before its start. */
+const newResearch = (setup: Pick<Setup, "brief" | "question" | "answerFile" | "editor">): Research => ({
+  brief: setup.brief,
+  question: setup.question,
+  answerFile: setup.answerFile,
+  editor: setup.editor,
+  claims: [],
+  claimsIssued: 0,
+  pass: 0,
+  followUps: [],
+  sourcesChecked: false,
+  drafts: [],
+  objections: [],
+  written: null,
+  revisionDue: false,
+});
+
+/** The research fields of a setup, which a review's setup may leave out. */
+type ResearchSetup = "kind" | "brief" | "question" | "answerFile" | "editor";
+
+/** A setup as a caller gives it: a review's may leave out the kind (a review) and the research fields. */
+export type NewSetup = Omit<Setup, ResearchSetup> & Partial<Pick<Setup, ResearchSetup>>;
+
+/** Throws, saying why, when a setup's knobs don't fit its kind of council. */
+export function newReview(id: string, given: NewSetup, runner: RunnerKind, at: number): Review {
+  const setup: Setup = { kind: "review", brief: "", question: "", answerFile: "", editor: "r1", ...given };
   const knobs = knobsOf(setup);
+  const problem = knobsProblem(setup.kind, knobs);
+  if (problem) throw new ReviewError(problem);
   return {
     format: REVIEW_FORMAT,
     id,
+    kind: setup.kind,
+    ...(setup.kind === "research" ? { research: newResearch(setup) } : {}),
     target: setup.target,
     profile: setup.profile,
-    depth: depthOf(knobs),
+    depth: depthOf(knobs, setup.kind),
     ...knobs,
     instructions: setup.instructions,
     runner,
@@ -279,6 +355,8 @@ export function upgradeReview(stored: Review): Review {
   return {
     ...old,
     format: REVIEW_FORMAT,
+    // Format 8 and before knew only reviews.
+    kind: (old as Partial<Review>).kind ?? "review",
     reviewers: old.reviewers.map((reviewer) => ({ ...reviewer, model: (reviewer as Partial<Reviewer>).model ?? null })),
     findings: old.findings.map(
       (finding) =>
@@ -325,7 +403,35 @@ export const setupOf = (review: Review): SetupState => ({
   maxFindings: review.maxFindings,
   instructions: review.instructions,
   seats: review.reviewers.map(seatOf),
+  kind: review.kind,
+  brief: review.research?.brief ?? "",
+  question: review.research?.question ?? "",
+  answerFile: review.research?.answerFile ?? "",
+  editor: review.research?.editor ?? "r1",
 });
+
+const withResearch = (review: Review, update: (research: Research) => Research): Review => {
+  if (!review.research) throw new ReviewError("This council researches nothing; it is a review.");
+  return { ...review, research: update(review.research) };
+};
+
+const updateClaim = (review: Review, claimId: string, update: (claim: Claim) => Claim): Review =>
+  withResearch(review, (research) => ({ ...research, claims: research.claims.map((claim) => (claim.id === claimId ? update(claim) : claim)) }));
+
+const claimOf = (review: Review, claimId: string): Claim => {
+  const claim = review.research?.claims.find(({ id }) => id === claimId);
+  if (!claim) throw new ReviewError(`There is no claim ${claimId}.`);
+  return claim;
+};
+
+/** A research council's claims of the current run with their positions from these arguments, as `positionsFrom` gives a finding's. */
+const claimsPositioned = (review: Review, args: Argument[], at: number): Review =>
+  !review.research
+    ? review
+    : withResearch(review, (research) => ({
+        ...research,
+        claims: research.claims.map((claim) => (claim.pass === research.pass ? { ...claim, positions: positionsFrom(review, claim, args, at) } : claim)),
+      }));
 
 const updateReviewer = (review: Review, reviewerId: string, update: (reviewer: Reviewer) => Reviewer): Review => ({
   ...review,
@@ -359,7 +465,7 @@ const deliberatingSay = (review: Review, current: string): Reviewer[] =>
  * Each seated reviewer's position on a finding, from its latest argument; the reporter and co-reporters back it from
  * round 0. A reviewer the user removed has none.
  */
-function positionsFrom(review: Review, finding: Finding, args: Argument[], at: number): Position[] {
+function positionsFrom(review: Review, finding: Debated, args: Argument[], at: number): Position[] {
   const positions = new Map<string, Position>();
   for (const reviewerId of [finding.reviewerId, ...finding.alsoReported.map((report) => report.reviewerId)]) {
     if (!positions.has(reviewerId)) positions.set(reviewerId, { reviewerId, stance: "supports", confidence: finding.confidence, round: 0, at });
@@ -406,9 +512,9 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
   switch (event.type) {
     case "configured": {
       if (review.phase !== "setup") throw new ReviewError("The review has started; its setup can't change any more.");
-      const { seats, depth, deliberationRounds, maxFindings, ...rest } = event.patch;
+      const { seats, depth, deliberationRounds, maxFindings, brief, question, answerFile, editor, ...rest } = event.patch;
       // A preset sets both knobs; a knob set in the same patch wins; the depth is then whichever preset they match.
-      const preset = depth === undefined ? undefined : DEPTH_PRESETS[depth];
+      const preset = depth === undefined ? undefined : presetsOf(review.kind)[depth];
       const knobs: Knobs = {
         deliberationRounds: deliberationRounds ?? preset?.deliberationRounds ?? review.deliberationRounds,
         maxFindings: maxFindings ?? preset?.maxFindings ?? review.maxFindings,
@@ -423,7 +529,14 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
             }),
           )
         : review.reviewers;
-      return { ...review, ...rest, ...knobs, depth: depthOf(knobs), reviewers, runner: runnerKindOf(reviewers) };
+      const problem = knobsProblem(review.kind, knobs);
+      if (problem) throw new ReviewError(problem);
+      const researchPatch = { brief, question, answerFile, editor };
+      const research = review.research
+        ? { ...review.research, ...Object.fromEntries(Object.entries(researchPatch).filter(([, value]) => value !== undefined)) }
+        : undefined;
+      if (!research && Object.values(researchPatch).some((value) => value !== undefined)) throw new ReviewError("A review has no brief, question, answer file or editor; those are a research council's.");
+      return { ...review, ...rest, ...knobs, depth: depthOf(knobs, review.kind), reviewers, runner: runnerKindOf(reviewers), ...(research ? { research } : {}) };
     }
     case "model-seen": {
       const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
@@ -436,6 +549,10 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (seatedReviewers(review).length === 0) throw new ReviewError("Seat at least one reviewer before starting the review.");
       const unnamed = review.reviewers.flatMap((reviewer, index) => (reviewer.enabled && !isRunnableAgent(reviewer.agent) ? [index + 1] : []));
       if (unnamed.length > 0) throw new ReviewError(`Name the Mirador profile for reviewer ${unnamed.join(", ")} before starting the review.`);
+      if (review.research) {
+        if (!review.research.brief.trim() && !review.research.question.trim()) throw new ReviewError("Give the council a brief file or a question to research before starting it.");
+        if (!seatedReviewers(review).some((reviewer) => reviewer.id === review.research!.editor)) throw new ReviewError(`The editor, ${review.research.editor.toUpperCase()}, isn't a seat at the council; pick one that is.`);
+      }
       return {
         ...review,
         phase: "independent-review",
@@ -448,15 +565,19 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       if (seatedReviewers(review).some((reviewer) => reviewer.status === "waiting" || reviewer.status === "reviewing")) {
         throw new ReviewError("The deliberation can't start while reviewers are still reviewing.");
       }
-      if (event.rounds < 1) throw new ReviewError("A deliberation has at least one round.");
-      return {
+      // A research council goes on to its answer without rounds when fewer than two seats finished: rounds 0.
+      if (event.rounds < (review.research ? 0 : 1)) throw new ReviewError("A deliberation has at least one round.");
+      const deliberating: Review = {
         ...review,
         phase: "deliberation",
         round: 0,
         rounds: event.rounds,
-        reviewers: review.reviewers.map((reviewer) => (reviewer.enabled && reviewer.status === "completed" ? { ...reviewer, status: "deliberating", current: "Reading the other findings" } : reviewer)),
+        reviewers: review.reviewers.map((reviewer) =>
+          reviewer.enabled && reviewer.status === "completed" ? { ...reviewer, status: "deliberating", current: review.research ? "Reading the other claims" : "Reading the other findings" } : reviewer,
+        ),
         findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(review, finding, [], event.at) })),
       };
+      return claimsPositioned(deliberating, [], event.at);
     }
     case "round-started": {
       if (review.phase !== "deliberation") throw new ReviewError(`No round can start: the review is ${review.phase}.`);
@@ -677,7 +798,10 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
         startedAt: null,
         endedAt: null,
       }));
-      return { ...retried, findings: review.findings.filter((finding) => finding.reviewerId !== reviewer.id) };
+      const withoutFindings = { ...retried, findings: review.findings.filter((finding) => finding.reviewerId !== reviewer.id) };
+      return withoutFindings.research
+        ? withResearch(withoutFindings, (research) => ({ ...research, claims: research.claims.filter((claim) => !(claim.reviewerId === reviewer.id && claim.pass === research.pass)) }))
+        : withoutFindings;
     }
     case "findings-merged": {
       const grouping = review.phase === "deliberation" && review.round === 0;
@@ -740,11 +864,125 @@ function applyEvent(review: Review, event: ReviewEvent): Review {
       const removed = updateReviewer(review, reviewer.id, (it) => ({ ...withActivity(it, { at: event.at, kind: "status", text: "Removed from the council" }), enabled: false }));
       const unweighed = review.phase === "independent-review" || (review.phase === "interrupted" && review.interruptedPhase === "independent-review");
       const findings = unweighed ? removed.findings.filter((finding) => finding.reviewerId !== reviewer.id) : removed.findings;
-      return {
+      const without = {
         ...removed,
         // Who ran the reviewers follows the seats while only they authored the findings; later the removed seat's stay.
         runner: unweighed ? runnerKindOf(removed.reviewers) : review.runner,
         findings: findings.map((finding) => ({ ...finding, positions: finding.positions.filter((position) => position.reviewerId !== reviewer.id) })),
+      };
+      return without.research
+        ? withResearch(without, (research) => ({
+            ...research,
+            claims: research.claims
+              .filter((claim) => !(unweighed && claim.reviewerId === reviewer.id && claim.pass === research.pass))
+              .map((claim) => ({ ...claim, positions: claim.positions.filter((position) => position.reviewerId !== reviewer.id) })),
+          }))
+        : without;
+    }
+    case "claims-capped": {
+      if (review.phase !== "independent-review") throw new ReviewError(`Claims are capped in the research; the council is ${review.phase}.`);
+      if (event.claimIds.length === 0) return review;
+      for (const id of event.claimIds) if (claimOf(review, id).reviewerId !== event.reviewerId) throw new ReviewError(`${id} isn't ${event.reviewerId}'s claim.`);
+      return cappedClaims(review, event.reviewerId, event.claimIds, event.at);
+    }
+    case "claims-merged": {
+      if (review.phase !== "deliberation" || review.round !== 0) throw new ReviewError(`Claims are merged before the first round; the council is ${review.phase}.`);
+      const into = claimOf(review, event.into);
+      const merged = event.merged.map((id) => claimOf(review, id));
+      if (merged.length === 0 || merged.some((claim) => claim.id === into.id)) throw new ReviewError("Merge other claims into a claim.");
+      if ([into, ...merged].some((claim) => claim.pass !== review.research!.pass)) throw new ReviewError("Only claims of the current run merge.");
+      const why = { ...(event.by === undefined ? {} : { mergedBy: event.by }), ...(event.reason === undefined ? {} : { reason: event.reason }) };
+      const sourceKey = (source: Claim["sources"][number]) => (source.doi ?? source.url).toLowerCase();
+      const seen = new Set(into.sources.map(sourceKey));
+      const sources = [...into.sources];
+      for (const source of merged.flatMap((claim) => claim.sources)) if (!seen.has(sourceKey(source))) (seen.add(sourceKey(source)), sources.push(source));
+      const reports = merged.flatMap((claim) => [{ reviewerId: claim.reviewerId, claimId: claim.id, title: claim.title, ...why }, ...claim.alsoReported]);
+      const gone = new Set(event.merged);
+      const next = withResearch(review, (research) => ({
+        ...research,
+        claims: research.claims.filter((claim) => !gone.has(claim.id)).map((claim) => (claim.id === into.id ? { ...claim, sources, alsoReported: [...claim.alsoReported, ...reports] } : claim)),
+      }));
+      // The co-reporters back the claim from round 0, as its reporter does.
+      const positioned = updateClaim(next, into.id, (claim) => ({ ...claim, positions: positionsFrom(next, claim, [], event.at) }));
+      const grouper = event.by === undefined ? undefined : review.reviewers.find(({ id }) => id === event.by);
+      if (!grouper || !isActive(grouper)) return positioned;
+      return updateReviewer(positioned, grouper.id, (it) => withActivity(it, { at: event.at, kind: "finding", text: `Merged ${event.merged.join(", ")} into ${into.id}${event.reason ? `: ${event.reason}` : ""}` }));
+    }
+    case "sources-checked": {
+      if (review.phase !== "deliberation" || review.round !== 0) throw new ReviewError(`Sources are checked before the first round; the council is ${review.phase}.`);
+      return withResearch(review, (research) => (research.sourcesChecked ? research : { ...research, sourcesChecked: true }));
+    }
+    case "claim-resolved": {
+      if (review.phase !== "synthesis") throw new ReviewError(`A claim is settled in the synthesis; the council is ${review.phase}.`);
+      const claim = claimOf(review, event.claimId);
+      if (claim.pass !== review.research!.pass) throw new ReviewError(`${claim.id} was settled in an earlier run.`);
+      const { status, rationale, dissenters, dissent, at } = event;
+      return updateClaim(review, claim.id, (it) => ({ ...it, status, resolution: { status, rationale, dissenters, ...(dissent ? { dissent } : {}), at } }));
+    }
+    case "answer-written": {
+      if (!review.research) throw new ReviewError("A review has no answer to write.");
+      return withResearch(review, (research) => ({ ...research, written: { path: event.path, at: event.at, digest: event.digest } }));
+    }
+    case "follow-up-asked": {
+      if (review.phase !== "complete" || !review.research) throw new ReviewError(`A follow-up is asked of a research council that has answered; this one is ${review.phase}.`);
+      const question = event.question.trim();
+      if (!question) throw new ReviewError("Say what the council should look into.");
+      // A follow-up asked and never started gives way to the new one.
+      const waiting = review.research.followUps.filter((followUp) => followUp.startedAt !== null);
+      return withResearch(review, (research) => ({ ...research, followUps: [...waiting, { question, at: event.at, pass: research.pass + 1, startedAt: null }] }));
+    }
+    case "follow-up-started": {
+      if (review.phase !== "complete" || !review.research) throw new ReviewError(`A follow-up starts from a research council that has answered; this one is ${review.phase}.`);
+      const followUp = review.research.followUps.at(-1);
+      if (!followUp || followUp.startedAt !== null) throw new ReviewError("No follow-up waits to start.");
+      const researchers = seatedReviewers(review).filter((reviewer) => reviewer.status === "completed");
+      if (researchers.length === 0) throw new ReviewError("No seat that completed the research is left to follow it up.");
+      const ids = new Set(researchers.map(({ id }) => id));
+      return {
+        ...review,
+        phase: "independent-review",
+        round: 0,
+        rounds: 0,
+        verdict: null,
+        endedAt: null,
+        agentHeardAt: null,
+        duplicatesChecked: false,
+        stoppedPhase: null,
+        reviewers: review.reviewers.map((reviewer) =>
+          ids.has(reviewer.id) ? { ...withActivity(reviewer, { at: event.at, kind: "status", text: `Following up: ${followUp.question}` }), status: "waiting", current: "Waiting to follow up", problem: null, startedAt: null, endedAt: null } : reviewer,
+        ),
+        research: {
+          ...review.research,
+          pass: followUp.pass,
+          sourcesChecked: false,
+          revisionDue: false,
+          followUps: review.research.followUps.map((each) => (each === followUp ? { ...each, startedAt: event.at } : each)),
+        },
+      };
+    }
+    case "claim-ruled": {
+      if (review.phase !== "complete" || !review.research) throw new ReviewError(`Claims are ruled on once the council has answered; it is ${review.phase}.`);
+      const claim = claimOf(review, event.claimId);
+      const ruling = event.decision === null ? null : { decision: event.decision, note: event.note, at: event.at };
+      const struck = (decision: ClaimDecision | null | undefined) => decision === "struck";
+      // Only a strike or its undoing changes what the answer may state.
+      const due = struck(claim.ruling?.decision) !== struck(event.decision);
+      const ruled = updateClaim(review, claim.id, (it) => ({ ...it, ruling }));
+      return due ? withResearch(ruled, (research) => ({ ...research, revisionDue: research.drafts.length > 0 })) : ruled;
+    }
+    case "revision-started": {
+      if (review.phase !== "complete" || !review.research) throw new ReviewError(`The answer is revised once the council has answered; it is ${review.phase}.`);
+      if (!review.research.revisionDue) throw new ReviewError("Nothing to revise: no claim was struck or restored since the latest draft.");
+      const editor = review.reviewers.find((reviewer) => reviewer.id === review.research!.editor && reviewer.enabled && reviewer.status === "completed")
+        ?? seatedReviewers(review).find((reviewer) => reviewer.status === "completed");
+      if (!editor) throw new ReviewError("No seat that completed the research is left to revise the answer.");
+      return {
+        ...updateReviewer(review, editor.id, (it) => ({ ...it, status: "deliberating", current: "Revising the answer" })),
+        phase: "synthesis",
+        verdict: null,
+        endedAt: null,
+        agentHeardAt: null,
+        research: { ...review.research, revisionDue: false },
       };
     }
     case "agent-heard":
@@ -792,6 +1030,7 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
     case "argued": {
       if (review.phase !== "deliberation" || review.round < 1) throw new ReviewError(`Arguments are made in a deliberation round; the review is in ${review.phase}.`);
       const input = event.argument;
+      if (review.research) return arguedOnClaim(review, reviewer, event);
       const finding = review.findings.find(({ id }) => id === input.findingId);
       if (!finding) throw new ReviewError(`There is no finding ${input.findingId}.`);
       if (input.replyTo !== undefined && !review.arguments.some(({ id }) => id === input.replyTo)) throw new ReviewError(`There is no argument ${input.replyTo}.`);
@@ -840,8 +1079,61 @@ function applyReviewerEvent(review: Review, event: ReviewerEvent): Review {
         withActivity(it, { at: event.at, kind: "check", text: `${verb} ${finding.id}'s fix: ${finding.title}`, ...(check.evidence[0] ? { path: check.evidence[0].path } : {}) }),
       );
     }
+    case "claim-reported": {
+      if (review.phase !== "independent-review" || !review.research) throw new ReviewError(`Claims are reported in the research; the council is in ${review.phase}.`);
+      const research = review.research;
+      const claim: Claim = {
+        ...event.claim,
+        id: `C${research.claimsIssued + 1}`,
+        reviewerId: reviewer.id,
+        pass: research.pass,
+        sources: event.claim.sources.map((source) => ({ ...source, checks: [] })),
+        status: "reported",
+        reportedAt: event.at,
+        positions: [],
+        resolution: null,
+        alsoReported: [],
+        ruling: null,
+      };
+      const reported = updateReviewer(review, reviewer.id, (it) => withActivity(it, { at: event.at, kind: "finding", text: `Reported ${claim.id} (${claim.kind}${claim.rq ? `, ${claim.rq}` : ""}): ${claim.title}` }));
+      return { ...reported, research: { ...research, claims: [...research.claims, claim], claimsIssued: research.claimsIssued + 1 } };
+    }
+    case "source-checked": {
+      if (review.phase !== "deliberation" || review.round !== 0 || !review.research) throw new ReviewError(`Sources are checked before the first round; the council is in ${review.phase}.`);
+      const claim = claimOf(review, event.check.claimId);
+      if (claim.pass !== review.research.pass) throw new ReviewError(`${claim.id} was checked in an earlier run.`);
+      const index = event.check.source - 1;
+      if (!claim.sources[index]) throw new ReviewError(`${claim.id} has no source ${event.check.source}; it has ${claim.sources.length}.`);
+      const check = { reviewerId: reviewer.id, outcome: event.check.outcome, note: event.check.note, at: event.at };
+      const checked = updateClaim(review, claim.id, (it) => ({
+        ...it,
+        // A seat's newer check of a source replaces its older one (a resumed check asks again).
+        sources: it.sources.map((source, at) => (at === index ? { ...source, checks: [...source.checks.filter((each) => each.reviewerId !== reviewer.id), check] } : source)),
+      }));
+      return updateReviewer(checked, reviewer.id, (it) => withActivity(it, { at: event.at, kind: "check", text: `Checked ${claim.id}'s source ${event.check.source}: ${event.check.outcome}` }));
+    }
+    case "answer-drafted": {
+      if (review.phase !== "synthesis" || !review.research) throw new ReviewError(`The answer is drafted in the synthesis; the council is in ${review.phase}.`);
+      const research = review.research;
+      const revision = research.drafts.filter((draft) => draft.pass === research.pass).length;
+      const draft = { editorId: reviewer.id, pass: research.pass, revision, markdown: event.markdown, problems: event.problems, at: event.at };
+      const drafted = updateReviewer(review, reviewer.id, (it) =>
+        withActivity(it, { at: event.at, kind: "proposal", text: `${revision === 0 ? "Drafted" : "Revised"} the answer${event.problems.length > 0 ? ` (${event.problems.length} problem${event.problems.length === 1 ? "" : "s"})` : ""}` }),
+      );
+      return { ...drafted, research: { ...research, drafts: [...research.drafts, draft] } };
+    }
+    case "draft-objected": {
+      if (review.phase !== "synthesis" || !review.research) throw new ReviewError(`A draft is checked in the synthesis; the council is in ${review.phase}.`);
+      const research = review.research;
+      const latest = research.drafts.at(-1);
+      if (!latest || latest.pass !== research.pass) throw new ReviewError("There is no draft of this run to object to.");
+      if (event.objection.claimId !== undefined) claimOf(review, event.objection.claimId);
+      const objection = { id: `O${research.objections.length + 1}`, reviewerId: reviewer.id, pass: research.pass, revision: latest.revision, ...event.objection, at: event.at };
+      const objected = updateReviewer(review, reviewer.id, (it) => withActivity(it, { at: event.at, kind: "argument", text: `Objected to the draft${objection.claimId ? ` on ${objection.claimId}` : ""}: ${objection.problem}` }));
+      return { ...objected, research: { ...research, objections: [...research.objections, objection] } };
+    }
     case "reviewer-finished": {
-      const current = event.outcome === "completed" ? "Review complete" : event.outcome === "failed" ? "Failed" : "Stopped";
+      const current = event.outcome === "completed" ? (review.research ? "Research complete" : "Review complete") : event.outcome === "failed" ? "Failed" : "Stopped";
       return updateReviewer(review, reviewer.id, (it) => ({ ...it, status: event.outcome, current, endedAt: event.at, problem: event.problem ?? null }));
     }
   }
@@ -855,8 +1147,44 @@ function capped(review: Review, reviewerId: string, findingIds: string[], at: nu
   return { ...noted, findings: review.findings.filter((finding) => !gone.has(finding.id)) };
 }
 
+/** Drops a researcher's claims past the limit, and says so in its activity. */
+function cappedClaims(review: Review, reviewerId: string, claimIds: string[], at: number): Review {
+  const gone = new Set(claimIds);
+  const text = `Kept its ${review.maxFindings} best claim${review.maxFindings === 1 ? "" : "s"}; dropped ${claimIds.join(", ")}`;
+  const noted = updateReviewer(review, reviewerId, (it) => withActivity(it, { at, kind: "note", text }));
+  return withResearch(noted, (research) => ({ ...research, claims: research.claims.filter((claim) => !gone.has(claim.id)) }));
+}
+
+/** An argument on a claim of the current run, in a research council's round. */
+function arguedOnClaim(review: Review, reviewer: Reviewer, event: Extract<ReviewerEvent, { type: "argued" }>): Review {
+  const input = event.argument;
+  const claim = claimOf(review, input.findingId);
+  if (claim.pass !== review.research!.pass) throw new ReviewError(`${claim.id} was settled in an earlier run.`);
+  if (input.replyTo !== undefined && !review.arguments.some(({ id }) => id === input.replyTo)) throw new ReviewError(`There is no argument ${input.replyTo}.`);
+  const argument: Argument = {
+    id: `A${review.arguments.length + 1}`,
+    findingId: claim.id,
+    reviewerId: reviewer.id,
+    round: review.round,
+    stance: input.stance,
+    confidence: input.confidence,
+    text: input.text,
+    evidence: input.evidence,
+    ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
+    at: event.at,
+  };
+  const position: Position = { reviewerId: reviewer.id, stance: input.stance, confidence: input.confidence, round: review.round, at: event.at };
+  const argued = updateReviewer(
+    updateClaim(review, claim.id, (it) => ({ ...it, positions: [...it.positions.filter(({ reviewerId }) => reviewerId !== reviewer.id), position] })),
+    reviewer.id,
+    (it) => withActivity(it, { at: event.at, kind: "argument", text: `${STANCE_VERBS[input.stance]} ${claim.id}: ${claim.title}` }),
+  );
+  return { ...argued, arguments: [...review.arguments, argument] };
+}
+
 /** A failed seat's late reply, taken in (`reply-fetched`). */
 function takeLateReply(review: Review, event: ReplyFetched): Review {
+  if (review.research) throw new ReviewError("A research seat's late reply can't be taken in; send the council back with a follow-up instead.");
   const reviewer = review.reviewers.find(({ id }) => id === event.reviewerId);
   if (!reviewer || !reviewer.enabled) throw new ReviewError(`No reviewer ${event.reviewerId} takes part in the review.`);
   if (reviewer.status !== "failed") throw new ReviewError(`${reviewer.label} hasn't failed; only a failed reviewer's reply is fetched.`);
@@ -912,10 +1240,12 @@ function resume(review: Review, at: number): Review {
   const phase = review.interruptedPhase;
   const cutShort = (reviewer: Reviewer) => reviewer.enabled && reviewer.status === "stopped";
   const base: Review = { ...review, endedAt: null, interruptedPhase: null, agentHeardAt: null };
+  const research = review.research;
   if (phase === "independent-review") {
     const redo = new Set(review.reviewers.filter(cutShort).map(({ id }) => id));
     return {
       ...base,
+      ...(research ? { research: { ...research, claims: research.claims.filter((claim) => !(claim.pass === research.pass && redo.has(claim.reviewerId))) } } : {}),
       phase,
       findings: review.findings.filter((finding) => !redo.has(finding.reviewerId)),
       reviewers: review.reviewers.map((reviewer) =>
@@ -925,9 +1255,10 @@ function resume(review: Review, at: number): Review {
   }
   const back = review.reviewers.map((reviewer) => (cutShort(reviewer) ? { ...reviewer, status: "deliberating" as const, current: "Resuming after a restart", endedAt: null } : reviewer));
   if (phase === "deliberation") {
-    // The cut-short round starts again; the engine starts it anew from the round before.
-    const args = review.arguments.filter((argument) => argument.round < review.round);
-    return {
+    // The cut-short round starts again; the engine starts it anew from the round before. An earlier run's arguments stay.
+    const current = new Set(research ? currentClaims(review).map(({ id }) => id) : []);
+    const args = review.arguments.filter((argument) => argument.round < review.round || (research !== undefined && !current.has(argument.findingId)));
+    const resumed: Review = {
       ...base,
       phase,
       round: Math.max(0, review.round - 1),
@@ -935,6 +1266,7 @@ function resume(review: Review, at: number): Review {
       arguments: args,
       findings: review.findings.map((finding) => ({ ...finding, positions: positionsFrom(review, finding, args, at) })),
     };
+    return claimsPositioned(resumed, args.filter((argument) => current.has(argument.findingId)), at);
   }
   // The synthesis starts again after the last round.
   return {
@@ -943,6 +1275,17 @@ function resume(review: Review, at: number): Review {
     round: review.rounds,
     reviewers: back,
     findings: review.findings.map((finding) => ({ ...finding, status: "reported", resolution: null, proposal: null })),
+    // A research council settles its run's claims and drafts its answer again.
+    ...(research
+      ? {
+          research: {
+            ...research,
+            claims: research.claims.map((claim) => (claim.pass === research.pass ? { ...claim, status: "reported" as const, resolution: null } : claim)),
+            drafts: research.drafts.filter((draft) => draft.pass !== research.pass),
+            objections: research.objections.filter((objection) => objection.pass !== research.pass),
+          },
+        }
+      : {}),
   };
 }
 

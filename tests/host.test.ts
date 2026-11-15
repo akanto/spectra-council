@@ -497,7 +497,7 @@ describe("the Mirador host", () => {
     canvas.items[0] = { ...canvas.items[0]!, data: stored };
 
     const listed = host.items.council!.listed!(canvas.items[0]!);
-    expect(listed).toMatchObject({ format: 8, arguments: [], round: 0, rounds: 0, verdict: null });
+    expect(listed).toMatchObject({ format: 9, arguments: [], round: 0, rounds: 0, verdict: null });
     expect(listed).toMatchObject({ handoff: null, verifications: 0 });
     expect(listed.findings[0]).toMatchObject({ positions: [], resolution: null, proposal: null, ruling: null, fix: null });
     expect(await host.tools.council_status!.run({}, context)).toContain("Old");
@@ -1177,7 +1177,7 @@ describe("the Mirador host", () => {
       const old = { ...rest, format: 2, findings: review().findings.map(({ proposal: _p, ruling: _r, fix: _f, ...finding }) => finding) } as unknown as Review;
       canvas.items[canvas.items.findIndex((it) => it.id === id)] = { ...canvas.item(id), data: old };
       const listed = host.items.council!.listed!(canvas.item(id));
-      expect(listed).toMatchObject({ format: 8, handoff: null, verifications: 0, phase: "complete" });
+      expect(listed).toMatchObject({ format: 9, handoff: null, verifications: 0, phase: "complete" });
       expect(await host.tools.council_status!.run({}, context)).toContain(review().id);
     });
   });

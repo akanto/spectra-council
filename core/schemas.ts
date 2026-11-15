@@ -20,6 +20,16 @@ export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const
 export const CONFIDENCES = ["high", "medium", "low"] as const;
 export const STANCES = ["supports", "challenges", "uncertain"] as const;
 export const DECISIONS = ["accepted", "dismissed", "deferred"] as const;
+/** What a council does: review a target, or research a brief and answer it (docs/research.md). */
+export const COUNCIL_KINDS = ["review", "research"] as const;
+/** A research claim: a published fact, the researcher's own inference, or a gap (searched for, not found). */
+export const CLAIM_KINDS = ["fact", "inference", "gap"] as const;
+/** How far a researcher read a source. */
+export const READ_DEPTHS = ["full-text", "abstract-only"] as const;
+/** What a seat found when it opened a source another seat cited. */
+export const SOURCE_OUTCOMES = ["verified", "quote-not-found", "doesnt-support", "unreachable", "paywalled"] as const;
+/** The user's ruling on a research claim. */
+export const CLAIM_DECISIONS = ["kept", "struck"] as const;
 
 /** The most seats a council can have; it starts with two, and the user adds and removes seats. The workspace shows one panel each. */
 export const MAX_SEATS = 8;
@@ -36,10 +46,18 @@ export const severitySchema = z.enum(SEVERITIES);
 export const confidenceSchema = z.enum(CONFIDENCES);
 export const stanceSchema = z.enum(STANCES);
 export const decisionSchema = z.enum(DECISIONS);
+export const councilKindSchema = z.enum(COUNCIL_KINDS);
+export const claimKindSchema = z.enum(CLAIM_KINDS);
+export const readDepthSchema = z.enum(READ_DEPTHS);
+export const sourceOutcomeSchema = z.enum(SOURCE_OUTCOMES);
+export const claimDecisionSchema = z.enum(CLAIM_DECISIONS);
 /** Deliberation rounds, 1 to 6 (core/depth.ts ROUNDS_RANGE). */
 export const roundsSchema = z.number().int().min(1).max(6);
-/** The most findings one reviewer reports, 1 to 20 (core/depth.ts MAX_FINDINGS_RANGE). */
-export const maxFindingsSchema = z.number().int().min(1).max(20);
+/**
+ * The most findings one reviewer reports, 1 to 20, or claims one researcher reports, 1 to 100 (core/depth.ts
+ * MAX_FINDINGS_RANGE, MAX_CLAIMS_RANGE): the reducer holds a review to its own range.
+ */
+export const maxFindingsSchema = z.number().int().min(1).max(100);
 
 export type ProfileId = z.infer<typeof profileIdSchema>;
 export type Depth = z.infer<typeof depthSchema>;
@@ -47,6 +65,11 @@ export type Severity = z.infer<typeof severitySchema>;
 export type Confidence = z.infer<typeof confidenceSchema>;
 export type Stance = z.infer<typeof stanceSchema>;
 export type Decision = z.infer<typeof decisionSchema>;
+export type CouncilKind = z.infer<typeof councilKindSchema>;
+export type ClaimKind = z.infer<typeof claimKindSchema>;
+export type ReadDepth = z.infer<typeof readDepthSchema>;
+export type SourceOutcome = z.infer<typeof sourceOutcomeSchema>;
+export type ClaimDecision = z.infer<typeof claimDecisionSchema>;
 
 export const evidenceSchema = z.object({
   path: z.string().min(1).describe("The file, relative to the review's target folder."),
@@ -129,6 +152,67 @@ export const duplicateGroupInputSchema = z.object({
 
 export type DuplicateGroupInput = z.infer<typeof duplicateGroupInputSchema>;
 
+/** Research: claims that state the same thing, as an agent grouped them after the research: they merge into one. */
+export const claimGroupInputSchema = z.object({
+  claimIds: z.array(z.string().min(1)).min(2).describe('The claims that state the same thing, e.g. ["C2", "C7"].'),
+  reason: z.string().min(1).describe("Why they are the same claim, in a sentence: the same source and point, or the same gap."),
+});
+
+export type ClaimGroupInput = z.infer<typeof claimGroupInputSchema>;
+
+/** A source a research claim rests on, as its reporter read it. */
+export const sourceInputSchema = z.object({
+  url: z.string().trim().min(1).describe("A link that resolves: https://doi.org/<doi> for a paper with a DOI, else a stable URL."),
+  doi: z.string().trim().min(1).optional().describe('The DOI alone, e.g. "10.1145/2588555.2610515", when it has one.'),
+  authors: z.string().trim().min(1).describe('The authors as the source lists them, e.g. "L. Sun, M. J. Franklin, S. Krishnan, R. S. Xin".'),
+  title: z.string().trim().min(1),
+  venue: z.string().trim().min(1).describe('Where it appeared, e.g. "Proc. ACM SIGMOD", or the site for a web page.'),
+  year: z.number().int().min(1800).max(2200).optional(),
+  quote: z.string().trim().min(1).describe("The passage that supports the claim, quoted word for word, short."),
+  locator: z.string().trim().min(1).optional().describe('Where in the source the quote is: "p. 4", "Sec. 3.2", "Table 2".'),
+  read: readDepthSchema.describe("Whether you read the full text, or only the abstract or a snippet."),
+});
+
+export type SourceInput = z.infer<typeof sourceInputSchema>;
+
+/** A claim as a researcher reports it; the engine gives it its id, reporter, run and status. */
+export const claimInputSchema = z
+  .object({
+    rq: z.string().trim().default("").describe('The brief\'s research question it answers, e.g. "RQ1"; empty when the brief numbers none.'),
+    kind: claimKindSchema.describe("fact: a published fact, with its sources; inference: your own reasoning from facts, kept apart from them; gap: what you searched for and didn't find."),
+    title: z.string().trim().min(1).max(160).describe("The claim in a few plain words."),
+    text: z.string().trim().min(1).describe("The claim in full, in a few sentences (Markdown: inline `code`, **bold**, - bullets). For a gap, where you searched and how."),
+    confidence: confidenceSchema.describe("How sure you are the claim is right."),
+    fields: z.record(z.string(), z.string()).default({}).describe('The fields the brief asks for on each record, by its names, e.g. {"DICOM level": "series", "projection": "metadata"}; leave out the ones it doesn\'t.'),
+    sources: z.array(sourceInputSchema).default([]).describe("What the claim rests on: at least one for a fact; an inference may cite the sources it reasons from; a gap none."),
+  })
+  .superRefine((claim, context) => {
+    if (claim.kind === "fact" && claim.sources.length === 0) context.addIssue({ code: "custom", path: ["sources"], message: "a fact needs at least one source" });
+  });
+
+export type ClaimInput = z.infer<typeof claimInputSchema>;
+
+/** A seat's check of one source of a claim it didn't report, before the rounds. */
+export const sourceCheckInputSchema = z.object({
+  claimId: z.string().min(1).describe('The claim, e.g. "C4".'),
+  source: z.number().int().min(1).describe("Which of its sources, by its number in the list, from 1."),
+  outcome: sourceOutcomeSchema.describe(
+    "verified: it says what the claim quotes it saying; quote-not-found: the passage isn't in it; doesnt-support: it's there but doesn't bear the claim out; unreachable: the link doesn't resolve; paywalled: you couldn't read it.",
+  ),
+  note: z.string().trim().min(1).describe("What you opened and what you saw, in a sentence or two."),
+});
+
+export type SourceCheckInput = z.infer<typeof sourceCheckInputSchema>;
+
+/** A seat's objection to a sentence of the editor's draft, in the council's check of it. */
+export const draftObjectionInputSchema = z.object({
+  claimId: z.string().min(1).optional().describe('The claim the sentence misstates, e.g. "C4", if one.'),
+  excerpt: z.string().trim().min(1).describe("The sentence objected to, quoted from the draft word for word."),
+  problem: z.string().trim().min(1).describe("What is wrong with it, against the ledger: overstated, misattributed, drops a dissent, states a struck or unverified claim as a finding."),
+});
+
+export type DraftObjectionInput = z.infer<typeof draftObjectionInputSchema>;
+
 /**
  * One seat at the council: the agent in it, and for a Mirador profile the model and effort its conversations start on
  * (the profile's own when left out). `enabled` is false only in reviews from before seats could be removed.
@@ -140,6 +224,8 @@ export const seatSchema = z.object({
   model: z.string().trim().min(1).max(MODEL_CHOICE_MAX).optional(),
   /** An effort the model offers, by its value ("high"); a profile seat only. */
   effort: z.string().trim().min(1).max(MODEL_CHOICE_MAX).optional(),
+  /** A research seat's lean ("RQ4, database venues"); the whole brief still. */
+  focus: z.string().trim().min(1).max(MODEL_CHOICE_MAX * 4).optional(),
 });
 
 export type Seat = z.infer<typeof seatSchema>;
@@ -154,6 +240,15 @@ export const setupSchema = z.object({
   maxFindings: maxFindingsSchema.optional(),
   seats: z.array(seatSchema).max(MAX_SEATS),
   instructions: z.string().default(""),
+  kind: councilKindSchema.default("review"),
+  /** Research: the brief's absolute path. */
+  brief: z.string().default(""),
+  /** Research: a question to research when there is no brief file; saved as one at the start. */
+  question: z.string().default(""),
+  /** Research: where the answer goes (absolute); empty for beside the brief. */
+  answerFile: z.string().default(""),
+  /** Research: the seat that writes the answer. */
+  editor: z.string().default("r1"),
 });
 
 export type Setup = z.infer<typeof setupSchema>;
@@ -169,6 +264,10 @@ export const setupPatchSchema = z
     maxFindings: maxFindingsSchema,
     seats: z.array(seatSchema).min(1).max(MAX_SEATS),
     instructions: z.string(),
+    brief: z.string(),
+    question: z.string(),
+    answerFile: z.string(),
+    editor: z.string().regex(/^r\d+$/, "a seat id, e.g. r1"),
   })
   .partial();
 
@@ -232,6 +331,12 @@ export const viewActionSchema = z.discriminatedUnion("kind", [
    * resolves to `{ prefs: ViewPrefs }`, after applying `set` when given.
    */
   z.object({ kind: z.literal("prefs"), set: viewPrefsSchema.partial().optional() }),
+  /** Research: send the council back with a question; its run adds claims and revises the answer. */
+  z.object({ kind: z.literal("follow-up"), text: z.string().trim().min(1).max(ASK_MAX) }),
+  /** Research: the user's ruling on a claim (kept or struck); null clears it. */
+  z.object({ kind: z.literal("rule-claim"), claimId: z.string().min(1), decision: claimDecisionSchema.nullable(), note: z.string().default("") }),
+  /** Research: have the editor revise the answer after the user kept or struck claims. */
+  z.object({ kind: z.literal("revise") }),
 ]);
 
 export type ViewAction = z.infer<typeof viewActionSchema>;
@@ -257,6 +362,12 @@ export const deliberationReplySchema = z.object({ arguments: z.array(z.unknown()
 export const proposalReplySchema = z.object({ proposals: z.array(z.unknown()) });
 export const verificationReplySchema = z.object({ checks: z.array(z.unknown()) });
 export const groupingReplySchema = z.object({ groups: z.array(z.unknown()) });
+/** A researcher's reply: whether it could search and read the web, and its claims. */
+export const researchReplySchema = z.object({ webAccess: z.boolean(), claims: z.array(z.unknown()) });
+export const sourceCheckReplySchema = z.object({ checks: z.array(z.unknown()) });
+/** The editor's reply: the answer as Markdown. */
+export const draftReplySchema = z.object({ answer: z.string().min(1) });
+export const draftCheckReplySchema = z.object({ objections: z.array(z.unknown()) });
 
 /** A Zod error in one line per problem, for whoever sent the bad input. */
 export const problemsOf = (error: z.ZodError) =>

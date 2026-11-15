@@ -20,7 +20,7 @@ import { lastTurnOf, whenFetchable, whyNoFetch } from "../../core/late-replies.t
 import { isFinished, isResumable, isRunning, seatedReviewers, type Finding, type ModelInfo, type Review } from "../../core/model.ts";
 import { MockRunner, type FileLister } from "../../core/mock-runner.ts";
 import { PROFILES } from "../../core/profiles.ts";
-import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type ReviewEvent } from "../../core/review.ts";
+import { awaitsFixRequest, newReview, reduce, reopensWith, ReviewError, upgradeReview, type NewSetup, type ReviewEvent } from "../../core/review.ts";
 import { bySeverity } from "../../core/describe.ts";
 import { depthSchema, MAX_SEATS, maxFindingsSchema, problemsOf, profileIdSchema, roundsSchema, ruleInput, seatSchema, stopInput, ticketIdSchema, viewActionSchema, viewPrefsSchema, DEFAULT_VIEW_PREFS, type Decision, type Seat, type Setup, type ViewPrefs } from "../../core/schemas.ts";
 import { listTargetFiles, resolveTargetPath, targetKind } from "../../core/target-files.ts";
@@ -943,7 +943,7 @@ export function createCouncilHost({
             : keptSeats.length > 0
               ? keptSeats
               : seatsByDefault(context.storage);
-          const setup: Setup = { target, profile, depth: depth ?? "standard", seats, instructions, ...knobs };
+          const setup: NewSetup = { target, profile, depth: depth ?? "standard", seats, instructions, ...knobs };
           const review = identified(newReview(newId(), setup, runnerKindOf(seats), clock.now()));
           const heading = title ?? `${PROFILES[profile].title} review · ${basename(target)}`;
           const item = replaced ? context.change(replaced.id, { title: heading, data: review }) : context.publish({ type: ITEM_TYPE, title: heading, data: review });

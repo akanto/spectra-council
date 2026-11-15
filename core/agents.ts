@@ -81,8 +81,8 @@ export const sameChoice = (a: SeatChoice | undefined, b: SeatChoice | undefined)
 export const choiceText = (choice: SeatChoice | undefined) => [choice?.model, choice?.effort ? `${choice.effort} effort` : undefined].filter(Boolean).join(", ");
 
 /** The seat a reviewer sits in: its agent and its choice of model and effort, as the setup edits it. */
-export function seatOf(reviewer: Pick<Reviewer, "agent" | "enabled" | "choice">): Seat {
-  return { agent: reviewer.agent, enabled: reviewer.enabled, ...reviewer.choice };
+export function seatOf(reviewer: Pick<Reviewer, "agent" | "enabled" | "choice" | "focus">): Seat {
+  return { agent: reviewer.agent, enabled: reviewer.enabled, ...reviewer.choice, ...(reviewer.focus ? { focus: reviewer.focus } : {}) };
 }
 
 /** Two mock seats, the first two agents: for tests and demos (council_open seats the user's profiles by default). */

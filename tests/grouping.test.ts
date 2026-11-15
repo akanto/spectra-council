@@ -105,7 +105,7 @@ describe("upgradeReview to format 7", () => {
   test("a review not past the independent review is unchecked", () => {
     for (const patch of [{ phase: "setup" }, { phase: "independent-review" }, { phase: "interrupted", interruptedPhase: "independent-review" }] as Partial<Review>[]) {
       const upgraded = upgradeReview(stored(patch));
-      expect(upgraded.format).toBe(8);
+      expect(upgraded.format).toBe(9);
       expect(upgraded.duplicatesChecked).toBe(false);
     }
   });

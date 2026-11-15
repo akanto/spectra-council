@@ -3,7 +3,7 @@
  * where the reviewers ended up standing. Pure: the engine runs the rounds and dispatches what this decides.
  */
 import { shortName } from "./agents.ts";
-import { argumentsOn, type Dissent, type Finding, type FindingStatus, type Review, type Reviewer, reportersOf } from "./model.ts";
+import { argumentsOn, type Debated, type Dissent, type Finding, type FindingStatus, type Review, type Reviewer, reportersOf } from "./model.ts";
 
 export interface Settlement {
   status: Exclude<FindingStatus, "reported">;
@@ -74,7 +74,7 @@ const its = (reviewers: Reviewer[]) => (reviewers.length === 1 ? "its" : "their"
  * left it: a timeout neither takes back a reporter's support nor answers a challenge. A removed reviewer has no say, and
  * one that failed with no stance on the finding left nothing of its own to keep.
  */
-export function countsIn(reviewer: Reviewer, finding: Finding): boolean {
+export function countsIn(reviewer: Reviewer, finding: Pick<Debated, "positions">): boolean {
   if (!reviewer.enabled) return false;
   if (reviewer.status === "deliberating" || reviewer.status === "completed") return true;
   return reviewer.status === "failed" && finding.positions.some((position) => position.reviewerId === reviewer.id);
@@ -92,7 +92,7 @@ export function countsIn(reviewer: Reviewer, finding: Finding): boolean {
  * A reviewer that failed during the deliberation keeps its last stance, and the rationale says it couldn't continue: a
  * timeout neither answers a challenge nor takes back support.
  */
-export function settle(review: Review, finding: Finding): Settlement | null {
+export function settle(review: Review, finding: Debated): Settlement | null {
   const byId = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id);
   const stanceOf = (id: string) => finding.positions.find((position) => position.reviewerId === id)?.stance;
 
