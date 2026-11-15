@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isFinished, isRunning, seatedReviewers, type Review } from "../core/model.ts";
 import { flowOf } from "../core/progress.ts";
 import { DEPTH_TITLES } from "../core/depth.ts";
+import { AnswerTab, ClaimsTab } from "./Research.tsx";
 import { PROFILES } from "../core/profiles.ts";
 import type { SetupPatch, ViewAction, ViewPrefs } from "../core/schemas.ts";
 import type { CouncilBridge } from "./bridge.ts";
@@ -14,7 +15,7 @@ import { Setup } from "./Setup.tsx";
 import { cx, elapsed, BeadsContext, FixerContext, Logo, PHASE_WORDS, PhasePill, useNow } from "./ui.tsx";
 import { Workspace } from "./Workspace.tsx";
 
-type Tab = "workspace" | "council" | "findings";
+type Tab = "workspace" | "council" | "findings" | "answer" | "claims";
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -83,7 +84,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const reviewTarget = review?.target;
   // Whether the target has a beads workspace, for the tickets button: asked once the review is complete, and again when
   // the window regains focus (the user may have run bd init meanwhile).
-  const reviewComplete = review?.phase === "complete";
+  const reviewComplete = review?.phase === "complete" && review.kind !== "research";
   useEffect(() => {
     if (reviewId === undefined || !reviewComplete) return;
     let live = true;
@@ -118,7 +119,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   const now = useNow(review !== null && isRunning(review));
   const phase = review?.phase;
   // Who fixes: asked once the review is complete, again when the window regains focus (the header setting may have changed) and after each fix.
-  const complete = phase === "complete";
+  const complete = phase === "complete" && review?.kind !== "research";
   const fixRequests = review?.findings.filter((finding) => finding.fix).length ?? 0;
   useEffect(() => {
     if (!complete) return;
@@ -140,14 +141,21 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
       window.removeEventListener("focus", ask);
     };
   }, [complete, bridge, fixRequests]);
+  // A research council's answer is its first tab, selected when it first comes (a draft, or the end of the run) unless the user has chosen a tab.
+  const answerReady = review?.kind === "research" && ((review.research?.drafts.length ?? 0) > 0 || phase === "complete");
+  useEffect(() => {
+    if (answerReady && !picked && !reviewerOpen.current) setTab("answer");
+  }, [answerReady, picked]);
   // Move to the Council tab when the deliberation starts, unless the user has chosen a tab themselves or has a reviewer's panel open (a nudge in the header offers the move instead).
   useEffect(() => {
-    if (phase === "deliberation" && !picked && !reviewerOpen.current) setTab("council");
+    if (phase === "deliberation" && !picked && !reviewerOpen.current && review?.kind !== "research") setTab("council");
   }, [phase, picked]);
 
   if (!review) return <div className="loading">Loading the review…</div>;
 
-  const hasCouncil = review.rounds > 0;
+  const research = review.kind === "research";
+  // A research council's arguments are on its claims, in the Claims tab.
+  const hasCouncil = review.rounds > 0 && !research;
   // The reviewer panel belongs to the Workspace tab: any tab change closes it.
   const choose = (next: Tab, keepFocus = false) => {
     setPicked(true);
@@ -157,7 +165,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
   };
   const openFinding = (id: string) => {
     setFocus(id);
-    choose(hasCouncil ? "council" : "findings", true);
+    choose(research ? "claims" : hasCouncil ? "council" : "findings", true);
   };
   const openInCouncil = (id: string) => {
     setFocus(id);
@@ -174,7 +182,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
     opener.current = null;
     if (from?.isConnected) from.focus();
   };
-  const tabs: Tab[] = hasCouncil ? ["workspace", "council", "findings"] : ["workspace", "findings"];
+  const tabs: Tab[] = research ? [...(answerReady ? (["answer"] as const) : []), "workspace", "claims"] : hasCouncil ? ["workspace", "council", "findings"] : ["workspace", "findings"];
   const onTabKey = (event: React.KeyboardEvent) => {
     const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
     if (!step) return;
@@ -183,7 +191,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
     choose(next);
     requestAnimationFrame(() => document.getElementById(`tab-${next}`)?.focus());
   };
-  const shownTab: Tab = tab === "council" && !hasCouncil ? "workspace" : tab;
+  const shownTab: Tab = tabs.includes(tab) ? tab : "workspace";
   const nudge = review.phase === "deliberation" && hasCouncil && shownTab === "workspace" && reviewerId !== null;
   const target = review.target;
   const openPath = bridge.openFile ? (path: string) => {
@@ -220,16 +228,19 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
               Deliberation started → Council
             </button>
           )}
-          <PhasePill phase={review.phase} flowShown={flowHidden === false} toggle={() => showFlow(flowHidden !== false)} />
+          <PhasePill phase={review.phase} flowShown={flowHidden === false} toggle={() => showFlow(flowHidden !== false)} research={review.kind === "research"} />
         </div>
       </header>
       <div className="chips">
-        <span className="chip static">{PROFILES[review.profile].title} review</span>
+        <span className="chip static">{research ? "Research council" : `${PROFILES[review.profile].title} review`}</span>
         <span className="chip static">
-          {failed > 0 ? `${seated - failed} of ${seated} reviewers · ${failed} failed` : `${seated} reviewer${seated === 1 ? "" : "s"}`}
+          {(() => {
+          const noun = research ? "seat" : "reviewer";
+          return failed > 0 ? `${seated - failed} of ${seated} ${noun}s · ${failed} failed` : `${seated} ${noun}${seated === 1 ? "" : "s"}`;
+        })()}
         </span>
-        <span className="chip static" title={`${review.deliberationRounds} deliberation round${review.deliberationRounds === 1 ? "" : "s"}, at most ${review.maxFindings} finding${review.maxFindings === 1 ? "" : "s"} per reviewer`}>
-          {DEPTH_TITLES[review.depth]} depth · ≤{review.maxFindings} findings each
+        <span className="chip static" title={`${review.deliberationRounds} deliberation round${review.deliberationRounds === 1 ? "" : "s"}, at most ${review.maxFindings} ${research ? "claim" : "finding"}${review.maxFindings === 1 ? "" : "s"} per ${research ? "researcher" : "reviewer"}`}>
+          {DEPTH_TITLES[review.depth]} depth · ≤{review.maxFindings} {research ? "claims" : "findings"} each
         </span>
         {hasCouncil && (
           <span className="chip static">{review.phase === "deliberation" ? `Round ${review.round} of ${review.rounds}` : `${review.rounds} round${review.rounds === 1 ? "" : "s"}`}</span>
@@ -263,6 +274,11 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
       ) : (
         <>
           <nav className="tabs" role="tablist" aria-label="Review views" onKeyDown={onTabKey}>
+            {research && answerReady && (
+              <button role="tab" id="tab-answer" aria-controls="panel" tabIndex={shownTab === "answer" ? 0 : -1} aria-selected={shownTab === "answer"} className={cx(shownTab === "answer" && "chosen")} onClick={() => choose("answer")}>
+                Answer
+              </button>
+            )}
             <button role="tab" id="tab-workspace" aria-controls="panel" tabIndex={shownTab === "workspace" ? 0 : -1} aria-selected={shownTab === "workspace"} className={cx(shownTab === "workspace" && "chosen")} onClick={() => choose("workspace")}>
               Workspace
             </button>
@@ -271,20 +287,30 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
                 Council
               </button>
             )}
-            <button role="tab" id="tab-findings" aria-controls="panel" tabIndex={shownTab === "findings" ? 0 : -1} aria-selected={shownTab === "findings"} className={cx(shownTab === "findings" && "chosen")} onClick={() => choose("findings")}>
-              Findings <span className="muted">{review.findings.length}</span>
-            </button>
+            {research ? (
+              <button role="tab" id="tab-claims" aria-controls="panel" tabIndex={shownTab === "claims" ? 0 : -1} aria-selected={shownTab === "claims"} className={cx(shownTab === "claims" && "chosen")} onClick={() => choose("claims")}>
+                Claims <span className="muted">{review.research?.claims.length ?? 0}</span>
+              </button>
+            ) : (
+              <button role="tab" id="tab-findings" aria-controls="panel" tabIndex={shownTab === "findings" ? 0 : -1} aria-selected={shownTab === "findings"} className={cx(shownTab === "findings" && "chosen")} onClick={() => choose("findings")}>
+                Findings <span className="muted">{review.findings.length}</span>
+              </button>
+            )}
           </nav>
           <div className={cx("body", reviewerId && shownTab === "workspace" && "with-detail")}>
             <main role="tabpanel" id="panel" aria-labelledby={`tab-${shownTab}`}>
-              {shownTab === "workspace" ? (
+              {shownTab === "answer" ? (
+                <AnswerTab review={review} act={act} busy={busy} select={openFinding} {...(openPath ? { openPath } : {})} />
+              ) : shownTab === "claims" ? (
+                <ClaimsTab review={review} focus={focus} select={setFocus} act={act} busy={busy} {...(openPath ? { openPath } : {})} />
+              ) : shownTab === "workspace" ? (
                 <Workspace
                   review={review}
                   now={now}
                   openReviewer={openReviewer}
                   openedReviewer={reviewerId}
                   openFinding={openFinding}
-                  openAll={() => choose("findings")}
+                  openAll={() => choose(research ? "claims" : "findings")}
                   openCouncil={() => choose(hasCouncil ? "council" : "findings")}
                   rerun={() => send({ kind: "rerun" })}
                   resume={() => send({ kind: "resume" })}
@@ -306,12 +332,12 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
             <span>
               Phase: <strong>{PHASE_WORDS[review.phase]}</strong>
               {time && <span className="muted"> · {time}</span>}
-              {isFinished(review) && <span className="muted"> · {review.findings.length} findings</span>}
+              {isFinished(review) && <span className="muted"> · {research ? `${review.research?.claims.length ?? 0} claims` : `${review.findings.length} findings`}</span>}
             </span>
             {isRunning(review) &&
               (confirmStop ? (
                 <span className="stop-confirm" role="group" aria-label="Confirm stop">
-                  <span>Stop all reviewers?</span>
+                  <span>Stop all {research ? "seats" : "reviewers"}?</span>
                   <button className="danger" disabled={busy} onClick={() => (setConfirmStop(false), void send({ kind: "stop" }).catch(() => {}))}>
                     Stop
                   </button>
@@ -321,7 +347,7 @@ export function App({ bridge }: { bridge: CouncilBridge }) {
                 </span>
               ) : (
                 <button disabled={busy} onClick={() => setConfirmStop(true)}>
-                  Stop review
+                  {research ? "Stop research" : "Stop review"}
                 </button>
               ))}
           </footer>

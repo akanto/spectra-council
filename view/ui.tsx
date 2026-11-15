@@ -2,7 +2,7 @@
 import { createContext, useEffect, useState } from "react";
 import { countsIn } from "../core/deliberation.ts";
 import { recheckLine, STATUS_MEANINGS } from "../core/describe.ts";
-import type { Finding, FindingStatus, FixState, Phase, Review, ReviewerStatus } from "../core/model.ts";
+import type { Debated, Finding, FindingStatus, FixState, Phase, Review, ReviewerStatus } from "../core/model.ts";
 import type { Confidence, Severity, Stance } from "../core/schemas.ts";
 
 export const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
@@ -89,14 +89,14 @@ export const PHASE_WORDS: Record<Phase, string> = {
 };
 
 /** The review's phase; with `toggle`, a button that shows or hides the process strip. */
-export function PhasePill({ phase, flowShown, toggle }: { phase: Phase; flowShown?: boolean; toggle?: () => void }) {
+export function PhasePill({ phase, flowShown, toggle, research = false }: { phase: Phase; flowShown?: boolean; toggle?: () => void; research?: boolean }) {
   const words: Record<Phase, string> = {
     setup: "Setting up",
-    "independent-review": "Review running",
+    "independent-review": research ? "Researching" : "Review running",
     deliberation: "Deliberating",
-    synthesis: "Synthesising",
+    synthesis: research ? "Writing the answer" : "Synthesising",
     verification: "Re-checking fixes",
-    complete: "Review complete",
+    complete: research ? "Answered" : "Review complete",
     stopped: "Stopped",
     interrupted: "Interrupted",
   };
@@ -185,7 +185,7 @@ export function StanceBadge({ stance }: { stance: Stance }) {
 }
 
 /** One chip per seated reviewer, showing its latest stance on a finding; faint when it has taken none, struck when it failed. */
-export function Positions({ review, finding }: { review: Review; finding: Finding }) {
+export function Positions({ review, finding }: { review: Review; finding: Debated }) {
   const seated = review.reviewers.filter((reviewer) => reviewer.enabled);
   // Two letters when they tell the reviewers apart, else the initial and the reviewer's number.
   const short = seated.map((reviewer) => reviewer.label.slice(0, 2));
@@ -303,6 +303,7 @@ export const FixerContext = createContext<string | null>(null);
 export function mergedInto(review: Review): Map<string, string> {
   const map = new Map<string, string>();
   for (const finding of review.findings) for (const report of finding.alsoReported) map.set(report.findingId, finding.id);
+  for (const claim of review.research?.claims ?? []) for (const report of claim.alsoReported) map.set(report.claimId, claim.id);
   return map;
 }
 

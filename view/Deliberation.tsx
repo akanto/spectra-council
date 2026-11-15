@@ -24,7 +24,7 @@ function jumpToArgument(id: string) {
   setTimeout(() => element.classList.remove("flash"), 1800);
 }
 
-function ArgumentItem({ review, argument, openPath, select }: { review: Review; argument: Argument; openPath?: (path: string) => void; select(id: string): void }) {
+export function ArgumentItem({ review, argument, openPath, select }: { review: Review; argument: Argument; openPath?: (path: string) => void; select(id: string): void }) {
   const label = (id: string) => review.reviewers.find((each) => each.id === id)?.label ?? id;
   const short = (id: string) => {
     const reviewer = review.reviewers.find((each) => each.id === id);

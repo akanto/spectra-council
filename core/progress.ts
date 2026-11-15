@@ -2,12 +2,14 @@
  * The review's process as the user lives it, step by step, and where it is: what the view's process strip draws.
  * Pure: derived from the review alone, so the strip never stores anything of its own.
  *
+ * A research council (docs/research.md) has its own six: Setup, Research, Check sources, Deliberate, Answer and Follow-up.
+ *
  * Six steps, not the engine's phases: synthesis and fix proposals take moments, so they fold into the verdict, and the
  * rulings, fixes and re-checks after it (all in phase "complete" or "verification") get steps of their own.
  */
-import { isRulable, seatedReviewers, type Finding, type ResumablePhase, type Review } from "./model.ts";
+import { isRulable, isRunning, seatedReviewers, type Finding, type ResumablePhase, type Review } from "./model.ts";
 
-export type FlowStepId = "setup" | "review" | "deliberate" | "verdict" | "rule" | "recheck";
+export type FlowStepId = "setup" | "review" | "deliberate" | "verdict" | "rule" | "recheck" | "research" | "sources" | "answer" | "followup";
 
 /**
  * - done: reached and finished.
@@ -36,9 +38,15 @@ export interface Flow {
   settled: boolean;
 }
 
+export const RESEARCH_ORDER: FlowStepId[] = ["setup", "research", "sources", "deliberate", "answer", "followup"];
+
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 const EXPLAIN: Record<FlowStepId, string> = {
+  research: "Each seat researches the brief on its own and reports claims, fact, inference or gap, with sources; duplicates are merged.",
+  sources: "Seats that did not report a claim open its sources and record whether each says what the claim quotes.",
+  answer: "The editor drafts one answer citing claims by id, the seats check the draft against the ledger, and the editor revises once; the answer is written to its file.",
+  followup: "After the answer you can strike or keep claims and have the answer revised, or send the council back with a follow-up question.",
   setup: "Choose the profile, the reviewers and the depth, then start the review.",
   review: "Each reviewer examines the target on its own and reports findings with evidence; duplicates are merged.",
   deliberate: "In rounds, every reviewer backs, challenges or questions each finding, with evidence; reporters answer the challenges.",
@@ -48,6 +56,10 @@ const EXPLAIN: Record<FlowStepId, string> = {
 };
 
 const TITLES: Record<FlowStepId, string> = {
+  research: "Research",
+  sources: "Check sources",
+  answer: "Answer",
+  followup: "Follow-up",
   setup: "Setup",
   review: "Review",
   deliberate: "Deliberate",
@@ -92,6 +104,7 @@ function cutStep(review: Review): FlowStepId {
 }
 
 export function flowOf(review: Review): Flow {
+  if (review.kind === "research" && review.research) return researchFlowOf(review);
   const seated = seatedReviewers(review);
   const rulable = review.findings.filter((finding) => isRulable(review, finding));
   const ruled = rulable.filter((finding) => finding.ruling !== null);
@@ -112,6 +125,10 @@ export function flowOf(review: Review): Flow {
     verdict: "settle findings",
     rule: "accept · fix",
     recheck: "check fixes",
+    research: "",
+    sources: "",
+    answer: "",
+    followup: "",
   };
   const state = new Map<FlowStepId, FlowState>();
   const detail = new Map<FlowStepId, string>();
@@ -202,4 +219,114 @@ export function flowOf(review: Review): Flow {
     explain: EXPLAIN[id],
   }));
   return { steps, settled: steps.every((step) => step.state === "done" || step.state === "skipped") };
+}
+
+/** The research council's steps (docs/research.md). */
+function researchFlowOf(review: Review): Flow {
+  const research = review.research!;
+  const seated = seatedReviewers(review);
+  const claims = research.claims;
+  const phase = review.phase;
+  const pass = research.pass;
+  const running = isRunning(review);
+  const past = phase === "synthesis" || phase === "complete";
+  // No rounds after the research (too few seats, or nothing to argue): the source check and the deliberation are skipped.
+  const skipped = review.rounds === 0 && past ? (seated.length < 2 ? "skipped: 1 seat" : claims.length === 0 ? "skipped: no claims" : "skipped: no rounds") : null;
+  const sourceStep = (): FlowStepId => (review.round === 0 && !research.sourcesChecked ? "sources" : "deliberate");
+  const stepOfPhase = (p: ResumablePhase): FlowStepId => (p === "independent-review" ? "research" : p === "synthesis" ? "answer" : sourceStep());
+
+  const researched = seated.filter((reviewer) => reviewer.status === "completed" || reviewer.status === "failed").length;
+  const drafts = research.drafts.filter((draft) => draft.pass === pass);
+  const latest = drafts[drafts.length - 1];
+  const answerWords = (): string => {
+    // Revising an answer already written (after strikes, or in a follow-up).
+    if (research.written || pass > 0) return "revising";
+    if (!latest) return "drafting";
+    if (latest.revision === 0) return research.objections.some((objection) => objection.pass === pass && objection.revision === 0) ? "revising" : "checking the draft";
+    return "revising";
+  };
+  const liveWords = (p: ResumablePhase): string =>
+    p === "independent-review" ? `${researched} of ${seated.length} researched` : p === "synthesis" ? answerWords() : sourceStep() === "sources" ? "checking sources" : `round ${review.round} of ${review.rounds}`;
+
+  const state = new Map<FlowStepId, FlowState>();
+  const detail = new Map<FlowStepId, string>();
+  const set = (id: FlowStepId, to: FlowState, words?: string) => {
+    state.set(id, to);
+    if (words !== undefined) detail.set(id, words);
+  };
+  const claimWords = plural(claims.filter((claim) => claim.pass === 0).length, "claim");
+  const roundWords = skipped ?? plural(review.rounds, "round");
+  const checkedWords = skipped ?? "sources checked";
+  const answered = research.written ? "answer written" : research.drafts.length > 0 ? "drafted" : "no answer";
+  /** The steps before `last` are behind the council: done, or skipped. */
+  const finishBefore = (last: FlowStepId) => {
+    const behind = (id: FlowStepId) => RESEARCH_ORDER.indexOf(id) < RESEARCH_ORDER.indexOf(last);
+    set("setup", "done");
+    if (behind("research")) set("research", "done", claimWords);
+    if (behind("sources")) set("sources", skipped ? "skipped" : "done", checkedWords);
+    if (behind("deliberate")) set("deliberate", skipped ? "skipped" : "done", roundWords);
+  };
+
+  const ended = phase === "stopped" || phase === "interrupted";
+  const cutPhase = phase === "interrupted" ? review.interruptedPhase : review.stoppedPhase;
+  const how = phase === "stopped" ? "stopped" : "interrupted";
+
+  if (phase === "setup") {
+    set("setup", "current", plural(seated.length, "seat"));
+  } else if (ended) {
+    if (pass > 0) {
+      finishBefore("followup");
+      set("answer", "done", answered);
+      set("followup", how, how);
+    } else {
+      const cut = cutPhase ? stepOfPhase(cutPhase) : review.rounds > 0 ? "deliberate" : "research";
+      finishBefore(cut);
+      set(cut, how, `${how}${cut === "deliberate" && review.round > 0 ? ` · round ${review.round}` : ""}`);
+    }
+  } else if (pass > 0 && running) {
+    // A follow-up's run: the first answer stands; the follow-up is where the council is.
+    finishBefore("followup");
+    set("answer", "done", answered);
+    set("followup", "current", liveWords(phase === "deliberation" || phase === "synthesis" ? phase : "independent-review"));
+  } else if (phase === "independent-review") {
+    set("setup", "done");
+    set("research", "current", liveWords("independent-review"));
+  } else if (phase === "deliberation") {
+    const now = sourceStep();
+    finishBefore(now);
+    set(now, "current", liveWords("deliberation"));
+  } else if (phase === "synthesis") {
+    finishBefore("answer");
+    set("answer", "current", liveWords("synthesis"));
+  } else {
+    finishBefore("followup");
+    set("answer", "done", answered);
+    if (pass > 0) set("followup", "done", plural(research.followUps.length, "follow-up"));
+    else if (research.revisionDue) set("followup", "ahead", "revise the answer");
+  }
+
+  for (const id of RESEARCH_ORDER) if (!state.has(id)) state.set(id, (id === "deliberate" || id === "sources") && skipped ? "skipped" : "ahead");
+
+  const ahead: Record<FlowStepId, string> = {
+    setup: "pick seats",
+    research: `≤${review.maxFindings} claims each`,
+    sources: "check sources",
+    deliberate: plural(review.deliberationRounds, "round"),
+    answer: "write the answer",
+    followup: "optional",
+    review: "",
+    verdict: "",
+    rule: "",
+    recheck: "",
+  };
+  const steps = RESEARCH_ORDER.map((id): FlowStep => ({
+    id,
+    title: TITLES[id],
+    state: state.get(id)!,
+    detail: detail.get(id) ?? (id === "setup" && state.get(id) === "done" ? plural(seated.length, "seat") : ahead[id]),
+    explain: EXPLAIN[id],
+  }));
+  // A follow-up is optional: waiting for one doesn't leave the council unsettled.
+  const settled = steps.every((step) => step.state === "done" || step.state === "skipped" || (step.id === "followup" && step.state === "ahead" && phase === "complete" && !research.revisionDue));
+  return { steps, settled };
 }

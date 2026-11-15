@@ -18,7 +18,7 @@ const STATE_WORDS: Record<FlowState, string> = {
   interrupted: "interrupted",
 };
 
-/** The review's six steps on one line, with where it is now. Read-only. */
+/** The review's (or research council's) six steps on one line, with where it is now. Read-only. */
 export function FlowStrip({ flow, close }: { flow: Flow; close(): void }) {
   return (
     <section className="flow" aria-label="Review process">
@@ -32,7 +32,7 @@ export function FlowStrip({ flow, close }: { flow: Flow; close(): void }) {
           >
             {index > 0 && (
               <span className="flow-connector" aria-hidden="true">
-                {step.id === "recheck" ? "⇄" : "→"}
+                {step.id === "recheck" || step.id === "followup" ? "⇄" : "→"}
               </span>
             )}
             <span className="flow-body">

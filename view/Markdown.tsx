@@ -21,7 +21,7 @@ function renderInlines(inlines: Inline[], ctx: Context): ReactNode[] {
         return <strong key={index}>{renderInlines(inline.children, ctx)}</strong>;
       case "finding": {
         const id = inline.id;
-        const target = ctx.review.findings.some((finding) => finding.id === id) ? id : ctx.merged.get(id);
+        const target = ctx.review.findings.some((finding) => finding.id === id) || ctx.review.research?.claims.some((claim) => claim.id === id) ? id : ctx.merged.get(id);
         const select = ctx.select;
         if (!target || !select) return <Fragment key={index}>{id}</Fragment>;
         return (

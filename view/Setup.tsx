@@ -1,10 +1,11 @@
 /** The review's setup: what it reviews (set by the agent), profile, depth, the council's seats and instructions; Start review hands it to the host. */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MOCK_AGENTS, UNNAMED_PROFILE, choiceOf, expectedModel, isMockAgent, offered, isProfileAgent, modelLabel, profileAgent, profileName, type OptionChoice, type ProfileInfo } from "../core/agents.ts";
 import type { Review, Reviewer } from "../core/model.ts";
-import { DEPTH_TITLES, MAX_FINDINGS_RANGE, ROUNDS_RANGE, knobsText, plannedTurns } from "../core/depth.ts";
+import { DEPTH_TITLES, ROUNDS_RANGE, knobsText, maxRangeOf, plannedTurns } from "../core/depth.ts";
 import { PROFILES } from "../core/profiles.ts";
 import { setupOf } from "../core/review.ts";
+import { defaultAnswerFile } from "../core/research.ts";
 import { DEPTHS, MAX_SEATS, MODEL_CHOICE_MAX, PROFILE_IDS, type Seat, type SetupPatch } from "../core/schemas.ts";
 import type { CouncilBridge } from "./bridge.ts";
 import { cx } from "./ui.tsx";
@@ -110,6 +111,17 @@ function KnobInput({ id, label, value, min, max, commit }: { id: string; label: 
 /** The last part of a path: the project's folder, or the document's file name. */
 const nameOf = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
 
+/** A research seat's optional focus (an RQ, a set of venues): a lean, the whole brief still. */
+function SeatFocus({ index, value, commit }: { index: number; value: string; commit(text: string): void }) {
+  const focus = useDraft(value, (text) => commit(text.trim()));
+  return (
+    <label className="seat-focus">
+      <span className="muted">Focus · optional</span>
+      <input type="text" value={focus.value} placeholder="e.g. RQ4, database venues" aria-label={`Focus for seat ${index + 1}`} onChange={(event) => focus.onChange(event.target.value)} onBlur={focus.onBlur} />
+    </label>
+  );
+}
+
 const OTHER = "__other__";
 
 /** The well-formed choices in a host's list of them. */
@@ -168,6 +180,7 @@ function SeatCard({
   setAgent,
   setChoice,
   remove,
+  extra,
 }: {
   index: number;
   seat: Seat;
@@ -183,6 +196,8 @@ function SeatCard({
   /** Sets the seat's model or effort; an empty one is the profile's own. */
   setChoice(index: number, key: "model" | "effort", value: string): void;
   remove(index: number): void;
+  /** More fields under the seat's choices (a research seat's focus). */
+  extra?: ReactNode;
 }) {
   const isProfile = isProfileAgent(seat.agent);
   const saved = isProfile ? profileName(seat.agent) : "";
@@ -327,6 +342,7 @@ function SeatCard({
           />
         </div>
       )}
+      {extra}
       <span className="hint">{showOther && saved === "" ? "Name a Mirador profile to seat it, or pick another agent." : detail}</span>
     </div>
   );
@@ -425,9 +441,13 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
   const setup = setupOf(review);
   const profiles = useProfiles(bridge);
   const instructions = useDraft(setup.instructions, (text) => configure({ instructions: text }));
+  const research = setup.kind === "research";
+  const brief = useDraft(setup.brief, (text) => configure({ brief: text.trim() }));
+  const question = useDraft(setup.question, (text) => configure({ question: text }));
+  const answerFile = useDraft(setup.answerFile, (text) => configure({ answerFile: text.trim() }));
   // Old reviews may hold disabled seats: they aren't shown, and the first edit drops them.
   const stored = setup.seats.filter((seat) => seat.enabled);
-  const seatKey = (list: Seat[]) => list.map((seat) => [seat.agent, seat.model ?? "", seat.effort ?? ""].join("\t")).join("\n");
+  const seatKey = (list: Seat[]) => list.map((seat) => [seat.agent, seat.model ?? "", seat.effort ?? "", seat.focus ?? ""].join("\t")).join("\n");
   const storedKey = seatKey(stored);
   // The seats as last sent, until the review catches up: quick edits build on each other rather than on a stale review.
   const [draft, setDraft] = useState<Seat[] | null>(null);
@@ -440,17 +460,19 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
   const [offerMocks] = useState(() => stored.some((seat) => isMockAgent(seat.agent)));
   const count = seats.length;
   const knobs = { deliberationRounds: setup.deliberationRounds, maxFindings: setup.maxFindings };
-  const turns = count > 0 ? plannedTurns(count, knobs, seats.some((seat) => isProfileAgent(seat.agent))) : null;
+  const maxRange = maxRangeOf(setup.kind);
+  const noun = research ? "seat" : "reviewer";
+  const turns = count > 0 && !research ? plannedTurns(count, knobs, seats.some((seat) => isProfileAgent(seat.agent))) : null;
   const seatedReviewers = review.reviewers.filter((reviewer) => reviewer.enabled);
   /** The positions of seats in "Other profile…" mode. */
   const [others, setOthers] = useState<number[]>([]);
   const send = (list: Seat[]) => {
-    const next = list.map((seat) => ({ agent: seat.agent, enabled: true, ...choiceOf(seat) }));
+    const next = list.map((seat) => ({ agent: seat.agent, enabled: true, ...choiceOf(seat), ...(seat.focus ? { focus: seat.focus } : {}) }));
     setDraft(next);
     configure({ seats: next });
   };
   // Another agent starts on its profile's own model and effort: a choice belongs to the profile it was made for.
-  const setAgent = (index: number, agent: string) => send(seats.map((seat, at) => (at === index ? { agent, enabled: true } : seat)));
+  const setAgent = (index: number, agent: string) => send(seats.map((seat, at) => (at === index ? { agent, enabled: true, ...(seat.focus ? { focus: seat.focus } : {}) } : seat)));
   const setChoice = (index: number, key: "model" | "effort", value: string) =>
     send(
       seats.map((seat, at) => {
@@ -463,6 +485,14 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
     send(seats.filter((_, at) => at !== index));
     setOthers((list) => list.filter((at) => at !== index).map((at) => (at > index ? at - 1 : at)));
   };
+  const setFocus = (index: number, text: string) =>
+    send(
+      seats.map((seat, at) => {
+        if (at !== index) return seat;
+        const { focus: _, ...rest } = seat;
+        return text ? { ...rest, focus: text } : rest;
+      }),
+    );
   const setOther = (index: number, other: boolean) => setOthers((list) => (other ? [...new Set([...list, index])] : list.filter((at) => at !== index)));
   const add = () => {
     const taken = new Set(seats.map((seat) => seat.agent));
@@ -472,10 +502,35 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
     send([...seats, { agent, enabled: true }]);
   };
   // A seat switched to "Other profile…" becomes unnamed at once (SeatCard), so the review can't start as its old agent.
+  const noBrief = research && !brief.value.trim() && !question.value.trim() && !setup.brief.trim() && !setup.question.trim();
   const unnamed = seats.flatMap((seat, at) => (seat.agent === UNNAMED_PROFILE ? [at + 1] : []));
 
   return (
     <div className="setup">
+      {research ? (
+        <>
+          <section className="field">
+            <label className="field-label" htmlFor="brief">
+              Brief
+            </label>
+            <input id="brief" type="text" className="mono" value={brief.value} placeholder="/absolute/path/to/brief.md" onChange={(event) => brief.onChange(event.target.value)} onBlur={brief.onBlur} />
+            <p className="hint">A Markdown file that states the research questions, where to look, the rules for sources and the answer's shape. The workspace, {nameOf(setup.target)}, is readable context.</p>
+            <label className="field-label" htmlFor="question">
+              … or a question <span className="muted">· saved as the brief when you start</span>
+            </label>
+            <textarea id="question" rows={3} value={question.value} onChange={(event) => question.onChange(event.target.value)} onBlur={question.onBlur} placeholder="What should the council research?" />
+          </section>
+
+          <section className="field">
+            <label className="field-label" htmlFor="answer-file">
+              Answer file <span className="muted">· optional</span>
+            </label>
+            <input id="answer-file" type="text" className="mono" value={answerFile.value} placeholder={setup.brief ? defaultAnswerFile(setup.brief) : "<brief name>-answer.md beside the brief"} onChange={(event) => answerFile.onChange(event.target.value)} onBlur={answerFile.onBlur} />
+            <p className="hint">The plugin writes the editor's answer here, and again after each revision; researchers only read.</p>
+          </section>
+        </>
+      ) : (
+        <>
       <section className="field">
         <span className="field-label">Reviewing</span>
         <p className="reviewing-target">
@@ -496,6 +551,8 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
         </div>
         <p className="hint">Looks at: {PROFILES[setup.profile].focus.join(" · ")}</p>
       </section>
+        </>
+      )}
 
       <section className="field">
         <span className="field-label">Depth</span>
@@ -519,10 +576,10 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
         </div>
         <div className="knobs">
           <KnobInput id="knob-rounds" label="Deliberation rounds" value={setup.deliberationRounds} min={ROUNDS_RANGE.min} max={ROUNDS_RANGE.max} commit={(deliberationRounds) => configure({ deliberationRounds })} />
-          <KnobInput id="knob-findings" label="Max findings per reviewer" value={setup.maxFindings} min={MAX_FINDINGS_RANGE.min} max={MAX_FINDINGS_RANGE.max} commit={(maxFindings) => configure({ maxFindings })} />
+          <KnobInput id="knob-findings" label={research ? "Max claims per researcher" : "Max findings per reviewer"} value={setup.maxFindings} min={maxRange.min} max={maxRange.max} commit={(maxFindings) => configure({ maxFindings })} />
         </div>
         <p className="hint">
-          {DEPTH_TITLES[setup.depth]}: {knobsText(knobs)}.
+          {DEPTH_TITLES[setup.depth]}: {knobsText(knobs, setup.kind)}.
         </p>
         {turns && (
           <p className="hint">
@@ -543,7 +600,7 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
 
       <section className="field">
         <span className="field-label">
-          Council <span className="muted">· {count} reviewer{count === 1 ? "" : "s"}</span>
+          Council <span className="muted">· {count} {noun}{count === 1 ? "" : "s"}</span>
         </span>
         <div className="seats">
           {seats.map((seat, index) => (
@@ -561,17 +618,35 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
               setAgent={setAgent}
               setChoice={setChoice}
               remove={remove}
+              {...(research ? { extra: <SeatFocus index={index} value={seat.focus ?? ""} commit={(text) => setFocus(index, text)} /> } : {})}
             />
           ))}
         </div>
         <div className="seats-add">
           <button type="button" onClick={add} disabled={count >= MAX_SEATS}>
-            + Add reviewer
+            + Add {noun}
           </button>
-          {count >= MAX_SEATS && <span className="hint">At most {MAX_SEATS} reviewers.</span>}
+          {count >= MAX_SEATS && <span className="hint">At most {MAX_SEATS} {noun}s.</span>}
         </div>
-        <p className="hint">A profile seat runs a real agent on that profile's default model and effort, each turn in a new conversation. Reviewers only read the target.</p>
+        <p className="hint">A profile seat runs a real agent on that profile's default model and effort, each turn in a new conversation. {research ? "Researchers only read: they and the editor change no file." : "Reviewers only read the target."}</p>
+        {research && <p className="hint">Researchers need web search and fetch tools: a seat whose profile has none fails with that reason. Each seat researches the whole brief; a focus only leans it.</p>}
       </section>
+
+      {research && (
+        <section className="field">
+          <label className="field-label" htmlFor="editor">
+            Editor
+          </label>
+          <select id="editor" value={seats.some((_, at) => `r${at + 1}` === setup.editor) ? setup.editor : "r1"} onChange={(event) => configure({ editor: event.target.value })}>
+            {seats.map((_, at) => (
+              <option key={at} value={`r${at + 1}`}>
+                R{at + 1}
+              </option>
+            ))}
+          </select>
+          <p className="hint">The seat that writes the one answer from the claims that stand; the others check the draft.</p>
+        </section>
+      )}
 
       <section className="field">
         <label className="field-label" htmlFor="instructions">
@@ -590,16 +665,17 @@ export function Setup({ review, configure: sendPatch, start, busy, bridge }: { r
       <div className="setup-actions">
         <button
           className="primary"
-          disabled={busy || startState !== "idle" || count === 0 || unnamed.length > 0}
+          disabled={busy || startState !== "idle" || count === 0 || unnamed.length > 0 || noBrief}
           onClick={() => {
             instructions.onBlur();
             void requestStart();
           }}
         >
-          Start review
+          {research ? "Start research" : "Start review"}
         </button>
         {startState === "prompted" && <span role="status">Asked the agent to start the review… <button className="link" disabled={busy} onClick={() => setStartState("idle")}>Retry start</button></span>}
-        {count === 0 && <span className="hint">Seat at least one reviewer.</span>}
+        {noBrief && <span className="hint">Give a brief file or a question.</span>}
+        {count === 0 && <span className="hint">Seat at least one {noun}.</span>}
         {unnamed.length > 0 && <span className="hint">Name the profile for reviewer {unnamed.join(", ")}, or pick another agent.</span>}
       </div>
     </div>

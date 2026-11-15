@@ -1,10 +1,11 @@
 /** The live workspace: one panel per seat, what each reviewer is doing, and the findings as they come in. */
 import { useEffect, useState } from "react";
-import { isFinished, isResumable, isRulable, reportersOf, type Activity, type Finding, type Review, type Reviewer } from "../core/model.ts";
+import { claimReportersOf, isFinished, isResumable, isRulable, reportersOf, type Activity, type Finding, type Review, type Reviewer } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
 import { bySeverity } from "../core/describe.ts";
 import { canFetchReply } from "../core/late-replies.ts";
 import { ActionPlan } from "./Actions.tsx";
+import { ClaimRow } from "./Research.tsx";
 import { cx, elapsed, FindingStatusBadge, AlsoMark, FixBadge, RulingMark, SeverityBadge, StatusMark, statusWord, VerdictBanner } from "./ui.tsx";
 
 const ACTIVITY_ICONS: Record<Activity["kind"], string> = {
@@ -56,7 +57,7 @@ export function fetchHint(review: Review, reviewer: Reviewer) {
   return `Take the reply ${reviewer.label}'s conversation gave after its turn was given up on, if it has ended${after}`;
 }
 
-function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, retry, fetch, remove, busy }: { review: Review; reviewer: Reviewer; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean; retry: (() => void) | null; fetch: (() => void) | null; remove: (() => void) | null; busy: boolean }) {
+function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, retry, fetch, remove, busy, thing = "finding" }: { review: Review; reviewer: Reviewer; thing?: string; findings: number; argued: number; now: number; open(from: HTMLElement): void; expanded: boolean; retry: (() => void) | null; fetch: (() => void) | null; remove: (() => void) | null; busy: boolean }) {
   const recent = reviewer.activity.filter((activity) => activity.kind !== "status").slice(-3);
   return (
     <div className="seat-cell">
@@ -64,7 +65,7 @@ function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, re
       className={cx("seat-panel", `is-${reviewer.status}`)}
       onClick={(event) => open(event.currentTarget)}
       title={`Open ${reviewer.label}'s activity`}
-      aria-label={`${reviewer.label}, ${statusWord(reviewer.status).toLowerCase()}, ${findings} finding${findings === 1 ? "" : "s"} — open activity`}
+      aria-label={`${reviewer.label}, ${statusWord(reviewer.status).toLowerCase()}, ${findings} ${thing}${findings === 1 ? "" : "s"} — open activity`}
       aria-expanded={expanded}
     >
       <span className="seat-panel-head">
@@ -81,7 +82,7 @@ function SeatPanel({ review, reviewer, findings, argued, now, open, expanded, re
       </ul>
       <span className="seat-panel-foot">
         <span>
-          Findings <strong>{findings}</strong>
+          {thing[0]!.toUpperCase() + thing.slice(1)}s <strong>{findings}</strong>
           {argued > 0 && (
             <>
               {" · "}Arguments <strong>{argued}</strong>
@@ -188,7 +189,9 @@ const attention = (review: Review, finding: Finding) => {
 const byAttention = (review: Review) => (a: Finding, b: Finding) => attention(review, a) - attention(review, b) || bySeverity(a, b);
 
 export function Workspace({ review, now, openReviewer, openedReviewer, openFinding, openAll, openCouncil, rerun, resume, act, busy, openPath }: { review: Review; now: number; openReviewer(id: string, from: HTMLElement): void; openedReviewer: string | null; openFinding(id: string): void; openAll(): void; openCouncil(): void; rerun(): Promise<unknown>; resume(): Promise<unknown>; act(action: ViewAction): void; busy: boolean; openPath?: (path: string) => void }) {
+  const research = review.kind === "research";
   const counts = new Map<string, number>();
+  for (const claim of review.research?.claims ?? []) for (const reviewerId of claimReportersOf(claim)) counts.set(reviewerId, (counts.get(reviewerId) ?? 0) + 1);
   for (const finding of review.findings) {
     for (const reviewerId of reportersOf(finding)) counts.set(reviewerId, (counts.get(reviewerId) ?? 0) + 1);
   }
@@ -197,16 +200,51 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
   const label = (id: string) => review.reviewers.find((reviewer) => reviewer.id === id)?.label ?? id;
   const seated = review.reviewers.filter((reviewer) => reviewer.enabled);
   const top = [...review.findings].sort(byAttention(review)).slice(0, 6);
+  const claims = review.research?.claims ?? [];
+  const topClaims = claims.slice(0, 6);
   return (
     <div className="workspace">
       <RerunPanel review={review} rerun={rerun} resume={resume} />
-      <VerdictBanner review={review} />
-      <ActionPlan review={review} act={act} busy={busy} openCouncil={openCouncil} compact {...(openPath ? { openPath } : {})} />
+      {research ? review.verdict && (
+        <section className="verdict">
+          <h3>Verdict</h3>
+          <p>{review.verdict.summary}</p>
+        </section>
+      ) : (
+        <>
+          <VerdictBanner review={review} />
+          <ActionPlan review={review} act={act} busy={busy} openCouncil={openCouncil} compact {...(openPath ? { openPath } : {})} />
+        </>
+      )}
       <div className={cx("seat-grid", `seats-${seated.length}`)}>
         {seated.map((reviewer) => (
-          <SeatPanel key={reviewer.id} review={review} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} retry={review.phase === "independent-review" && reviewer.status === "failed" ? () => act({ kind: "retry", reviewerId: reviewer.id }) : null} fetch={canFetchReply(review, reviewer) ? () => act({ kind: "fetch-reply", reviewerId: reviewer.id }) : null} remove={removable(review, reviewer) ? () => act({ kind: "remove", reviewerId: reviewer.id }) : null} busy={busy} />
+          <SeatPanel key={reviewer.id} review={review} reviewer={reviewer} findings={counts.get(reviewer.id) ?? 0} argued={argued.get(reviewer.id) ?? 0} now={now} open={(from) => openReviewer(reviewer.id, from)} expanded={openedReviewer === reviewer.id} thing={research ? "claim" : "finding"} retry={review.phase === "independent-review" && reviewer.status === "failed" ? () => act({ kind: "retry", reviewerId: reviewer.id }) : null} fetch={canFetchReply(review, reviewer) ? () => act({ kind: "fetch-reply", reviewerId: reviewer.id }) : null} remove={removable(review, reviewer) ? () => act({ kind: "remove", reviewerId: reviewer.id }) : null} busy={busy} />
         ))}
       </div>
+      {research ? (
+      <section className="findings-summary">
+        <header>
+          <h2>Claims</h2>
+          <span className="count-pill">{claims.length} total</span>
+        </header>
+        {claims.length === 0 ? (
+          <p className="empty-note">{isFinished(review) ? "No claims were reported." : "No claims yet. They appear here as the seats report them."}</p>
+        ) : (
+          <ul className="finding-rows">
+            {topClaims.map((claim) => (
+              <li key={claim.id}>
+                <ClaimRow review={review} claim={claim} onOpen={() => openFinding(claim.id)} />
+              </li>
+            ))}
+          </ul>
+        )}
+        {claims.length > topClaims.length && (
+          <button className="link more" onClick={openAll}>
+            All {claims.length} claims →
+          </button>
+        )}
+      </section>
+      ) : (
       <section className="findings-summary">
         <header>
           <h2>Findings</h2>
@@ -227,6 +265,7 @@ export function Workspace({ review, now, openReviewer, openedReviewer, openFindi
           </button>
         )}
       </section>
+      )}
       <RerunPanel review={review} rerun={rerun} resume={resume} quiet />
     </div>
   );

@@ -54,13 +54,13 @@ function wholePath(content: string): Inline | undefined {
   return pathInline(path, tail, content);
 }
 
-/** Plain text: file:line references and finding ids. */
+/** Plain text: file:line references and finding ids (F) and claim ids (C). */
 function plain(run: string, out: Inline[]) {
   const push = (text: string) => {
     if (text) out.push({ kind: "text", text });
   };
   const ids = (text: string) => {
-    text.split(/(\bF\d+\b)/).forEach((part, index) => {
+    text.split(/\b([FC]\d+)\b/).forEach((part, index) => {
       if (index % 2 === 1) out.push({ kind: "finding", id: part });
       else push(part);
     });

@@ -1,9 +1,10 @@
 /** One reviewer's full activity and findings, beside the workspace. Only events the runner reported, no private reasoning. */
 import { useEffect, useRef } from "react";
 import { seatDetail } from "../core/agents.ts";
-import { isActive, reportersOf, type Review } from "../core/model.ts";
+import { claimReportersOf, isActive, reportersOf, type Review } from "../core/model.ts";
 import type { ViewAction } from "../core/schemas.ts";
 import { canFetchReply } from "../core/late-replies.ts";
+import { ClaimRow } from "./Research.tsx";
 import { ActivityLine, fetchHint, FindingRow, removable, removeHint } from "./Workspace.tsx";
 import { elapsed, StatusMark, statusWord } from "./ui.tsx";
 
@@ -65,6 +66,8 @@ export function ReviewerDetail({
   if (!reviewer) return null;
   // Its own findings and those its report of was merged into, as the seat panel counts them.
   const findings = review.findings.filter((finding) => reportersOf(finding).includes(reviewer.id));
+  const claims = (review.research?.claims ?? []).filter((claim) => claimReportersOf(claim).includes(reviewer.id));
+  const research = review.kind === "research";
   const hidden = reviewer.activityCount - reviewer.activity.length;
   return (
     <aside ref={root} className="detail" aria-label={`${reviewer.label}'s activity`}>
@@ -76,7 +79,7 @@ export function ReviewerDetail({
           <span className="muted">
             {statusWord(reviewer.status)}
             {reviewer.startedAt !== null && ` · ${elapsed(reviewer.startedAt, reviewer.endedAt, now)}`}
-            {` · ${findings.length} finding${findings.length === 1 ? "" : "s"}`}
+            {research ? ` · ${claims.length} claim${claims.length === 1 ? "" : "s"}` : ` · ${findings.length} finding${findings.length === 1 ? "" : "s"}`}
           </span>
         </div>
         <div className="detail-actions">
@@ -101,6 +104,18 @@ export function ReviewerDetail({
         </div>
       </header>
       {reviewer.problem && <p className="problem">{reviewer.problem}</p>}
+      {claims.length > 0 && (
+        <section>
+          <h3>Claims</h3>
+          <ul className="finding-rows compact">
+            {claims.map((claim) => (
+              <li key={claim.id}>
+                <ClaimRow review={review} claim={claim} onOpen={() => openFinding(claim.id)} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {findings.length > 0 && (
         <section>
           <h3>Findings</h3>
