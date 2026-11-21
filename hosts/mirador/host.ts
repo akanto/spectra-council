@@ -1005,12 +1005,6 @@ export function createCouncilHost({
       ]),
     );
 
-  /** A council is opened rarely, so its tools stay out of every request until the agent looks for them: Claude Code with tool search on. */
-  const loadedOnDemand = (tools: Record<string, CanvasTool<Review>>): Record<string, CanvasTool<Review>> =>
-    Object.fromEntries(Object.entries(tools).map(([name, tool]) => [name, { ...tool, onDemand: true }]));
-
-  const councilTools = (tools: Record<string, CanvasTool<Review>>) => loadedOnDemand(keepingContext(tools));
-
   return {
     items: {
       [ITEM_TYPE]: {
@@ -1021,7 +1015,7 @@ export function createCouncilHost({
         listed: settled,
       },
     },
-    tools: councilTools({
+    tools: keepingContext({
       council_open: {
         description:
           "Open a Spectra Council review or research council in the canvas. A review (the default): several AI reviewers examine a repository, folder or document independently and report structured findings with evidence, then deliberate over them in rounds (backing, challenging, conceding) until a synthesis settles each finding as agreed, confirmed, disputed or withdrawn; the user watches it all live. A research council (kind research, with a brief file or a question): the seats research it on the web independently and report sourced claims, check each other's sources, argue the claims out, and an editor seat writes one consolidated answer to a file, so the user reads one answer rather than one report per agent; the target is then the workspace folder. The target is the project you work in unless the user names something narrower; the user chooses the profile, depth and reviewers in the canvas and starts the review there. Seats are the user's Mirador profiles (real agents, each turn a new conversation on that profile), by default the ones the user last started a review with; deterministic mock personas only when the user asks for a mock or demo review. A review in this conversation that the user hasn't started yet is replaced by the new one, in its tab, keeping its reviewers, profile, depth and instructions unless you name others; to run two at once, the user starts the first before you open the second. Read a review's progress and findings with council_status.",
@@ -1264,9 +1258,16 @@ export function createCouncilHost({
         },
       },
     }),
+    /**
+     * With a summary the council loads on request (Mirador 0.15.1 and later, on every agent): a conversation is told the
+     * summary alone, gets the instructions from plugin_load (or the first use_tool call that reaches a council tool, unless
+     * a prompt of the plugin's own came first: that counts as loading and gives none), and runs every council tool
+     * through use_tool. So the instructions cost nothing until a council is wanted. A Mirador
+     * that doesn't know summary gives the tools and the instructions as before.
+     */
     guidance: {
       instructions:
-        "- council_open: when the user asks for several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; when they ask for several agents to research something and come back with one consolidated answer, open a research council (kind research). The user sets it up and starts it there. Never start one yourself: call council_begin only when the canvas asks you to. The other council_ tools say in their descriptions when to call them.",
+        "- council_open: when the user wants several AI agents to review a repository, folder or document (a Spectra Council review), open one in the canvas with the target's absolute path; the user sets it up and starts it there. When they want several agents to research something and come back with one consolidated answer, open a research council (kind research) with the brief's absolute path (or their question) and the workspace folder as target; read the brief first and pass answerFile when it names a deliverable file. Leave agents out to seat the user's profiles, or name them as council_profiles lists them; seat mock personas only when the user asks for a mock or demo review. Opening another while one is unstarted replaces it. Never start a review yourself: call council_begin only when the canvas asks you to; when the user asks you to stop a running review, call council_stop. council_status reads its progress and findings; council_rule records a ruling the user gives you on a finding, never one of your own; when the user hands findings off to you to fix, call council_mark_fixed after each fix, or council_delegate_fix when asked to hand them to another profile; when asked to file beads issues for findings, call council_mark_ticketed after each.",
       summary:
         "several AI agents review a repository, folder or document on their own, then argue out each finding, or research a question and write one sourced answer; only when the user asks for a Spectra Council review or research council, or for several agents to review or research something.",
     },

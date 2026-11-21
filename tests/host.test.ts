@@ -28,17 +28,23 @@ function setup() {
 }
 
 describe("the Mirador host", () => {
-  test("every council tool loads on demand, so a conversation that opens no council carries none of them", () => {
+  test("the council loads on request: a one-line summary that doesn't open with the plugin's name, saying only the user's asking calls for it", () => {
     const { host } = setup();
-    expect(Object.keys(host.tools)).toContain("council_open");
-    expect(Object.values(host.tools).every((tool) => tool.onDemand)).toBe(true);
+    const summary = host.guidance?.summary ?? "";
+    expect(summary).not.toBe("");
+    expect(summary).not.toContain("\n");
+    expect(summary).not.toContain("spectra-council");
+    expect(summary.toLowerCase().startsWith("spectra")).toBe(false);
+    expect(summary).toContain("only when the user asks");
   });
 
-  test("the council loads on request, with a line that says what it does and that only the user's asking calls for it", () => {
+  test("the instructions, which plugin_load gives, keep the rules the tool descriptions alone would leave unread", () => {
     const { host } = setup();
-    expect(host.guidance?.summary).toStartWith("several AI agents review a repository, folder or document");
-    expect(host.guidance?.summary).toContain("only when the user asks for a Spectra Council review");
-    expect(host.guidance?.summary).toContain("research");
+    const instructions = host.guidance?.instructions ?? "";
+    expect(instructions).toContain("call council_begin only when the canvas asks you to");
+    expect(instructions).toContain("never one of your own");
+    expect(instructions).toContain("seat mock personas only when the user asks");
+    expect(instructions).toContain("call council_mark_fixed after each fix");
   });
 
   test("start after a restart reports that the agent was prompted", async () => {

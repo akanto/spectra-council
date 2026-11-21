@@ -182,6 +182,16 @@ own, so it sends the `prefs` action (`{ kind: "prefs", set? }`, which resolves t
   turn. A failed send is logged; Start also drops its request, so `council_begin` refuses until the user presses Start
   again. Retry start sends a second ask while the agent's turn from the first still runs; a review running already
   answers `council_begin` plainly rather than failing as one, which is what that second ask then calls.
+- **Loading on request.** The host's guidance gives a one-line `summary`, so on Mirador 0.15.1 and later the council
+  loads on request, on every agent: a conversation is told that line alone, and gets the `instructions` when its agent
+  calls `plugin_load`, or `use_tool` first reaches a council tool; one the plugin starts has them from the start. A
+  prompt of the plugin's own (Start's ask, the verdict) counts as loading it but gives no instructions, so a
+  conversation whose council's first call came after such a prompt has them only if its agent calls `plugin_load`. Every council
+  tool then runs through Mirador's `use_tool`, never from the agent's tool list; it reaches `run` with the same tool
+  context, so `keepingContext` still keeps it for starting reviewers. A conversation that opens no council carries only
+  the summary. Since the instructions no longer weigh on every request, they keep the rules (rulings only the user's,
+  mock personas only on request, `council_mark_fixed` after each fix) that a tool's description would give only to an
+  agent that reads it first. A Mirador that doesn't know `summary` gives the tools and instructions as before.
 - **The agent's other tools.** `council_stop` does what the view's Stop does, but only for a running session: a review
   a restart left running reads as interrupted, with nothing to stop. A stop also stops the reviewers' conversations it
   started, through `stopConversation` (Mirador's plugin API 10); on a Mirador older than that there is no way to, so

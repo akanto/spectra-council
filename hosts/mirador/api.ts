@@ -96,6 +96,7 @@ export interface CanvasTool<Data = unknown> {
   /** JSON Schema of an object, which Mirador checks before calling run. */
   input: Record<string, unknown>;
   run(input: unknown, context: CanvasToolContext<Data>): string | Promise<string>;
+  /** Not in the agent's tool list: the agent reads its description and input schema through use_tool, and runs it the same way, on every agent. */
   onDemand?: boolean;
 }
 
@@ -108,8 +109,18 @@ export interface CanvasPluginNote {
 export interface CanvasHost<Data = unknown> {
   items: Record<string, PluginItemType<Data>>;
   tools: Record<string, CanvasTool<Data>>;
-  /** summary: one line of what the plugin does and when; with it, Mirador loads the plugin's tools and instructions when the agent asks. */
-  guidance?: { instructions?: string; often?: string; summary?: string };
+  guidance?: {
+    instructions?: string;
+    often?: string;
+    /**
+     * What the plugin does and when to reach for it, in one short line without the plugin's name. A plugin that gives it
+     * loads on request, on every agent (Mirador 0.15.1; 0.15.0 did so for Claude Code alone): a conversation is told
+     * that line alone, and `often` with a note to load it first, and gets `instructions` once its agent calls
+     * plugin_load, or use_tool reaches one of its tools, or the plugin starts a conversation or gives guidanceFor its
+     * profile. Its tools run through use_tool either way.
+     */
+    summary?: string;
+  };
   action?(item: PluginItem<Data>, action: unknown, context: CanvasActionContext<Data>): unknown;
   note?(context: CanvasPluginContext<Data>): CanvasPluginNote | null;
   /**
