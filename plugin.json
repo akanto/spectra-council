@@ -1,9 +1,26 @@
 {
   "name": "spectra-council",
   "title": "Spectra Council",
+  "icon": "icon.svg",
   "version": "0.4.0",
   "api": 8,
   "tellsCaller": true,
+  "description": "Ask one AI for a review and you get one opinion, delivered with full confidence. Spectra Council seats several, each on a profile of yours with the model and effort you choose: Claude, Codex, a local model. Each reviews a repository, a folder or a document on its own and reports findings with evidence; then, round by round, they back or challenge each other's. Every finding ends agreed, confirmed, disputed or withdrawn, and dissent stays on the record as a minority report. You accept, dismiss or defer each one; the agent or a fixer profile fixes the accepted ones, or files them as beads issues, and the reviewers re-check the fixes. A research council researches a question on the web instead: each seat checks the others' sources, the claims are argued out the same way, and one editor writes one sourced answer, with every claim's status and dissent kept.",
+  "tagline": "Several models review your code or documents, or research a question, then argue out each finding.",
+  "screenshots": [
+    {
+      "path": "screenshots/workspace.png",
+      "caption": "Each reviewer investigates on its own, with the review's steps along the top"
+    },
+    {
+      "path": "screenshots/council.png",
+      "caption": "The council backs or challenges each finding with evidence, round by round"
+    },
+    {
+      "path": "screenshots/ruling.png",
+      "caption": "Every finding settled, dissent kept; you accept, dismiss or defer, and the agent fixes"
+    }
+  ],
   "canvas": {
     "host": "hosts/mirador/host.ts",
     "view": "dist/view.js"
